@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+        <PackageReference Include="NSwag.MSBuild" Version="14.7.1">
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+            <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
+        <PackageReference Include="System.Threading.RateLimiting" Version="10.0.0" />
+    </ItemGroup>
+
+    <Target
+        Name="GenerateOpenApiClient"
+        BeforeTargets="BeforeBuild"
+        Condition="'$(DesignTimeBuild)' != 'true' And '$(SkipGenerateOpenApiClient)' != 'true'">
+        <Exec Command="$(NSwagExe_Net100) run nswag.json" />
+    </Target>
+</Project>

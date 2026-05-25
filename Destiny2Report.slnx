@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Destiny2Report.API/Destiny2Report.API.csproj" />
+  <Project Path="Destiny2Report.BungieClient/Destiny2Report.BungieClient.csproj" />
+</Solution>

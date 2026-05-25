@@ -1,0 +1,18 @@
+{
+  "runtime": "Net100",
+  "documentGenerator": {
+    "fromDocument": {
+      "url": "https://raw.githubusercontent.com/Bungie-net/api/refs/heads/master/openapi.json"
+    }
+  },
+  "codeGenerators": {
+    "openApiToCSharpClient": {
+      "namespace": "D2Report.BungieClient",
+      "className": "D2ReportClient",
+      "output": "Generated/D2ReportClient.g.cs",
+      "injectHttpClient": true,
+      "disposeHttpClient": false,
+      "generateClientInterfaces": true
+    }
+  }
+}

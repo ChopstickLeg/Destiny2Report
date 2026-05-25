@@ -1,0 +1,19 @@
+{
+  "dotnet.defaultSolution": "Destiny2Report.sln",
+  "editor.suggest.showClasses": true,
+  "[csharp]": {
+    "editor.quickSuggestions": {
+      "comments": "off",
+      "strings": "off",
+      "other": "on"
+    },
+    "editor.suggest.showClasses": true,
+    "editor.suggest.showConstructors": true,
+    "editor.suggest.showInterfaces": true,
+    "editor.suggest.showMethods": true,
+    "editor.suggest.showProperties": true,
+    "editor.suggest.showStructs": true,
+    "editor.suggest.showWords": false,
+    "editor.suggestOnTriggerCharacters": true
+  }
+}

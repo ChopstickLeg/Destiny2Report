@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+      <UserSecretsId>b6c2427d-ede4-49ad-a012-5fbde65c9457</UserSecretsId>
+  </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
+        <PackageReference Include="MongoDB.Driver" Version="3.8.1" />
+        <PackageReference Include="SharpCompress" Version="0.48.1" />
+        <PackageReference Include="StackExchange.Redis" Version="2.13.1" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="../Destiny2Report.BungieClient/Destiny2Report.BungieClient.csproj" />
+    </ItemGroup>
+
+</Project>
