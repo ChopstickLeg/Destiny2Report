@@ -4,80 +4,96 @@ namespace Destiny2Report.API.Features.Crawler.Models;
 
 public record DestinyReport
 {
-    int PlatformId { get; init; }
-    long PlayerMembershipId { get; init; }
-    TimeSpan TotalPlaytime { get; set; }
-    Dictionary<string, TimeSpan> PlaytimeByClass { get; set; } = new();
-    Dictionary<string, TimeSpan> PlaytimeByActivity { get; set; } = new();
-    Dictionary<string, TimeSpan> PatrolTimeByPlanet { get; set; } = new();
-    long TotalKills { get; set; }
-    long TotalDeaths { get; set; }
-    double CrucibleKd { get; set; }
-    double CrucibleKda { get; set; }
-    double GambitKd { get; set; }
-    double GambitKda { get; set; }
-    int CrucibleMatchesPlayed { get; set; }
-    int GambitMatchesPlayed { get; set; }
-    int CrucibleWins { get; set; }
-    int GambitWins { get; set; }
-    DestinyPlayer CrucibleRival { get; set; }
-    DestinyPlayer GambitRival { get; set; }
-    double KdAgainstCrucibleRival { get; set; }
-    double KdAgainstGambitRival { get; set; }
-    int GambitMotesBanked { get; set; }
-    int GambitMotesLost { get; set; }
-    List<DestinyTriumphSeal> TriumphSeals { get; set; } = new();
-    int Misadventures { get; set; }
-    int ZeroKillActivities { get; set; }
-    TimeSpan NonActivityTime { get; set; }
-    List<ActivityCompletion> RaidCompletions { get; set; } = new();
-    List<ActivityCompletion> DungeonCompletions { get; set; } = new();
-    Dictionary<int, List<DestinyPlayer>> MostPlayedWith { get; set; } = new();
-    Dictionary<int, List<DestinyPlayer>> MostPlayedWithRaid { get; set; } = new();
-    int UniquePlayersPlayedWith { get; set; }
-    List<(DestinyPlayer Player, ActivityCompletion ActivityCompletion)> PlayersSherpaed { get; set; } = new();
-    List<WeaponReport> PvETopWeapons { get; set; } = new();
-    List<WeaponReport> CrucibleTopWeapons { get; set; } = new();
-    List<WeaponReport> GambitTopWeapons { get; set; } = new();
+    public int PlatformId { get; init; }
+    public long PlayerMembershipId { get; init; }
+    public DateTimeOffset CrawledAt { get; init; } = DateTimeOffset.UtcNow;
+    public TimeSpan TotalPlaytime { get; set; }
+    public Dictionary<string, TimeSpan> PlaytimeByClass { get; set; } = new();
+    public Dictionary<string, TimeSpan> PlaytimeByActivity { get; set; } = new();
+    public Dictionary<string, TimeSpan> PatrolTimeByPlanet { get; set; } = new();
+    public int GoodBoyProtocol { get; set; }
+    public int FishCaught { get; set; }
+    public long TotalKills { get; set; }
+    public long TotalDeaths { get; set; }
+    public double CrucibleKd { get; set; }
+    public double CrucibleKda { get; set; }
+    public double GambitKd { get; set; }
+    public double GambitKda { get; set; }
+    public int CrucibleMatchesPlayed { get; set; }
+    public int GambitMatchesPlayed { get; set; }
+    public int CrucibleWins { get; set; }
+    public int GambitWins { get; set; }
+    public DestinyPlayer? CrucibleRival { get; set; }
+    public DestinyPlayer? GambitRival { get; set; }
+    public double KdAgainstCrucibleRival { get; set; }
+    public double KdAgainstGambitRival { get; set; }
+    public int GambitMotesBanked { get; set; }
+    public int GambitMotesLost { get; set; }
+    public List<DestinyTriumphSeal> TriumphSeals { get; set; } = new();
+    public int Misadventures { get; set; }
+    public int ZeroKillActivities { get; set; }
+    public TimeSpan NonActivityTime { get; set; }
+    public List<ActivityCompletion> RaidCompletions { get; set; } = new();
+    public List<ActivityCompletion> DungeonCompletions { get; set; } = new();
+    public List<ActivityCompletion> DayOneRaidCompletions { get; set; } = new();
+    public List<ActivityCompletion> DayOneDungeonCompletions { get; set; } = new();
+    public ActivityCompletion? FirstRaidFlawless { get; set; }
+    public ActivityCompletion? FirstDungeonFlawless { get; set; }
+    public ActivityCompletion? FirstDungeonSoloFlawless { get; set; }
+    public Dictionary<int, List<DestinyPlayer>> MostPlayedWith { get; set; } = new();
+    public Dictionary<int, List<DestinyPlayer>> MostPlayedWithRaid { get; set; } = new();
+    public int UniquePlayersPlayedWith { get; set; }
+    public List<SherpaReport> PlayersSherpaed { get; set; } = new();
+    public List<WeaponReport> PvETopWeapons { get; set; } = new();
+    public List<WeaponReport> CrucibleTopWeapons { get; set; } = new();
+    public List<WeaponReport> GambitTopWeapons { get; set; } = new();
 }
 
 public record DestinyTriumphSeal
 {
-    string Name { get; init; }
-    string Description { get; init; }
-    string IconUrl { get; init; }
-    List<DestinyTriumph> Triumphs { get; init; } = new();
+    public string Name { get; init; } = "";
+    public string Description { get; init; } = "";
+    public string IconUrl { get; init; } = "";
+    public List<DestinyTriumph> Triumphs { get; init; } = new();
 }
 
 public record DestinyTriumph
 {
-    string Name { get; init; }
-    string Description { get; init; }
-    string IconUrl { get; init; }
-    int Points { get; init; }
-    bool IsCompleted { get; init; }
+    public string Name { get; init; } = "";
+    public string Description { get; init; } = "";
+    public string IconUrl { get; init; } = "";
+    public int Points { get; init; }
+    public bool IsCompleted { get; init; }
 }
 
 public record ActivityCompletion
 {
-    string RaidName { get; init; }
-    DateTime CompletionDate { get; init; }
-    bool? isContest { get; init; }
-    bool? IsDayOne { get; init; }
-    bool? isFlawless { get; init; }
+    public string RaidName { get; init; } = "";
+    public DateTime CompletionDate { get; init; }
+    public bool? IsContest { get; init; }
+    public bool? IsDayOne { get; init; }
+    public bool? IsFlawless { get; init; }
+    public bool? IsSolo { get; init; }
+    public long InstanceId { get; init; }
 }
 
 public record DestinyPlayer
 {
-    long MembershipId { get; init; }
-    int MembershipType { get; init; }
-    string DisplayName { get; init; }
-    string EmblemUrl { get; init; }
+    public long MembershipId { get; init; }
+    public int MembershipType { get; init; }
+    public string DisplayName { get; init; } = "";
+    public string EmblemUrl { get; init; } = "";
 }
 
 public record WeaponReport
 {
-    string Name { get; init; }
-    string IconUrl { get; init; }
-    int TotalKills { get; init; }
+    public string Name { get; init; } = "";
+    public string IconUrl { get; init; } = "";
+    public int TotalKills { get; init; }
+}
+
+public record SherpaReport
+{
+    public DestinyPlayer Player { get; init; } = new();
+    public ActivityCompletion ActivityCompletion { get; init; } = new();
 }

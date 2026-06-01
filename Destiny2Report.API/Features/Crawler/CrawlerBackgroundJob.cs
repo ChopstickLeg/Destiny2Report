@@ -1,9 +1,15 @@
+using Destiny2Report.API.Observability;
 using StackExchange.Redis;
+using System.Diagnostics;
+using System.Text.Json;
 
 namespace Destiny2Report.API.Features.Crawler;
 
 public class CrawlerBackgroundJob : BackgroundService
 {
+    private const int ReadBatchSize = 1;
+    private static readonly TimeSpan PendingMessageIdleTimeout = TimeSpan.FromMinutes(1);
+
     private readonly ILogger<CrawlerBackgroundJob> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly IConnectionMultiplexer _redis;
@@ -30,12 +36,23 @@ public class CrawlerBackgroundJob : BackgroundService
         {
             try
             {
+                var recoveredEntries = await ClaimStalePendingEntriesAsync(redisDatabase, stoppingToken).ConfigureAwait(false);
+                if (recoveredEntries.Length > 0)
+                {
+                    foreach (var entry in recoveredEntries)
+                    {
+                        await ProcessEntryAsync(redisDatabase, entry, stoppingToken).ConfigureAwait(false);
+                    }
+
+                    continue;
+                }
+
                 var entries = await redisDatabase.StreamReadGroupAsync(
                         CrawlerQueue.StreamName,
                         CrawlerQueue.ConsumerGroupName,
                         _consumerName,
                         ">",
-                        count: 1)
+                        count: ReadBatchSize)
                     .WaitAsync(stoppingToken)
                     .ConfigureAwait(false);
 
@@ -81,9 +98,31 @@ public class CrawlerBackgroundJob : BackgroundService
         }
     }
 
+    private async Task<StreamEntry[]> ClaimStalePendingEntriesAsync(IDatabase redisDatabase, CancellationToken stoppingToken)
+    {
+        var result = await redisDatabase.StreamAutoClaimAsync(
+                CrawlerQueue.StreamName,
+                CrawlerQueue.ConsumerGroupName,
+                _consumerName,
+                (long)PendingMessageIdleTimeout.TotalMilliseconds,
+                "0-0",
+                ReadBatchSize)
+            .WaitAsync(stoppingToken)
+            .ConfigureAwait(false);
+
+        if (result.ClaimedEntries.Length > 0)
+        {
+            _logger.LogInformation(
+                "Claimed {EntryCount} stale pending crawler stream entries.",
+                result.ClaimedEntries.Length);
+        }
+
+        return result.ClaimedEntries;
+    }
+
     private async Task ProcessEntryAsync(IDatabase redisDatabase, StreamEntry entry, CancellationToken stoppingToken)
     {
-        if (!TryReadCrawlerJob(entry, out var membershipTypeId, out var bungieMembershipId))
+        if (!TryReadCrawlerJob(entry, out var membershipTypeId, out var membershipId))
         {
             _logger.LogWarning("Acknowledging malformed crawler stream entry {EntryId}.", entry.Id);
             await redisDatabase.StreamAcknowledgeAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, entry.Id)
@@ -93,25 +132,88 @@ public class CrawlerBackgroundJob : BackgroundService
 
         using var scope = _serviceProvider.CreateScope();
         var crawlerService = scope.ServiceProvider.GetRequiredService<ICrawlerService>();
+        using var activity = AppTelemetry.ActivitySource.StartActivity("crawler.player.process", ActivityKind.Consumer);
 
-        await crawlerService.CrawlAsync(membershipTypeId, bungieMembershipId, stoppingToken).ConfigureAwait(false);
-        await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
+        activity?.SetTag("destiny.membership_type_id", membershipTypeId);
+        activity?.SetTag("destiny.membership_id", membershipId);
+        activity?.SetTag("messaging.system", "redis");
+        activity?.SetTag("messaging.destination.name", CrawlerQueue.StreamName);
+        activity?.SetTag("messaging.message.id", entry.Id.ToString());
+
+        await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "running", null)
             .ConfigureAwait(false);
+
+        try
+        {
+            await crawlerService.CrawlAsync(membershipTypeId, membershipId, stoppingToken).ConfigureAwait(false);
+            await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
+                .ConfigureAwait(false);
+            await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "completed", null)
+                .ConfigureAwait(false);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            throw;
+        }
 
         _logger.LogInformation("Completed crawler stream entry {EntryId}.", entry.Id);
     }
 
-    private static bool TryReadCrawlerJob(StreamEntry entry, out int membershipTypeId, out long bungieMembershipId)
+    private static async Task UpdateJobStatusAsync(
+        IDatabase redisDatabase,
+        int membershipTypeId,
+        long membershipId,
+        RedisValue streamEntryId,
+        string status,
+        string? error)
+    {
+        var updatedAtUtc = DateTimeOffset.UtcNow;
+        var statusKey = CrawlerQueue.JobStatusKey(membershipTypeId, membershipId);
+
+        await redisDatabase.HashSetAsync(
+                statusKey,
+                [
+                    new HashEntry("membershipTypeId", membershipTypeId),
+                    new HashEntry("membershipId", membershipId),
+                    new HashEntry("streamEntryId", streamEntryId),
+                    new HashEntry("status", status),
+                    new HashEntry("updatedAtUtc", updatedAtUtc.ToString("O")),
+                    new HashEntry("error", error ?? "")
+                ])
+            .ConfigureAwait(false);
+
+        if (status is "completed" or "failed")
+        {
+            await redisDatabase.KeyExpireAsync(statusKey, TimeSpan.FromHours(6)).ConfigureAwait(false);
+        }
+
+        var jobEvent = new
+        {
+            MembershipTypeId = membershipTypeId,
+            MembershipId = membershipId,
+            Status = status,
+            StreamEntryId = streamEntryId.ToString(),
+            Error = error,
+            UpdatedAtUtc = updatedAtUtc
+        };
+
+        await redisDatabase.PublishAsync(RedisChannel.Literal(CrawlerQueue.EventsChannelName), JsonSerializer.Serialize(jobEvent))
+            .ConfigureAwait(false);
+    }
+
+    private static bool TryReadCrawlerJob(StreamEntry entry, out int membershipTypeId, out long membershipId)
     {
         membershipTypeId = 0;
-        bungieMembershipId = 0;
+        membershipId = 0;
 
         var membershipTypeIdValue = entry.Values.FirstOrDefault(value => value.Name == "membershipTypeId").Value;
-        var bungieMembershipIdValue = entry.Values.FirstOrDefault(value => value.Name == "bungieMembershipId").Value;
+        var membershipIdValue = entry.Values.FirstOrDefault(value => value.Name == "membershipId").Value;
 
         return int.TryParse(membershipTypeIdValue.ToString(), out membershipTypeId)
-            && long.TryParse(bungieMembershipIdValue.ToString(), out bungieMembershipId)
+            && long.TryParse(membershipIdValue.ToString(), out membershipId)
             && membershipTypeId > 0
-            && bungieMembershipId > 0;
+            && membershipId > 0;
     }
 }
