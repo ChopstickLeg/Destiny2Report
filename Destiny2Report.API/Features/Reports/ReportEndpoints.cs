@@ -9,10 +9,6 @@ public static class ReportEndpoints
         var reports = api.MapGroup("/reports")
             .WithTags("Reports");
 
-        reports.MapGet("/{membershipId:long}/summary", ReportHandlers.GetSummary)
-            .WithName("GetReportSummary")
-            .WithSummary("Example read endpoint for a public Destiny report summary.");
-
         reports.MapGet("/{membershipTypeId:int}/{membershipId:long}", ReportHandlers.GetReport)
             .WithName("GetReport")
             .WithSummary("Returns a crawled Destiny player report from MongoDB.");

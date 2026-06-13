@@ -10,6 +10,7 @@ public partial class D2ReportClient
     {
         settings.ContractResolver = new BungieApiContractResolver();
         settings.Converters.Add(new BungieInt32Converter());
+        settings.Converters.Add(new BungieByteArrayConverter());
     }
 
     private sealed class BungieApiContractResolver : DefaultContractResolver
@@ -73,6 +74,48 @@ public partial class D2ReportClient
             return value is >= int.MinValue and <= int.MaxValue
                 ? (int)value
                 : unchecked((int)(uint)value);
+        }
+    }
+
+    private sealed class BungieByteArrayConverter : JsonConverter
+    {
+        public override bool CanConvert(Type objectType)
+        {
+            return objectType == typeof(byte[]);
+        }
+
+        public override object? ReadJson(
+            JsonReader reader,
+            Type objectType,
+            object? existingValue,
+            JsonSerializer serializer)
+        {
+            if (reader.TokenType is JsonToken.Null or JsonToken.Undefined)
+            {
+                return null;
+            }
+
+            var value = JToken.Load(reader);
+            return value.Type switch
+            {
+                JTokenType.Integer => [ToByte(value.Value<long>())],
+                JTokenType.String when byte.TryParse(value.Value<string>(), out var parsed) => [parsed],
+                JTokenType.String => Convert.FromBase64String(value.Value<string>() ?? ""),
+                JTokenType.Array => value.Values().Select(item => ToByte(item.Value<long>())).ToArray(),
+                _ => value.ToObject<byte[]>()
+            };
+        }
+
+        public override void WriteJson(JsonWriter writer, object? value, JsonSerializer serializer)
+        {
+            writer.WriteValue(value);
+        }
+
+        private static byte ToByte(long value)
+        {
+            return value is >= byte.MinValue and <= byte.MaxValue
+                ? (byte)value
+                : byte.MinValue;
         }
     }
 }

@@ -10,7 +10,12 @@ public static class BungieClientServiceCollectionExtensions
     {
         services.Configure<BungieClientOptions>(configuration.GetSection(BungieClientOptions.SectionName));
 
-        services.AddSingleton(new BungieClientRateLimitOptions());
+        var rateLimiterOptions = new BungieClientRateLimitOptions();
+
+        rateLimiterOptions.SetEndpointLimit("GET Platform/Destiny2/Stats/PostGameCarnageReport/{value}", 50);
+
+        services.AddSingleton(rateLimiterOptions);
+        services.AddTransient<BungieClientRetryHandler>();
         services.AddTransient<BungieClientRateLimitingHandler>();
 
         services.AddHttpClient<ID2ReportClient, D2ReportClient>((serviceProvider, httpClient) =>
@@ -23,6 +28,7 @@ public static class BungieClientServiceCollectionExtensions
                 }
             })
             .ConfigurePrimaryHttpMessageHandler(BungieClientHandlers.CreateRedirectHandler)
+            .AddHttpMessageHandler<BungieClientRetryHandler>()
             .AddHttpMessageHandler<BungieClientRateLimitingHandler>();
 
         return services;

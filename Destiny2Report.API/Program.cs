@@ -17,13 +17,18 @@ builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddBungieClient(builder.Configuration);
+builder.Services.Configure<ContestModeOptions>(builder.Configuration.GetSection(ContestModeOptions.SectionName));
+builder.Services.Configure<ActivityTriumphRecordOptions>(builder.Configuration.GetSection(ActivityTriumphRecordOptions.SectionName));
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = builder.Configuration.GetConnectionString("Redis")
         ?? throw new InvalidOperationException("ConnectionStrings:Redis is required.");
     options.InstanceName = "Destiny2Report:";
 });
-builder.Services.AddHybridCache();
+builder.Services.AddHybridCache(options =>
+{
+    options.MaximumPayloadBytes = 200 * 1024 * 1024; // 200 MB
+});
 builder.Services.AddScoped<ICrawlerService, CrawlerService>();
 builder.Services.AddHostedService<CrawlerBackgroundJob>();
 
@@ -106,16 +111,44 @@ static async Task EnsureMongoIndexesAsync(IServiceProvider serviceProvider)
 {
     var mongoDatabase = serviceProvider.GetRequiredService<IMongoDatabase>();
     var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
-    var indexKeys = Builders<DestinyReport>.IndexKeys
+    var reportIndexKeys = Builders<DestinyReport>.IndexKeys
         .Ascending(report => report.PlatformId)
         .Ascending(report => report.PlayerMembershipId);
-    var indexModel = new CreateIndexModel<DestinyReport>(
-        indexKeys,
+    var reportIndexModel = new CreateIndexModel<DestinyReport>(
+        reportIndexKeys,
         new CreateIndexOptions
         {
             Name = "ux_destiny_reports_platform_player",
             Unique = true
         });
 
-    await reports.Indexes.CreateOneAsync(indexModel);
+    await reports.Indexes.CreateOneAsync(reportIndexModel);
+
+    var encounters = mongoDatabase.GetCollection<PlayerEncounterAggregate>("player_encounters");
+    var encounterPairIndexKeys = Builders<PlayerEncounterAggregate>.IndexKeys
+        .Ascending(encounter => encounter.OwnerMembershipType)
+        .Ascending(encounter => encounter.OwnerMembershipId)
+        .Ascending(encounter => encounter.EncounteredMembershipType)
+        .Ascending(encounter => encounter.EncounteredMembershipId);
+    var encounterTopIndexKeys = Builders<PlayerEncounterAggregate>.IndexKeys
+        .Ascending(encounter => encounter.OwnerMembershipType)
+        .Ascending(encounter => encounter.OwnerMembershipId)
+        .Descending(encounter => encounter.Count);
+
+    await encounters.Indexes.CreateManyAsync(
+        [
+            new CreateIndexModel<PlayerEncounterAggregate>(
+                encounterPairIndexKeys,
+                new CreateIndexOptions
+                {
+                    Name = "ux_player_encounters_owner_encountered",
+                    Unique = true
+                }),
+            new CreateIndexModel<PlayerEncounterAggregate>(
+                encounterTopIndexKeys,
+                new CreateIndexOptions
+                {
+                    Name = "ix_player_encounters_owner_count"
+                })
+        ]);
 }

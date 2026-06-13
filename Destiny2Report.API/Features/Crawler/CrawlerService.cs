@@ -3,6 +3,7 @@ using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Options;
 using MongoDB.Driver;
 using Newtonsoft.Json.Linq;
 using System.Diagnostics;
@@ -16,20 +17,41 @@ public class CrawlerService(
     IMongoDatabase mongoDatabase,
     ID2ReportClient bungieClient,
     HybridCache cache,
-    IHttpClientFactory httpClientFactory) : ICrawlerService
+    IHttpClientFactory httpClientFactory,
+    IOptions<ContestModeOptions> contestModeOptions,
+    IOptions<ActivityTriumphRecordOptions> activityTriumphRecordOptions) : ICrawlerService
 {
     private const string BungieNetBaseUrl = "https://www.bungie.net";
     private const int GeneralStatsGroup = 1;
+    private const int BasicProfileComponent = 100;
+    private const int ProfileCharactersComponent = 200;
     private const int ProfileRecordsComponent = 900;
     private const int MetricsComponent = 1100;
     private const int PageSize = 250;
-    private const int MaxConcurrentPgcrRequests = 20;
+    private const int MaxConcurrentPgcrRequests = 45;
+    private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
 
     private static readonly int[] AccountStatGroups = [GeneralStatsGroup];
     private static readonly int[] ProfileComponents = [ProfileRecordsComponent, MetricsComponent];
+    private static readonly int[] ProfileCharactersComponents = [BasicProfileComponent, ProfileCharactersComponent];
     private static readonly int[] ModeStatGroups = [GeneralStatsGroup];
+    private static readonly long[] TriumphSealRootPresentationNodeHashes = [616318467, 1881970629];
     private static readonly TimeSpan ManifestCacheDuration = TimeSpan.FromDays(1);
-    private static readonly TimeSpan PgcrCacheDuration = TimeSpan.FromDays(1);
+    private static readonly HashSet<long> PrivateGambitActivityTypeHashes = [146907730, 2516284680];
+    private static readonly HashSet<long> PrivateCrucibleActivityTypeHashes = [4260058063];
+    private static readonly DateTimeOffset BeyondLightRelease = new(2020, 11, 10, 17, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset WitchQueenRelease = new(2022, 2, 22, 17, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset SeasonOfTheHauntedRelease = new(2022, 5, 24, 17, 0, 0, TimeSpan.Zero);
+    private static readonly HashSet<long> ScourgeOfThePastActivityHashes = [548750096, 2812525063];
+    private static readonly HashSet<long> LeviathanActivityHashes =
+    [
+        2693136600, 2693136601, 2693136602, 2693136603, 2693136604, 2693136605,
+        89727599, 287649202, 1699948563, 1875726950, 3916343513, 4039317196,
+        417231112, 508802457, 757116822, 771164842, 1685065161, 1800508819,
+        2449714930, 3446541099, 4206123728, 3912437239, 3879860661, 3857338478
+    ];
+    private readonly ContestModeLookup contestMode = ContestModeLookup.FromOptions(contestModeOptions.Value);
+    private readonly ActivityTriumphRecordOptions activityTriumphRecords = activityTriumphRecordOptions.Value;
 
     public async Task CrawlAsync(int platformId, long playerMembershipId, CancellationToken cancellationToken)
     {
@@ -74,9 +96,10 @@ public class CrawlerService(
             ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById);
             ApplyProfileStats(report, profile, manifest);
             ApplyModeStats(report, historicalStatsTask.Result);
-            await ApplyActivityDerivedStatsAsync(report, playerMembershipId, activityHistory, pgcrs, manifest, cancellationToken).ConfigureAwait(false);
-            ApplyWeaponStats(report, weaponHistoryTask.Result, manifest);
+            await ApplyActivityDerivedStatsAsync(report, platformId, playerMembershipId, activityHistory, pgcrs, manifest, cancellationToken).ConfigureAwait(false);
+            await ApplyWeaponStatsAsync(report, weaponHistoryTask.Result, manifest, cancellationToken).ConfigureAwait(false);
             ApplyTriumphSeals(report, profile, manifest);
+            ApplyActivityTriumphRecords(report, profile);
 
             var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, platformId)
                 & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
@@ -104,7 +127,7 @@ public class CrawlerService(
                 new HybridCacheEntryOptions
                 {
                     Expiration = ManifestCacheDuration,
-                    LocalCacheExpiration = TimeSpan.FromDays(30)
+                    LocalCacheExpiration = ManifestCacheDuration
                 },
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -126,7 +149,7 @@ public class CrawlerService(
                 new HybridCacheEntryOptions
                 {
                     Expiration = ManifestCacheDuration,
-                    LocalCacheExpiration = TimeSpan.FromDays(30)
+                    LocalCacheExpiration = ManifestCacheDuration
                 },
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -134,13 +157,73 @@ public class CrawlerService(
         return JObject.Parse(json);
     }
 
-    private static T EnsureSuccess<TResponse, T>(TResponse response, Func<TResponse, T> getPayload, string operation)
+    private async Task<WeaponDefinitionSummary?> GetInventoryItemSummaryAsync(
+        DestinyManifest manifest,
+        int itemHash,
+        CancellationToken cancellationToken)
     {
-        var errorCode = (int?)response?.GetType().GetProperty("ErrorCode")?.GetValue(response) ?? 0;
-        if (errorCode != 1)
+        try
         {
-            var message = (string?)response?.GetType().GetProperty("Message")?.GetValue(response);
-            throw new InvalidOperationException($"{operation} failed with Bungie error code {errorCode}: {message}");
+            var hashIdentifier = ToUnsignedHashIdentifier(itemHash);
+            var cacheKey = $"bungie:destiny2:manifest:{manifest.Version}:{InventoryItemDefinitionType}:{hashIdentifier}";
+            return await cache.GetOrCreateAsync(
+                    cacheKey,
+                    async ct =>
+                    {
+                        var operation = $"GetDestinyEntityDefinition:{InventoryItemDefinitionType}:{hashIdentifier}";
+                        var response = await bungieClient.Destiny2_GetDestinyEntityDefinitionAsync(
+                                InventoryItemDefinitionType,
+                                hashIdentifier,
+                                ct)
+                            .ConfigureAwait(false);
+                        var definition = EnsureSuccess(response, item => item.Response, operation);
+                        return ToWeaponDefinitionSummary(definition);
+                    },
+                    new HybridCacheEntryOptions
+                    {
+                        Expiration = ManifestCacheDuration,
+                        LocalCacheExpiration = ManifestCacheDuration
+                    },
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not resolve Destiny inventory item definition {ItemHash}.", itemHash);
+            return null;
+        }
+    }
+
+    private static string ToUnsignedHashIdentifier(int hash)
+    {
+        return unchecked((uint)hash).ToString();
+    }
+
+    private async Task<Dictionary<int, WeaponDefinitionSummary>> GetInventoryItemSummariesAsync(
+        DestinyManifest manifest,
+        IEnumerable<int> itemHashes,
+        CancellationToken cancellationToken)
+    {
+        var tasks = itemHashes
+            .Distinct()
+            .Select(async itemHash => new
+            {
+                ItemHash = itemHash,
+                Summary = await GetInventoryItemSummaryAsync(manifest, itemHash, cancellationToken).ConfigureAwait(false)
+            });
+
+        var summaries = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return summaries
+            .Where(item => item.Summary is not null)
+            .ToDictionary(item => item.ItemHash, item => item.Summary!);
+    }
+
+    private static T EnsureSuccess<TResponse, T>(TResponse response, Func<TResponse, T> getPayload, string operation)
+        where TResponse : BungieResponse
+    {
+        if (response.ErrorCode != 1)
+        {
+            throw new InvalidOperationException($"{operation} failed with Bungie error code {response.ErrorCode}: {response.Message}");
         }
 
         return getPayload(response) ?? throw new InvalidOperationException($"{operation} returned an empty response.");
@@ -272,19 +355,20 @@ public class CrawlerService(
 
         async Task<(long CharacterId, int Mode, IDictionary<string, DestinyHistoricalStatsByPeriod> Response)> FetchModeStatsAsync(long characterId, int mode)
         {
+            var operation = $"GetHistoricalStats:{characterId}:{mode}";
             var response = await bungieClient.Destiny2_GetHistoricalStatsAsync(
-                        characterId,
-                        null,
-                        null,
-                        playerMembershipId,
-                        ModeStatGroups,
-                        platformId,
-                        [mode],
-                        null,
-                        cancellationToken)
+                            characterId,
+                            null,
+                            null,
+                            playerMembershipId,
+                            ModeStatGroups,
+                            platformId,
+                            [mode],
+                            null,
+                            cancellationToken)
                 .ConfigureAwait(false);
 
-            return (characterId, mode, EnsureSuccess(response, item => item.Response, $"GetHistoricalStats:{characterId}:{mode}"));
+            return (characterId, mode, EnsureSuccess(response, item => item.Response, operation));
         }
     }
 
@@ -296,10 +380,11 @@ public class CrawlerService(
     {
         var tasks = characterIds.Select(async characterId =>
         {
+            var operation = $"GetUniqueWeaponHistory:{characterId}";
             var response = await bungieClient.Destiny2_GetUniqueWeaponHistoryAsync(characterId, playerMembershipId, platformId, cancellationToken)
                 .ConfigureAwait(false);
 
-            return (characterId, Weapons: EnsureSuccess(response, item => item.Response, $"GetUniqueWeaponHistory:{characterId}").Weapons ?? []);
+            return (characterId, Weapons: EnsureSuccess(response, item => item.Response, operation).Weapons ?? []);
         });
 
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -324,10 +409,11 @@ public class CrawlerService(
             var page = 0;
             while (!cancellationToken.IsCancellationRequested)
             {
+                var operation = $"GetActivityHistory:{characterId}:{page}";
                 var response = await bungieClient.Destiny2_GetActivityHistoryAsync(characterId, PageSize, playerMembershipId, platformId, null, page, cancellationToken)
                     .ConfigureAwait(false);
 
-                var payload = EnsureSuccess(response, item => item.Response, $"GetActivityHistory:{characterId}:{page}");
+                var payload = EnsureSuccess(response, item => item.Response, operation);
                 var activities = payload.Activities?.ToArray() ?? [];
                 if (activities.Length == 0)
                 {
@@ -366,22 +452,10 @@ public class CrawlerService(
             await throttler.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var pgcr = await cache.GetOrCreateAsync(
-                        $"bungie:destiny2:pgcr:{activityId}",
-                        async ct =>
-                        {
-                            var response = await bungieClient.Destiny2_GetPostGameCarnageReportAsync(activityId, ct)
-                                .ConfigureAwait(false);
-
-                            return EnsureSuccess(response, item => item.Response, $"GetPostGameCarnageReport:{activityId}");
-                        },
-                        new HybridCacheEntryOptions
-                        {
-                            Expiration = PgcrCacheDuration,
-                            LocalCacheExpiration = TimeSpan.FromDays(7)
-                        },
-                        cancellationToken: cancellationToken)
+                var operation = $"GetPostGameCarnageReport:{activityId}";
+                var response = await bungieClient.Destiny2_GetPostGameCarnageReportAsync(activityId, cancellationToken)
                     .ConfigureAwait(false);
+                var pgcr = EnsureSuccess(response, item => item.Response, operation);
 
                 results.TryAdd(activityId, pgcr);
             }
@@ -401,11 +475,10 @@ public class CrawlerService(
         IEnumerable<DestinyHistoricalStatsPerCharacter> historicalCharacters,
         IReadOnlyDictionary<long, string> characterClassById)
     {
-        var allTime = accountStats.MergedAllCharacters?.Merged?.AllTime;
-        report.TotalPlaytime = TimeSpan.FromSeconds(GetStat(allTime, "secondsPlayed"));
-        report.TotalKills = (long)GetStat(allTime, "kills");
-        report.TotalDeaths = (long)GetStat(allTime, "deaths");
-        report.Misadventures = (int)GetStat(allTime, "suicides");
+        report.TotalPlaytime = TimeSpan.FromSeconds(accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("secondsPlayed", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0)));
+        report.TotalKills = (long)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("kills", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
+        report.TotalDeaths = (long)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("deaths", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
+        report.Misadventures = (int)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("suicides", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
 
         report.PlaytimeByClass = BuildPlaytimeByClass(historicalCharacters, characterClassById);
     }
@@ -418,11 +491,11 @@ public class CrawlerService(
             return;
         }
 
-        report.GoodBoyProtocol = GetMetricProgress(metrics, manifest.FindMetricHash("Good Boy Protocol", "Archie"));
-        report.FishCaught = GetMetricProgress(metrics, manifest.FindMetricHash("fish", "caught"));
+        report.GoodBoyProtocol = GetMetricProgress(metrics, manifest.FindMetricHash("Good Boy Protocol"));
+        report.FishCaught = GetMetricProgress(metrics, manifest.FindMetricHash("Total Fish Caught"));
     }
 
-    private static int GetMetricProgress(IDictionary<string, DestinyMetricComponent> metrics, int? metricHash)
+    private static int GetMetricProgress(IDictionary<string, DestinyMetricComponent> metrics, uint? metricHash)
     {
         return metricHash is not null && metrics.TryGetValue(metricHash.Value.ToString(), out var metric)
             ? metric.ObjectiveProgress?.Progress ?? 0
@@ -454,6 +527,7 @@ public class CrawlerService(
 
     private async Task ApplyActivityDerivedStatsAsync(
         DestinyReport report,
+        int platformId,
         long playerMembershipId,
         IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activityHistory,
         IReadOnlyDictionary<long, DestinyPostGameCarnageReportData> pgcrs,
@@ -462,11 +536,17 @@ public class CrawlerService(
     {
         var activityDefinitions = await manifest.GetTableAsync("DestinyActivityDefinition", cancellationToken).ConfigureAwait(false);
         var destinationDefinitions = await manifest.GetTableAsync("DestinyDestinationDefinition", cancellationToken).ConfigureAwait(false);
-        var modifierDefinitions = await manifest.GetTableAsync("DestinyActivityModifierDefinition", cancellationToken).ConfigureAwait(false);
-        var inventoryDefinitions = await manifest.GetTableAsync("DestinyInventoryItemDefinition", cancellationToken).ConfigureAwait(false);
 
         ApplyPatrolTime(report, activityHistory.Where(activity => IncludesMode(activity, ActivityModes.Patrol)), activityDefinitions, destinationDefinitions);
-        ApplyPgcrAggregates(report, playerMembershipId, pgcrs, activityDefinitions, modifierDefinitions, inventoryDefinitions);
+        await ApplyPgcrAggregatesAsync(
+                report,
+                platformId,
+                playerMembershipId,
+                pgcrs,
+                activityDefinitions,
+                manifest,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static void ApplyPatrolTime(
@@ -479,7 +559,7 @@ public class CrawlerService(
         {
             var activityDefinition = GetDefinition(activityDefinitions, activity.ActivityDetails.ReferenceId)
                 ?? GetDefinition(activityDefinitions, activity.ActivityDetails.DirectorActivityHash);
-            var destinationHash = activityDefinition?["destinationHash"]?.Value<int>() ?? 0;
+            var destinationHash = activityDefinition?["destinationHash"]?.Value<long>() ?? 0;
             var destination = GetDefinition(destinationDefinitions, destinationHash);
             var destinationName = destination?["displayProperties"]?["name"]?.Value<string>();
             if (string.IsNullOrWhiteSpace(destinationName))
@@ -497,23 +577,25 @@ public class CrawlerService(
         }
     }
 
-    private static void ApplyPgcrAggregates(
+    private async Task ApplyPgcrAggregatesAsync(
         DestinyReport report,
+        int platformId,
         long playerMembershipId,
         IReadOnlyDictionary<long, DestinyPostGameCarnageReportData> pgcrs,
         JObject activityDefinitions,
-        JObject modifierDefinitions,
-        JObject inventoryDefinitions)
+        ManifestContext manifest,
+        CancellationToken cancellationToken)
     {
         var allPgcrs = pgcrs.Values.OrderBy(pgcr => pgcr.Period).ToArray();
-        var uniquePlayers = new Dictionary<long, ReportPlayer>();
-        var teammateCombos = new Dictionary<string, (int Count, List<ReportPlayer> Players)>(StringComparer.Ordinal);
-        var raidTeammateCombos = new Dictionary<string, (int Count, List<ReportPlayer> Players)>(StringComparer.Ordinal);
+        var playerEncounterIncrements = new Dictionary<(int MembershipType, long MembershipId), int>();
         var pvpOpponents = new Dictionary<long, RivalAggregate>();
         var gambitOpponents = new Dictionary<long, RivalAggregate>();
         var pveWeapons = new Dictionary<int, int>();
         var pvpWeapons = new Dictionary<int, int>();
         var gambitWeapons = new Dictionary<int, int>();
+        var raidCompletions = new Dictionary<string, ActivityCompletionAggregate>(StringComparer.OrdinalIgnoreCase);
+        var dungeonCompletions = new Dictionary<string, ActivityCompletionAggregate>(StringComparer.OrdinalIgnoreCase);
+        var activityTime = new TimeSpan();
 
         foreach (var pgcr in allPgcrs)
         {
@@ -536,86 +618,59 @@ public class CrawlerService(
             var isDungeon = IncludesMode(pgcr, ActivityModes.Dungeon);
             var isPvp = IncludesMode(pgcr, ActivityModes.AllPvP);
             var isGambit = IncludesMode(pgcr, ActivityModes.Gambit) || IncludesMode(pgcr, ActivityModes.GambitPrime);
-            var isFlawless = playerCompleted && playerDeaths <= 0 && (pgcr.ActivityWasStartedFromBeginning ?? true);
-            var isSolo = pgcr.Entries?.Select(entry => entry.Player?.DestinyUserInfo?.MembershipId).Where(id => id > 0).Distinct().Count() == 1;
-            var isContest = IsContest(pgcr, modifierDefinitions);
-            var isDayOne = IsDayOne(pgcr, activityDefinitions);
-
-            var completion = new ActivityCompletion
-            {
-                RaidName = activityName,
-                CompletionDate = pgcr.Period.UtcDateTime,
-                IsContest = isContest,
-                IsDayOne = isDayOne,
-                IsFlawless = isFlawless,
-                IsSolo = isSolo,
-                InstanceId = pgcr.ActivityDetails.InstanceId
-            };
+            var isPrivateCrucible = isPvp && HasActivityTypeHash(pgcr, activityDefinitions, PrivateCrucibleActivityTypeHashes);
+            var isPrivateGambit = isGambit && HasActivityTypeHash(pgcr, activityDefinitions, PrivateGambitActivityTypeHashes);
+            var activityPlayerEntries = GetActivityPlayerEntries(pgcr);
+            var activityWasStartedFromBeginning = GetActivityWasStartedFromBeginning(pgcr, activityPlayerEntries);
+            var wasStartedFromBeginning = activityWasStartedFromBeginning == true;
+            var isFlawless = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && activityPlayerEntries.Length > 0 && activityPlayerEntries.All(entry => GetStat(entry.Values, "deaths") <= 0);
+            var isSolo = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && activityPlayerEntries.Select(entry => entry.Player?.DestinyUserInfo?.MembershipId).Distinct().Count() == 1;
+            var activityCompletedAt = GetActivityCompletedAt(pgcr, playerEntry);
+            var isContest = IsContest(pgcr, activityCompletedAt, isRaid, isDungeon);
+            var isSoloFlawless = isSolo && isFlawless;
+            activityTime += TimeSpan.FromSeconds(GetStat(playerEntry.Values, "activityDurationSeconds"));
 
             if (playerCompleted && isRaid)
             {
-                report.RaidCompletions.Add(completion);
-                if (isDayOne)
-                {
-                    report.DayOneRaidCompletions.Add(completion);
-                }
-
-                if (isFlawless && report.FirstRaidFlawless is null)
-                {
-                    report.FirstRaidFlawless = completion;
-                }
+                AddCompletion(raidCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
             }
 
             if (playerCompleted && isDungeon)
             {
-                report.DungeonCompletions.Add(completion);
-                if (isDayOne)
-                {
-                    report.DayOneDungeonCompletions.Add(completion);
-                }
-
-                if (isFlawless && report.FirstDungeonFlawless is null)
-                {
-                    report.FirstDungeonFlawless = completion;
-                }
-
-                if (isFlawless && isSolo && report.FirstDungeonSoloFlawless is null)
-                {
-                    report.FirstDungeonSoloFlawless = completion;
-                }
+                AddCompletion(dungeonCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
             }
 
             var otherPlayers = (pgcr.Entries ?? [])
                 .Where(entry => entry.Player?.DestinyUserInfo?.MembershipId is > 0)
                 .Where(entry => entry.Player.DestinyUserInfo.MembershipId != playerMembershipId)
-                .Select(entry => ToReportPlayer(entry.Player, entry.Player.EmblemHash))
-                .GroupBy(player => player.MembershipId)
+                .Select(entry => entry.Player.DestinyUserInfo)
+                .GroupBy(player => (player.MembershipType, player.MembershipId))
                 .Select(group => group.First())
                 .ToArray();
 
             foreach (var otherPlayer in otherPlayers)
             {
-                uniquePlayers.TryAdd(otherPlayer.MembershipId, otherPlayer);
-            }
-
-            TrackCombos(teammateCombos, otherPlayers, 3);
-            TrackCombos(teammateCombos, otherPlayers, 6);
-            if (isRaid)
-            {
-                TrackCombos(raidTeammateCombos, otherPlayers, 6);
+                var key = (otherPlayer.MembershipType, otherPlayer.MembershipId);
+                playerEncounterIncrements[key] = playerEncounterIncrements.GetValueOrDefault(key) + 1;
             }
 
             if (isPvp)
             {
-                TrackRivals(pvpOpponents, pgcr, playerEntry, otherPlayers, playerKills, playerDeaths);
-                AddWeapons(pvpWeapons, playerEntry);
+                if (!isPrivateCrucible)
+                {
+                    TrackRivals(pvpOpponents, pgcr, playerEntry, playerMembershipId, playerKills, playerDeaths);
+                    AddWeapons(pvpWeapons, playerEntry);
+                }               
             }
             else if (isGambit)
             {
-                TrackRivals(gambitOpponents, pgcr, playerEntry, otherPlayers, playerKills, playerDeaths);
-                AddWeapons(gambitWeapons, playerEntry);
-                report.GambitMotesBanked += (int)GetMoteStat(playerEntry, "bank", "deposit");
-                report.GambitMotesLost += (int)GetMoteStat(playerEntry, "lost");
+                if (!isPrivateGambit)
+                {
+                    TrackRivals(gambitOpponents, pgcr, playerEntry, playerMembershipId, playerKills, playerDeaths);
+                    AddWeapons(gambitWeapons, playerEntry);
+                    report.GambitMotesBanked += (int)GetMoteStat(playerEntry, "bank", "deposit");
+                    report.GambitMotesLost += (int)GetMoteStat(playerEntry, "lost");
+                }
             }
             else
             {
@@ -623,23 +678,109 @@ public class CrawlerService(
             }
         }
 
-        report.UniquePlayersPlayedWith = uniquePlayers.Count;
-        report.MostPlayedWith[3] = TopCombo(teammateCombos, 3);
-        report.MostPlayedWith[6] = TopCombo(teammateCombos, 6);
-        report.MostPlayedWithRaid[6] = TopCombo(raidTeammateCombos, 6);
+        report.RaidCompletions = ToCompletionSummaries(raidCompletions);
+        report.DungeonCompletions = ToCompletionSummaries(dungeonCompletions);
+        await ApplyPlayerEncounterIncrementsAsync(
+                report,
+                platformId,
+                playerMembershipId,
+                playerEncounterIncrements,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         ApplyRival(report, pvpOpponents, isGambit: false);
         ApplyRival(report, gambitOpponents, isGambit: true);
 
-        report.PvETopWeapons = BuildWeaponReports(pveWeapons, inventoryDefinitions);
-        report.CrucibleTopWeapons = BuildWeaponReports(pvpWeapons, inventoryDefinitions);
-        report.GambitTopWeapons = BuildWeaponReports(gambitWeapons, inventoryDefinitions);
+        var weaponDefinitions = await GetInventoryItemSummariesAsync(
+                manifest.Manifest,
+                TopWeaponHashes(pveWeapons).Concat(TopWeaponHashes(pvpWeapons)).Concat(TopWeaponHashes(gambitWeapons)),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        report.PvETopWeapons = BuildWeaponReports(pveWeapons, weaponDefinitions);
+        report.CrucibleTopWeapons = BuildWeaponReports(pvpWeapons, weaponDefinitions);
+        report.GambitTopWeapons = BuildWeaponReports(gambitWeapons, weaponDefinitions);
+
+        report.TotalActivityTime = activityTime;
     }
 
-    private static void ApplyWeaponStats(
+    private async Task ApplyPlayerEncounterIncrementsAsync(
+        DestinyReport report,
+        int ownerMembershipType,
+        long ownerMembershipId,
+        IReadOnlyDictionary<(int MembershipType, long MembershipId), int> encounterIncrements,
+        CancellationToken cancellationToken)
+    {
+        var encounters = mongoDatabase.GetCollection<PlayerEncounterAggregate>("player_encounters");
+        if (encounterIncrements.Count > 0)
+        {
+            var updates = encounterIncrements
+                .Where(item => item.Key.MembershipType > 0 && item.Key.MembershipId > 0 && item.Value > 0)
+                .Select(item =>
+                {
+                    var filter = Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.OwnerMembershipType, ownerMembershipType)
+                        & Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.OwnerMembershipId, ownerMembershipId)
+                        & Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.EncounteredMembershipType, item.Key.MembershipType)
+                        & Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.EncounteredMembershipId, item.Key.MembershipId);
+                    var update = Builders<PlayerEncounterAggregate>.Update.Inc(encounter => encounter.Count, item.Value);
+
+                    return new UpdateOneModel<PlayerEncounterAggregate>(filter, update)
+                    {
+                        IsUpsert = true
+                    };
+                })
+                .Cast<WriteModel<PlayerEncounterAggregate>>()
+                .ToArray();
+
+            if (updates.Length > 0)
+            {
+                await encounters.BulkWriteAsync(updates, new BulkWriteOptions { IsOrdered = false }, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        var ownerFilter = Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.OwnerMembershipType, ownerMembershipType)
+            & Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.OwnerMembershipId, ownerMembershipId)
+            & Builders<PlayerEncounterAggregate>.Filter.Gt(encounter => encounter.EncounteredMembershipType, 0)
+            & Builders<PlayerEncounterAggregate>.Filter.Gt(encounter => encounter.EncounteredMembershipId, 0);
+        var uniquePlayers = await encounters.CountDocumentsAsync(ownerFilter, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        var mostPlayedWith = await encounters
+            .Find(ownerFilter)
+            .SortByDescending(encounter => encounter.Count)
+            .Limit(DestinyReport.MostPlayedWithLimit)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var populateMostPlayedWithTasks = mostPlayedWith
+            .Select(async encounter =>
+            {
+                return await GetPlayerInfoAsync(encounter, cancellationToken).ConfigureAwait(false);
+            })
+            .ToArray();
+        var mostPlayedWithInfo = await Task.WhenAll(populateMostPlayedWithTasks).ConfigureAwait(false);
+
+        report.UniquePlayersPlayedWith = uniquePlayers > int.MaxValue ? int.MaxValue : (int)uniquePlayers;
+        var mostPlayedWithInfoByMembershipId = mostPlayedWithInfo.ToDictionary(player => (player.MembershipType, player.MembershipId));
+        report.MostPlayedWith = mostPlayedWith
+            .Select(encounter => new PlayerEncounterReport
+            {
+                Player = mostPlayedWithInfoByMembershipId.GetValueOrDefault((encounter.EncounteredMembershipType, encounter.EncounteredMembershipId))
+                    ?? new ReportPlayer
+                    {
+                        MembershipId = encounter.EncounteredMembershipId,
+                        MembershipType = encounter.EncounteredMembershipType
+                    },
+                EncounterCount = encounter.Count
+            })
+            .ToList();
+    }
+
+    private async Task ApplyWeaponStatsAsync(
         DestinyReport report,
         IReadOnlyDictionary<long, ICollection<DestinyHistoricalWeaponStats>> uniqueWeaponHistory,
-        ManifestContext manifest)
+        ManifestContext manifest,
+        CancellationToken cancellationToken)
     {
         var fallback = uniqueWeaponHistory.Values
             .SelectMany(weapons => weapons)
@@ -648,71 +789,181 @@ public class CrawlerService(
 
         if (report.PvETopWeapons.Count == 0)
         {
-            report.PvETopWeapons = BuildWeaponReports(fallback, manifest.InventoryItems);
+            var weaponDefinitions = await GetInventoryItemSummariesAsync(manifest.Manifest, TopWeaponHashes(fallback), cancellationToken)
+                .ConfigureAwait(false);
+
+            report.PvETopWeapons = BuildWeaponReports(fallback, weaponDefinitions);
         }
     }
 
     private static void ApplyTriumphSeals(DestinyReport report, DestinyProfileResponse profile, ManifestContext manifest)
     {
         var profileRecords = profile.ProfileRecords?.Data;
-        if (profileRecords?.Records is null || profileRecords.RecordSealsRootNodeHash == 0)
+        if (profileRecords?.Records is null)
         {
             return;
         }
 
-        var root = GetDefinition(manifest.PresentationNodes, profileRecords.RecordSealsRootNodeHash);
-        var sealHashes = root?["children"]?["presentationNodes"]?
-            .Select(node => node["presentationNodeHash"]?.Value<int>() ?? 0)
-            .Where(hash => hash > 0)
-            .ToArray() ?? [];
-
-        foreach (var sealHash in sealHashes)
+        var seenCompletionRecordHashes = new HashSet<long>();
+        foreach (var sealPresentationNodeHash in GetSealPresentationNodeHashes(manifest.PresentationNodes))
         {
-            var sealNode = GetDefinition(manifest.PresentationNodes, sealHash);
-            if (sealNode is null)
+            var sealNode = GetDefinition(manifest.PresentationNodes, sealPresentationNodeHash);
+            var completionRecordHash = sealNode?["completionRecordHash"]?.Value<long>() ?? 0;
+            if (completionRecordHash <= 0 || !seenCompletionRecordHashes.Add(completionRecordHash))
             {
                 continue;
             }
 
-            var triumphs = sealNode["children"]?["records"]?
-                .Select(record => record["recordHash"]?.Value<int>() ?? 0)
-                .Where(hash => hash > 0)
-                .Select(recordHash => BuildTriumph(recordHash, profileRecords.Records, manifest.Records))
-                .OfType<DestinyTriumph>()
-                .ToList() ?? [];
+            var definition = GetDefinition(manifest.Records, completionRecordHash);
+            if (definition is null)
+            {
+                continue;
+            }
+
+            TryGetProfileRecord(profileRecords.Records, completionRecordHash, out var component);
+            if (component is null || !IsRecordCompleted(component))
+            {
+                continue;
+            }
 
             report.TriumphSeals.Add(new DestinyTriumphSeal
             {
-                Name = sealNode["displayProperties"]?["name"]?.Value<string>() ?? "",
-                Description = sealNode["displayProperties"]?["description"]?.Value<string>() ?? "",
-                IconUrl = BungieUrl(sealNode["displayProperties"]?["icon"]?.Value<string>()),
-                Triumphs = triumphs
+                Name = definition["displayProperties"]?["name"]?.Value<string>() ?? "",
+                Description = definition["displayProperties"]?["description"]?.Value<string>() ?? "",
+                IconUrl = BungieUrl(sealNode?["displayProperties"]?["icon"]?.Value<string>()),
+                IsCompleted = true
             });
         }
     }
 
-    private static DestinyTriumph? BuildTriumph(
-        int recordHash,
-        IDictionary<string, DestinyRecordComponent> profileRecords,
-        JObject recordDefinitions)
+    private void ApplyActivityTriumphRecords(DestinyReport report, DestinyProfileResponse profile)
     {
-        var definition = GetDefinition(recordDefinitions, recordHash);
-        if (definition is null)
+        var profileRecords = profile.ProfileRecords?.Data;
+        if (profileRecords?.Records is null)
         {
-            return null;
+            return;
         }
 
-        profileRecords.TryGetValue(recordHash.ToString(), out var component);
-        var isCompleted = component?.CompletedCount > 0 || (component is not null && (component.State & 4) == 0);
-
-        return new DestinyTriumph
+        foreach (var raid in activityTriumphRecords.Raids)
         {
-            Name = definition["displayProperties"]?["name"]?.Value<string>() ?? "",
-            Description = definition["displayProperties"]?["description"]?.Value<string>() ?? "",
-            IconUrl = BungieUrl(definition["displayProperties"]?["icon"]?.Value<string>()),
-            Points = definition["completionInfo"]?["ScoreValue"]?.Value<int>() ?? definition["completionInfo"]?["scoreValue"]?.Value<int>() ?? 0,
-            IsCompleted = isCompleted
-        };
+            var flawlessClear = IsProfileRecordCompleted(profileRecords.Records, raid.RecordId);
+            if (!flawlessClear)
+            {
+                continue;
+            }
+
+            UpdateActivityCompletionSummary(
+                report.RaidCompletions,
+                raid.ActivityName,
+                summary => summary with { FlawlessClear = true });
+        }
+
+        foreach (var dungeon in activityTriumphRecords.Dungeons)
+        {
+            var soloClear = IsProfileRecordCompleted(profileRecords.Records, dungeon.SoloRecordId);
+            var flawlessClear = IsProfileRecordCompleted(profileRecords.Records, dungeon.FlawlessRecordId);
+            var soloFlawlessClear = IsProfileRecordCompleted(profileRecords.Records, dungeon.SoloFlawlessRecordId);
+            if (!soloClear && !flawlessClear && !soloFlawlessClear)
+            {
+                continue;
+            }
+
+            UpdateActivityCompletionSummary(
+                report.DungeonCompletions,
+                dungeon.ActivityName,
+                summary => summary with
+                {
+                    SoloClear = summary.SoloClear || soloClear || soloFlawlessClear,
+                    FlawlessClear = summary.FlawlessClear || flawlessClear || soloFlawlessClear,
+                    SoloFlawlessClear = summary.SoloFlawlessClear || soloFlawlessClear
+                });
+        }
+    }
+
+    private static bool IsProfileRecordCompleted(
+        IDictionary<string, DestinyRecordComponent> profileRecords,
+        long recordHash)
+    {
+        return recordHash > 0
+            && TryGetProfileRecord(profileRecords, recordHash, out var component)
+            && component is not null
+            && IsRecordCompleted(component);
+    }
+
+    private static void UpdateActivityCompletionSummary(
+        IList<ActivityCompletionSummary> completions,
+        string activityName,
+        Func<ActivityCompletionSummary, ActivityCompletionSummary> update)
+    {
+        if (string.IsNullOrWhiteSpace(activityName))
+        {
+            return;
+        }
+
+        var normalizedName = ContestModeLookup.NormalizeActivityName(activityName);
+        for (var i = 0; i < completions.Count; i++)
+        {
+            if (!string.Equals(completions[i].ActivityName, normalizedName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            completions[i] = update(completions[i]);
+            return;
+        }
+    }
+
+    private static IEnumerable<long> GetSealPresentationNodeHashes(JObject presentationNodes)
+    {
+        return TriumphSealRootPresentationNodeHashes
+            .Select(rootHash => GetDefinition(presentationNodes, rootHash))
+            .SelectMany(GetChildPresentationNodeHashes);
+    }
+
+    private static IEnumerable<long> GetChildPresentationNodeHashes(JObject? presentationNode)
+    {
+        return presentationNode?["children"]?["presentationNodes"]?
+            .OrderBy(node => node["nodeDisplayPriority"]?.Value<int>() ?? int.MaxValue)
+            .Select(node => node["presentationNodeHash"]?.Value<long>() ?? 0)
+            .Where(hash => hash > 0) ?? [];
+    }
+
+    private static bool IsRecordCompleted(DestinyRecordComponent component)
+    {
+        const int objectiveNotCompleted = 4;
+        return component.CompletedCount > 0 || (component.State & objectiveNotCompleted) == 0;
+    }
+
+    private static bool TryGetProfileRecord(
+        IDictionary<string, DestinyRecordComponent> profileRecords,
+        long recordHash,
+        out DestinyRecordComponent? component)
+    {
+        return TryGetHashValue(profileRecords, recordHash, out component);
+    }
+
+    private static bool TryGetHashValue<T>(
+        IDictionary<string, T> values,
+        long hash,
+        out T? value)
+    {
+        if (values.TryGetValue(hash.ToString(), out value))
+        {
+            return true;
+        }
+
+        if (hash is >= int.MinValue and <= int.MaxValue)
+        {
+            return values.TryGetValue(unchecked((uint)(int)hash).ToString(), out value);
+        }
+
+        if (hash is > int.MaxValue and <= uint.MaxValue)
+        {
+            return values.TryGetValue(unchecked((int)(uint)hash).ToString(), out value);
+        }
+
+        value = default;
+        return false;
     }
 
     private static double SumModeStat(
@@ -830,42 +1081,185 @@ public class CrawlerService(
         return activity.ActivityDetails.Mode == mode || (activity.ActivityDetails.Modes?.Contains(mode) ?? false);
     }
 
+    private static bool HasActivityTypeHash(
+        DestinyPostGameCarnageReportData pgcr,
+        JObject activityDefinitions,
+        IReadOnlySet<long> activityTypeHashes)
+    {
+        var definition = GetDefinition(activityDefinitions, pgcr.ActivityDetails.ReferenceId)
+            ?? GetDefinition(activityDefinitions, pgcr.ActivityDetails.DirectorActivityHash);
+        var activityTypeHash = definition?["activityTypeHash"]?.Value<long>() ?? 0;
+        return activityTypeHashes.Contains(activityTypeHash);
+    }
+
+    private static bool? GetActivityWasStartedFromBeginning(
+        DestinyPostGameCarnageReportData pgcr,
+        IReadOnlyCollection<DestinyPostGameCarnageReportEntry> activityPlayerEntries)
+    {
+        if (pgcr.Period >= SeasonOfTheHauntedRelease)
+        {
+            return pgcr.ActivityWasStartedFromBeginning;
+        }
+
+        if (pgcr.Period < BeyondLightRelease)
+        {
+            if (pgcr.StartingPhaseIndex is not { } startingPhaseIndex)
+            {
+                return null;
+            }
+
+            var activityHash = ToUnsignedHash(pgcr.ActivityDetails.DirectorActivityHash);
+            if (ScourgeOfThePastActivityHashes.Contains(activityHash))
+            {
+                return startingPhaseIndex <= 1;
+            }
+
+            if (LeviathanActivityHashes.Contains(activityHash))
+            {
+                return startingPhaseIndex is 0 or 2;
+            }
+
+            return startingPhaseIndex == 0;
+        }
+
+        if (pgcr.Period >= WitchQueenRelease)
+        {
+            var deathless = activityPlayerEntries.Count > 0
+                && activityPlayerEntries.All(entry => GetStat(entry.Values, "deaths") <= 0);
+            if (pgcr.ActivityWasStartedFromBeginning == true || deathless)
+            {
+                return pgcr.ActivityWasStartedFromBeginning;
+            }
+        }
+
+        return null;
+    }
+
     private static string ActivityName(JObject definitions, int referenceId, int directorActivityHash)
     {
         var definition = GetDefinition(definitions, referenceId) ?? GetDefinition(definitions, directorActivityHash);
         return definition?["displayProperties"]?["name"]?.Value<string>() ?? referenceId.ToString();
     }
 
-    private static JObject? GetDefinition(JObject table, int hash)
+    private static long ToUnsignedHash(int hash)
     {
-        return table[hash.ToString()] as JObject;
+        return unchecked((uint)hash);
     }
 
-    private static bool IsContest(DestinyPostGameCarnageReportData pgcr, JObject modifierDefinitions)
+    private static JObject? GetDefinition(JObject table, long hash)
     {
-        return pgcr.SelectedSkullHashes?.Any(hash =>
+        if (table[hash.ToString()] is JObject definition)
         {
-            var modifier = GetDefinition(modifierDefinitions, hash);
-            var name = modifier?["displayProperties"]?["name"]?.Value<string>() ?? "";
-            return name.Contains("Contest", StringComparison.OrdinalIgnoreCase);
-        }) == true;
+            return definition;
+        }
+
+        if (hash is >= int.MinValue and <= int.MaxValue)
+        {
+            var unsignedHash = unchecked((uint)(int)hash).ToString();
+            if (table[unsignedHash] is JObject unsignedDefinition)
+            {
+                return unsignedDefinition;
+            }
+        }
+
+        if (hash is > int.MaxValue and <= uint.MaxValue)
+        {
+            var signedHash = unchecked((int)(uint)hash).ToString();
+            if (table[signedHash] is JObject signedDefinition)
+            {
+                return signedDefinition;
+            }
+        }
+
+        return null;
     }
 
-    private static bool IsDayOne(DestinyPostGameCarnageReportData pgcr, JObject activityDefinitions)
+    private bool IsContest(
+        DestinyPostGameCarnageReportData pgcr,
+        DateTimeOffset activityCompletedAt,
+        bool isRaid,
+        bool isDungeon)
     {
-        var definition = GetDefinition(activityDefinitions, pgcr.ActivityDetails.ReferenceId)
-            ?? GetDefinition(activityDefinitions, pgcr.ActivityDetails.DirectorActivityHash);
-        var releaseTime = definition?["releaseTime"]?.Value<long>() ?? 0;
-        if (releaseTime <= 0)
+        var contestWindows = isRaid
+            ? contestMode.Raids
+            : isDungeon
+                ? contestMode.Dungeons
+                : null;
+        if (contestWindows is null)
         {
             return false;
         }
 
-        var release = DateTimeOffset.FromUnixTimeSeconds(releaseTime);
-        return pgcr.Period >= release && pgcr.Period <= release.AddDays(1);
+        return IsContestActivityHash(pgcr.ActivityDetails.ReferenceId, activityCompletedAt, contestWindows)
+            || IsContestActivityHash(pgcr.ActivityDetails.DirectorActivityHash, activityCompletedAt, contestWindows);
     }
 
-    private static ReportPlayer ToReportPlayer(BungiePlayer player, int emblemHash)
+    private static bool IsContestActivityHash(
+        long activityHash,
+        DateTimeOffset activityCompletedAt,
+        IReadOnlyDictionary<long, IReadOnlyCollection<ContestModeActivityWindow>> contestWindows)
+    {
+        return contestWindows.TryGetValue(activityHash, out var windows)
+            && windows.Any(window => activityCompletedAt >= window.Start && activityCompletedAt < window.End);
+    }
+
+    private static DateTimeOffset GetActivityCompletedAt(
+        DestinyPostGameCarnageReportData pgcr,
+        DestinyPostGameCarnageReportEntry playerEntry)
+    {
+        var durationSeconds = GetStat(playerEntry.Values, "activityDurationSeconds");
+        return durationSeconds > 0
+            ? pgcr.Period.AddSeconds(durationSeconds)
+            : pgcr.Period;
+    }
+
+    private static DestinyPostGameCarnageReportEntry[] GetActivityPlayerEntries(DestinyPostGameCarnageReportData pgcr)
+    {
+        return (pgcr.Entries ?? [])
+            .Where(entry => entry.Player?.DestinyUserInfo?.MembershipId > 0)
+            .ToArray();
+    }
+
+    private static void AddCompletion(
+        IDictionary<string, ActivityCompletionAggregate> completions,
+        string activityName,
+        bool contestClear,
+        bool flawlessClear,
+        bool soloClear,
+        bool soloFlawlessClear)
+    {
+        var key = ContestModeLookup.NormalizeActivityName(activityName);
+        if (!completions.TryGetValue(key, out var completion))
+        {
+            completion = new ActivityCompletionAggregate(key);
+            completions[key] = completion;
+        }
+
+        completion.CompletionCount++;
+        completion.ContestClear |= contestClear;
+        completion.FlawlessClear |= flawlessClear;
+        completion.SoloClear |= soloClear;
+        completion.SoloFlawlessClear |= soloFlawlessClear;
+    }
+
+    private static List<ActivityCompletionSummary> ToCompletionSummaries(
+        IDictionary<string, ActivityCompletionAggregate> completions)
+    {
+        return completions.Values
+            .OrderBy(completion => completion.ActivityName, StringComparer.OrdinalIgnoreCase)
+            .Select(completion => new ActivityCompletionSummary
+            {
+                ActivityName = completion.ActivityName,
+                CompletionCount = completion.CompletionCount,
+                ContestClear = completion.ContestClear,
+                FlawlessClear = completion.FlawlessClear,
+                SoloClear = completion.SoloClear,
+                SoloFlawlessClear = completion.SoloFlawlessClear
+            })
+            .ToList();
+    }
+
+    private static ReportPlayer ToReportPlayer(BungiePlayer player, string emblemUrl)
     {
         var user = player.DestinyUserInfo;
         return new ReportPlayer
@@ -873,7 +1267,7 @@ public class CrawlerService(
             MembershipId = user?.MembershipId ?? 0,
             MembershipType = user?.MembershipType ?? 0,
             DisplayName = DisplayName(user),
-            EmblemUrl = emblemHash > 0 ? emblemHash.ToString() : ""
+            EmblemUrl = emblemUrl
         };
     }
 
@@ -894,42 +1288,29 @@ public class CrawlerService(
         return user.DisplayName ?? "";
     }
 
-    private static void TrackCombos(
-        IDictionary<string, (int Count, List<ReportPlayer> Players)> combos,
-        IReadOnlyCollection<ReportPlayer> players,
-        int size)
-    {
-        if (players.Count < size)
-        {
-            return;
-        }
-
-        var topPlayers = players.OrderBy(player => player.MembershipId).Take(size).ToList();
-        var key = string.Join('|', topPlayers.Select(player => player.MembershipId));
-        combos[key] = combos.TryGetValue(key, out var existing)
-            ? (existing.Count + 1, existing.Players)
-            : (1, topPlayers);
-    }
-
-    private static List<ReportPlayer> TopCombo(IDictionary<string, (int Count, List<ReportPlayer> Players)> combos, int size)
-    {
-        return combos.Values
-            .Where(item => item.Players.Count == size)
-            .OrderByDescending(item => item.Count)
-            .Select(item => item.Players)
-            .FirstOrDefault() ?? [];
-    }
-
     private static void TrackRivals(
         IDictionary<long, RivalAggregate> rivals,
         DestinyPostGameCarnageReportData pgcr,
         DestinyPostGameCarnageReportEntry playerEntry,
-        IEnumerable<ReportPlayer> otherPlayers,
+        long playerMembershipId,
         double playerKills,
         double playerDeaths)
     {
-        var playerTeam = playerEntry.Values?.TryGetValue("team", out var teamValue) == true ? teamValue.Basic?.Value : null;
-        foreach (var opponent in otherPlayers)
+        var playerTeam = GetTeam(playerEntry);
+        if (playerTeam is null)
+        {
+            return;
+        }
+
+        var opponents = (pgcr.Entries ?? [])
+            .Where(entry => entry.Player?.DestinyUserInfo?.MembershipId is > 0)
+            .Where(entry => entry.Player.DestinyUserInfo.MembershipId != playerMembershipId)
+            .Where(entry => GetTeam(entry) is { } team && team != playerTeam)
+            .Select(entry => ToReportPlayer(entry.Player, ""))
+            .GroupBy(player => player.MembershipId)
+            .Select(group => group.First());
+
+        foreach (var opponent in opponents)
         {
             var aggregate = rivals.TryGetValue(opponent.MembershipId, out var existing)
                 ? existing
@@ -941,6 +1322,13 @@ public class CrawlerService(
             aggregate.Wins += playerEntry.Standing == 0 ? 1 : 0;
             aggregate.Losses += playerEntry.Standing > 0 ? 1 : 0;
         }
+    }
+
+    private static double? GetTeam(DestinyPostGameCarnageReportEntry entry)
+    {
+        return entry.Values?.TryGetValue("team", out var teamValue) == true
+            ? teamValue.Basic?.Value
+            : null;
     }
 
     private static void ApplyRival(DestinyReport report, IDictionary<long, RivalAggregate> rivals, bool isGambit)
@@ -1005,7 +1393,18 @@ public class CrawlerService(
         }
     }
 
-    private static List<WeaponReport> BuildWeaponReports(IDictionary<int, int> weaponKills, JObject? manifestInventoryDefinitions = null)
+    private static IEnumerable<int> TopWeaponHashes(IDictionary<int, int> weaponKills)
+    {
+        return weaponKills
+            .Where(item => item.Value > 0)
+            .OrderByDescending(item => item.Value)
+            .Take(10)
+            .Select(item => item.Key);
+    }
+
+    private static List<WeaponReport> BuildWeaponReports(
+        IDictionary<int, int> weaponKills,
+        IReadOnlyDictionary<int, WeaponDefinitionSummary>? weaponDefinitions = null)
     {
         return weaponKills
             .Where(item => item.Value > 0)
@@ -1013,15 +1412,34 @@ public class CrawlerService(
             .Take(10)
             .Select(item =>
             {
-                var definition = manifestInventoryDefinitions is not null ? GetDefinition(manifestInventoryDefinitions, item.Key) : null;
+                WeaponDefinitionSummary? definition = null;
+                weaponDefinitions?.TryGetValue(item.Key, out definition);
                 return new WeaponReport
                 {
-                    Name = definition?["displayProperties"]?["name"]?.Value<string>() ?? item.Key.ToString(),
-                    IconUrl = BungieUrl(definition?["displayProperties"]?["icon"]?.Value<string>()),
+                    Name = definition?.Name ?? item.Key.ToString(),
+                    IconUrl = definition?.IconUrl ?? "",
                     TotalKills = item.Value
                 };
             })
             .ToList();
+    }
+
+    private static WeaponDefinitionSummary ToWeaponDefinitionSummary(DestinyDefinition definition)
+    {
+        var displayProperties = TryGetJObject(definition.AdditionalProperties, "displayProperties");
+        return new WeaponDefinitionSummary(
+            displayProperties?["name"]?.Value<string>() ?? definition.Hash.ToString(),
+            BungieUrl(displayProperties?["icon"]?.Value<string>()));
+    }
+
+    private static JObject? TryGetJObject(IDictionary<string, object> source, string key)
+    {
+        if (!source.TryGetValue(key, out var value) || value is null)
+        {
+            return null;
+        }
+
+        return value as JObject ?? JObject.FromObject(value);
     }
 
     private static string BungieUrl(string? path)
@@ -1034,6 +1452,20 @@ public class CrawlerService(
         return path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? path : $"{BungieNetBaseUrl}{path}";
     }
 
+    private async Task<ReportPlayer> GetPlayerInfoAsync(PlayerEncounterAggregate player, CancellationToken cancellationToken)
+    {
+        var response = await bungieClient.Destiny2_GetProfileAsync(ProfileCharactersComponents, player.EncounteredMembershipId, player.EncounteredMembershipType, cancellationToken).ConfigureAwait(false);
+        var characterResponse = EnsureSuccess(response, profile => profile.Response, $"Destiny2_GetProfileAsync:Characters:{player.EncounteredMembershipType}:{player.EncounteredMembershipId}");
+        var lastPlayedCharacter = characterResponse?.Characters?.Data?.Values.OrderByDescending(c => c.DateLastPlayed).FirstOrDefault();
+        return new ReportPlayer
+        {
+            MembershipId = player.EncounteredMembershipId,
+            MembershipType = player.EncounteredMembershipType,
+            DisplayName = characterResponse?.Profile?.Data?.UserInfo?.DisplayName ?? "",
+            EmblemUrl = BungieUrl(lastPlayedCharacter?.EmblemPath)
+        };
+    }
+
     private sealed record RivalAggregate(ReportPlayer Player)
     {
         public int Matches { get; set; }
@@ -1042,6 +1474,17 @@ public class CrawlerService(
         public double Kills { get; set; }
         public double Deaths { get; set; }
     }
+
+    private sealed record ActivityCompletionAggregate(string ActivityName)
+    {
+        public int CompletionCount { get; set; }
+        public bool ContestClear { get; set; }
+        public bool FlawlessClear { get; set; }
+        public bool SoloClear { get; set; }
+        public bool SoloFlawlessClear { get; set; }
+    }
+
+    private sealed record WeaponDefinitionSummary(string Name, string IconUrl);
 
     private static class ActivityModes
     {
@@ -1058,9 +1501,10 @@ public class CrawlerService(
     {
         private readonly ConcurrentDictionary<string, Lazy<Task<JObject>>> _tables = new(StringComparer.Ordinal);
 
+        public DestinyManifest Manifest => manifest;
+
         public JObject PresentationNodes => GetTable("DestinyPresentationNodeDefinition");
         public JObject Records => GetTable("DestinyRecordDefinition");
-        public JObject InventoryItems => GetTable("DestinyInventoryItemDefinition");
 
         public async Task<JObject> GetTableAsync(string tableName, CancellationToken cancellationToken)
         {
@@ -1069,7 +1513,7 @@ public class CrawlerService(
                 .ConfigureAwait(false);
         }
 
-        public int? FindMetricHash(params string[] terms)
+        public uint? FindMetricHash(params string[] terms)
         {
             var metrics = GetTable("DestinyMetricDefinition");
             foreach (var property in metrics.Properties())
@@ -1080,7 +1524,7 @@ public class CrawlerService(
                         name.Contains(term, StringComparison.OrdinalIgnoreCase)
                         || description.Contains(term, StringComparison.OrdinalIgnoreCase)))
                 {
-                    return int.Parse(property.Name);
+                    return uint.Parse(property.Name);
                 }
             }
 
