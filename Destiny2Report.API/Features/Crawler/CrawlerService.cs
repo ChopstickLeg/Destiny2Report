@@ -32,7 +32,7 @@ public class CrawlerService(
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
 
     private static readonly int[] AccountStatGroups = [GeneralStatsGroup];
-    private static readonly int[] ProfileComponents = [ProfileRecordsComponent, MetricsComponent];
+    private static readonly int[] ProfileComponents = [ProfileRecordsComponent, MetricsComponent, ProfileCharactersComponent];
     private static readonly int[] ProfileCharactersComponents = [BasicProfileComponent, ProfileCharactersComponent];
     private static readonly int[] ModeStatGroups = [GeneralStatsGroup];
     private static readonly long[] TriumphSealRootPresentationNodeHashes = [616318467, 1881970629];
@@ -339,6 +339,19 @@ public class CrawlerService(
         return playtimeByClass;
     }
 
+    private static Dictionary<string, TimeSpan> BuildTotalPlaytimeByClass(IEnumerable<DestinyCharacterComponent> characters)
+    {
+        var playtimeByClass = new Dictionary<string, TimeSpan>();
+
+        foreach (var character in characters)
+        {
+            var className = ClassName(character.ClassType);
+            playtimeByClass[className] = playtimeByClass.GetValueOrDefault(className) + TimeSpan.FromMinutes(character.MinutesPlayedTotal);
+        }
+
+        return playtimeByClass;
+    }
+
     private async Task<Dictionary<(long CharacterId, int Mode), IDictionary<string, DestinyHistoricalStatsByPeriod>>> FetchModeStatsAsync(
         int platformId,
         long playerMembershipId,
@@ -475,7 +488,6 @@ public class CrawlerService(
         IEnumerable<DestinyHistoricalStatsPerCharacter> historicalCharacters,
         IReadOnlyDictionary<long, string> characterClassById)
     {
-        report.TotalPlaytime = TimeSpan.FromSeconds(accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("secondsPlayed", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0)));
         report.TotalKills = (long)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("kills", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
         report.TotalDeaths = (long)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("deaths", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
         report.Misadventures = (int)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("suicides", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
@@ -485,6 +497,10 @@ public class CrawlerService(
 
     private static void ApplyProfileStats(DestinyReport report, DestinyProfileResponse profile, ManifestContext manifest)
     {
+        var profileCharacters = profile.Characters?.Data?.Values.ToArray() ?? [];
+        report.TotalPlaytime = TimeSpan.FromMinutes(profileCharacters.Sum(character => character.MinutesPlayedTotal));
+        report.PlaytimeByClass = BuildTotalPlaytimeByClass(profileCharacters);
+
         var metrics = profile.Metrics?.Data?.Metrics;
         if (metrics is null)
         {
@@ -628,7 +644,13 @@ public class CrawlerService(
             var activityCompletedAt = GetActivityCompletedAt(pgcr, playerEntry);
             var isContest = IsContest(pgcr, activityCompletedAt, isRaid, isDungeon);
             var isSoloFlawless = isSolo && isFlawless;
-            activityTime += TimeSpan.FromSeconds(GetStat(playerEntry.Values, "activityDurationSeconds"));
+            var playerActivitySeconds = GetStat(playerEntry.Values, "timePlayedSeconds");
+            if (playerActivitySeconds <= 0)
+            {
+                playerActivitySeconds = GetStat(playerEntry.Values, "activityDurationSeconds");
+            }
+
+            activityTime += TimeSpan.FromSeconds(playerActivitySeconds);
 
             if (playerCompleted && isRaid)
             {
