@@ -126,6 +126,6 @@ public record WeaponReport
 
 public record SherpaReport
 {
-    public DestinyPlayer Player { get; init; } = new();
-    public ActivityCompletion ActivityCompletion { get; init; } = new();
+    public string RaidName { get; init; } = "";
+    public int PlayerCount { get; init; }
 }

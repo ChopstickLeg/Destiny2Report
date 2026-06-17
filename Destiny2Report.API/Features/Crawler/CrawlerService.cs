@@ -29,6 +29,7 @@ public class CrawlerService(
     private const int MetricsComponent = 1100;
     private const int PageSize = 250;
     private const int MaxConcurrentPgcrRequests = 45;
+    private const int MaxConcurrentSherpaHistoryRequests = 8;
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
 
     private static readonly int[] AccountStatGroups = [GeneralStatsGroup];
@@ -558,6 +559,7 @@ public class CrawlerService(
                 report,
                 platformId,
                 playerMembershipId,
+                activityHistory,
                 pgcrs,
                 activityDefinitions,
                 manifest,
@@ -597,6 +599,7 @@ public class CrawlerService(
         DestinyReport report,
         int platformId,
         long playerMembershipId,
+        IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activityHistory,
         IReadOnlyDictionary<long, DestinyPostGameCarnageReportData> pgcrs,
         JObject activityDefinitions,
         ManifestContext manifest,
@@ -611,6 +614,8 @@ public class CrawlerService(
         var gambitWeapons = new Dictionary<int, int>();
         var raidCompletions = new Dictionary<string, ActivityCompletionAggregate>(StringComparer.OrdinalIgnoreCase);
         var dungeonCompletions = new Dictionary<string, ActivityCompletionAggregate>(StringComparer.OrdinalIgnoreCase);
+        var playersSherpaed = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>>>>();
         var activityTime = new TimeSpan();
 
         foreach (var pgcr in allPgcrs)
@@ -655,6 +660,21 @@ public class CrawlerService(
             if (playerCompleted && isRaid)
             {
                 AddCompletion(raidCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
+                var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
+                if (HasPriorCompletedRaid(activityHistory, normalizedRaidName, pgcr.Period, pgcr.ActivityDetails.InstanceId, activityDefinitions))
+                {
+                    var sherpaedPlayers = await FindSherpaedPlayersAsync(
+                            pgcr,
+                            playerMembershipId,
+                            normalizedRaidName,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (sherpaedPlayers > 0)
+                    {
+                        playersSherpaed[normalizedRaidName] = playersSherpaed.GetValueOrDefault(normalizedRaidName) + sherpaedPlayers;
+                    }
+                }
             }
 
             if (playerCompleted && isDungeon)
@@ -702,6 +722,7 @@ public class CrawlerService(
 
         report.RaidCompletions = ToCompletionSummaries(raidCompletions);
         report.DungeonCompletions = ToCompletionSummaries(dungeonCompletions);
+        report.PlayersSherpaed = ToSherpaReports(playersSherpaed);
         await ApplyPlayerEncounterIncrementsAsync(
                 report,
                 platformId,
@@ -724,6 +745,151 @@ public class CrawlerService(
         report.GambitTopWeapons = BuildWeaponReports(gambitWeapons, weaponDefinitions);
 
         report.TotalActivityTime = activityTime;
+
+        async Task<IReadOnlyCollection<CompletedRaidActivity>> GetCompletedRaidHistoryAsync(int membershipType, long membershipId)
+        {
+            var lazyHistory = completedRaidHistoryByPlayer.GetOrAdd(
+                (membershipType, membershipId),
+                key => new Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>>>(
+                    () => FetchCompletedRaidHistoryAsync(
+                        key.MembershipType,
+                        key.MembershipId,
+                        activityDefinitions,
+                        cancellationToken)));
+
+            return await lazyHistory.Value.ConfigureAwait(false);
+        }
+
+        async Task<int> FindSherpaedPlayersAsync(
+            DestinyPostGameCarnageReportData raidPgcr,
+            long ownerMembershipId,
+            string normalizedRaidName,
+            CancellationToken cancellationToken)
+        {
+            var completedFireteamMembers = GetActivityPlayerEntries(raidPgcr)
+                .Where(entry => GetStat(entry.Values, "completed") > 0)
+                .Select(entry => entry.Player?.DestinyUserInfo)
+                .Where(player => player?.MembershipType > 0 && player.MembershipId > 0)
+                .Where(player => player!.MembershipId != ownerMembershipId)
+                .GroupBy(player => (player!.MembershipType, player.MembershipId))
+                .Select(group => group.Key)
+                .ToArray();
+
+            if (completedFireteamMembers.Length == 0)
+            {
+                return 0;
+            }
+
+            using var throttler = new SemaphoreSlim(MaxConcurrentSherpaHistoryRequests);
+            var tasks = completedFireteamMembers.Select(async player =>
+            {
+                await throttler.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    var history = await GetCompletedRaidHistoryAsync(player.MembershipType, player.MembershipId).ConfigureAwait(false);
+                    return !history.Any(activity => IsPriorCompletedRaid(activity, normalizedRaidName, raidPgcr.Period, raidPgcr.ActivityDetails.InstanceId));
+                }
+                finally
+                {
+                    throttler.Release();
+                }
+            });
+
+            var sherpaResults = await Task.WhenAll(tasks).ConfigureAwait(false);
+            return sherpaResults.Count(isSherpaed => isSherpaed);
+        }
+    }
+
+    private async Task<IReadOnlyCollection<CompletedRaidActivity>> FetchCompletedRaidHistoryAsync(
+        int platformId,
+        long playerMembershipId,
+        JObject activityDefinitions,
+        CancellationToken cancellationToken)
+    {
+        var characterIds = await FetchHistoricalCharacterIdsAsync(platformId, playerMembershipId, cancellationToken).ConfigureAwait(false);
+        if (characterIds.Length == 0)
+        {
+            return [];
+        }
+
+        var results = new ConcurrentDictionary<long, CompletedRaidActivity>();
+        var tasks = characterIds.Select(FetchCharacterRaidHistoryAsync);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        return results.Values.ToArray();
+
+        async Task FetchCharacterRaidHistoryAsync(long characterId)
+        {
+            var page = 0;
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var operation = $"GetActivityHistory:Raid:{playerMembershipId}:{characterId}:{page}";
+                var response = await bungieClient.Destiny2_GetActivityHistoryAsync(
+                        characterId,
+                        PageSize,
+                        playerMembershipId,
+                        platformId,
+                        ActivityModes.Raid,
+                        page,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                var payload = EnsureSuccess(response, item => item.Response, operation);
+                var activities = payload.Activities?.ToArray() ?? [];
+                if (activities.Length == 0)
+                {
+                    break;
+                }
+
+                foreach (var activity in activities)
+                {
+                    if (GetStat(activity.Values, "completed") <= 0 || !IncludesMode(activity, ActivityModes.Raid))
+                    {
+                        continue;
+                    }
+
+                    var raidName = ActivityName(
+                        activityDefinitions,
+                        activity.ActivityDetails.ReferenceId,
+                        activity.ActivityDetails.DirectorActivityHash);
+
+                    results.TryAdd(
+                        activity.ActivityDetails.InstanceId,
+                        new CompletedRaidActivity(
+                            ContestModeLookup.NormalizeActivityName(raidName),
+                            activity.Period,
+                            activity.ActivityDetails.InstanceId));
+                }
+
+                if (activities.Length < PageSize)
+                {
+                    break;
+                }
+
+                page++;
+            }
+        }
+    }
+
+    private async Task<long[]> FetchHistoricalCharacterIdsAsync(
+        int platformId,
+        long playerMembershipId,
+        CancellationToken cancellationToken)
+    {
+        var operation = $"GetHistoricalStatsForAccount:Characters:{platformId}:{playerMembershipId}";
+        var response = await bungieClient.Destiny2_GetHistoricalStatsForAccountAsync(
+                playerMembershipId,
+                AccountStatGroups,
+                platformId,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var accountStats = EnsureSuccess(response, item => item.Response, operation);
+        return accountStats.Characters?
+            .Select(character => character.CharacterId)
+            .Where(characterId => characterId > 0)
+            .Distinct()
+            .ToArray() ?? [];
     }
 
     private async Task ApplyPlayerEncounterIncrementsAsync(
@@ -1281,6 +1447,55 @@ public class CrawlerService(
             .ToList();
     }
 
+    private static bool HasPriorCompletedRaid(
+        IEnumerable<DestinyHistoricalStatsPeriodGroup> activities,
+        string normalizedRaidName,
+        DateTimeOffset activityPeriod,
+        long activityInstanceId,
+        JObject activityDefinitions)
+    {
+        return activities
+            .Where(activity => GetStat(activity.Values, "completed") > 0)
+            .Where(activity => IncludesMode(activity, ActivityModes.Raid))
+            .Any(activity =>
+            {
+                var raidName = ActivityName(
+                    activityDefinitions,
+                    activity.ActivityDetails.ReferenceId,
+                    activity.ActivityDetails.DirectorActivityHash);
+                var completedRaid = new CompletedRaidActivity(
+                    ContestModeLookup.NormalizeActivityName(raidName),
+                    activity.Period,
+                    activity.ActivityDetails.InstanceId);
+
+                return IsPriorCompletedRaid(completedRaid, normalizedRaidName, activityPeriod, activityInstanceId);
+            });
+    }
+
+    private static bool IsPriorCompletedRaid(
+        CompletedRaidActivity completedRaid,
+        string normalizedRaidName,
+        DateTimeOffset activityPeriod,
+        long activityInstanceId)
+    {
+        return string.Equals(completedRaid.RaidName, normalizedRaidName, StringComparison.OrdinalIgnoreCase)
+            && completedRaid.InstanceId != activityInstanceId
+            && completedRaid.Period <= activityPeriod;
+    }
+
+    private static List<SherpaReport> ToSherpaReports(IDictionary<string, int> playersSherpaed)
+    {
+        return playersSherpaed
+            .Where(item => item.Value > 0)
+            .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(item => new SherpaReport
+            {
+                RaidName = item.Key,
+                PlayerCount = item.Value
+            })
+            .ToList();
+    }
+
     private static ReportPlayer ToReportPlayer(BungiePlayer player, string emblemUrl)
     {
         var user = player.DestinyUserInfo;
@@ -1505,6 +1720,8 @@ public class CrawlerService(
         public bool SoloClear { get; set; }
         public bool SoloFlawlessClear { get; set; }
     }
+
+    private sealed record CompletedRaidActivity(string RaidName, DateTimeOffset Period, long InstanceId);
 
     private sealed record WeaponDefinitionSummary(string Name, string IconUrl);
 
