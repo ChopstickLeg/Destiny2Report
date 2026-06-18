@@ -30,6 +30,7 @@ public class CrawlerService(
     private const int PageSize = 250;
     private const int MaxConcurrentPgcrRequests = 45;
     private const int MaxConcurrentSherpaHistoryRequests = 8;
+    private const int DestinyPrivacyRestrictionErrorCode = 1665;
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
 
     private static readonly int[] AccountStatGroups = [GeneralStatsGroup];
@@ -228,6 +229,60 @@ public class CrawlerService(
         }
 
         return getPayload(response) ?? throw new InvalidOperationException($"{operation} returned an empty response.");
+    }
+
+    private static bool IsPrivateProfileResponse(BungieResponse response)
+    {
+        return response.ErrorCode == DestinyPrivacyRestrictionErrorCode
+            || ContainsPrivacyMarker(response.ErrorStatus)
+            || ContainsPrivacyMarker(response.Message);
+    }
+
+    private static bool IsPrivateProfileException(Exception exception)
+    {
+        if (exception is PrivateProfileUnavailableException)
+        {
+            return true;
+        }
+
+        if (exception is ApiException apiException)
+        {
+            return IsPrivateProfileApiException(apiException);
+        }
+
+        return false;
+    }
+
+    private static bool IsPrivateProfileApiException(ApiException exception)
+    {
+        if (ContainsPrivacyMarker(exception.Response) || ContainsPrivacyMarker(exception.Message))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(exception.Response))
+        {
+            return false;
+        }
+
+        try
+        {
+            var payload = JObject.Parse(exception.Response);
+            return payload["ErrorCode"]?.Value<int>() == DestinyPrivacyRestrictionErrorCode
+                || ContainsPrivacyMarker(payload["ErrorStatus"]?.Value<string>())
+                || ContainsPrivacyMarker(payload["Message"]?.Value<string>());
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsPrivacyMarker(string? value)
+    {
+        return value?.Contains("privacy", StringComparison.OrdinalIgnoreCase) == true
+            || value?.Contains("private", StringComparison.OrdinalIgnoreCase) == true
+            || value?.Contains("not public", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static Dictionary<long, string> BuildCharacterClassMap(
@@ -615,7 +670,8 @@ public class CrawlerService(
         var raidCompletions = new Dictionary<string, ActivityCompletionAggregate>(StringComparer.OrdinalIgnoreCase);
         var dungeonCompletions = new Dictionary<string, ActivityCompletionAggregate>(StringComparer.OrdinalIgnoreCase);
         var playersSherpaed = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>>>>();
+        var pendingSherpaChecks = new List<SherpaCheck>();
+        var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>>();
         var activityTime = new TimeSpan();
 
         foreach (var pgcr in allPgcrs)
@@ -663,17 +719,7 @@ public class CrawlerService(
                 var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
                 if (HasPriorCompletedRaid(activityHistory, normalizedRaidName, pgcr.Period, pgcr.ActivityDetails.InstanceId, activityDefinitions))
                 {
-                    var sherpaedPlayers = await FindSherpaedPlayersAsync(
-                            pgcr,
-                            playerMembershipId,
-                            normalizedRaidName,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (sherpaedPlayers > 0)
-                    {
-                        playersSherpaed[normalizedRaidName] = playersSherpaed.GetValueOrDefault(normalizedRaidName) + sherpaedPlayers;
-                    }
+                    pendingSherpaChecks.Add(new SherpaCheck(pgcr, normalizedRaidName));
                 }
             }
 
@@ -720,6 +766,8 @@ public class CrawlerService(
             }
         }
 
+        await ApplySherpaChecksAsync(cancellationToken).ConfigureAwait(false);
+
         report.RaidCompletions = ToCompletionSummaries(raidCompletions);
         report.DungeonCompletions = ToCompletionSummaries(dungeonCompletions);
         report.PlayersSherpaed = ToSherpaReports(playersSherpaed);
@@ -746,11 +794,11 @@ public class CrawlerService(
 
         report.TotalActivityTime = activityTime;
 
-        async Task<IReadOnlyCollection<CompletedRaidActivity>> GetCompletedRaidHistoryAsync(int membershipType, long membershipId)
+        async Task<IReadOnlyCollection<CompletedRaidActivity>?> GetCompletedRaidHistoryAsync(int membershipType, long membershipId)
         {
             var lazyHistory = completedRaidHistoryByPlayer.GetOrAdd(
                 (membershipType, membershipId),
-                key => new Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>>>(
+                key => new Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>(
                     () => FetchCompletedRaidHistoryAsync(
                         key.MembershipType,
                         key.MembershipId,
@@ -760,34 +808,31 @@ public class CrawlerService(
             return await lazyHistory.Value.ConfigureAwait(false);
         }
 
-        async Task<int> FindSherpaedPlayersAsync(
-            DestinyPostGameCarnageReportData raidPgcr,
-            long ownerMembershipId,
-            string normalizedRaidName,
-            CancellationToken cancellationToken)
+        async Task ApplySherpaChecksAsync(CancellationToken cancellationToken)
         {
-            var completedFireteamMembers = GetActivityPlayerEntries(raidPgcr)
-                .Where(entry => GetStat(entry.Values, "completed") > 0)
-                .Select(entry => entry.Player?.DestinyUserInfo)
-                .Where(player => player?.MembershipType > 0 && player.MembershipId > 0)
-                .Where(player => player!.MembershipId != ownerMembershipId)
-                .GroupBy(player => (player!.MembershipType, player.MembershipId))
-                .Select(group => group.Key)
+            var candidateChecks = pendingSherpaChecks
+                .SelectMany(check => GetCompletedFireteamMembers(check.Pgcr, playerMembershipId)
+                    .Select(player => new SherpaCandidateCheck(check.Pgcr, check.NormalizedRaidName, player.MembershipType, player.MembershipId)))
                 .ToArray();
 
-            if (completedFireteamMembers.Length == 0)
+            if (candidateChecks.Length == 0)
             {
-                return 0;
+                return;
             }
 
+            var candidatePlayers = candidateChecks
+                .Select(check => (check.MembershipType, check.MembershipId))
+                .Distinct()
+                .ToArray();
+
             using var throttler = new SemaphoreSlim(MaxConcurrentSherpaHistoryRequests);
-            var tasks = completedFireteamMembers.Select(async player =>
+            var historyTasks = candidatePlayers.Select(async player =>
             {
                 await throttler.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
                     var history = await GetCompletedRaidHistoryAsync(player.MembershipType, player.MembershipId).ConfigureAwait(false);
-                    return !history.Any(activity => IsPriorCompletedRaid(activity, normalizedRaidName, raidPgcr.Period, raidPgcr.ActivityDetails.InstanceId));
+                    return (player.MembershipType, player.MembershipId, History: history);
                 }
                 finally
                 {
@@ -795,18 +840,59 @@ public class CrawlerService(
                 }
             });
 
-            var sherpaResults = await Task.WhenAll(tasks).ConfigureAwait(false);
-            return sherpaResults.Count(isSherpaed => isSherpaed);
+            var histories = await Task.WhenAll(historyTasks).ConfigureAwait(false);
+            var historyByPlayer = histories.ToDictionary(
+                item => (item.MembershipType, item.MembershipId),
+                item => item.History);
+
+            foreach (var check in candidateChecks)
+            {
+                if (!historyByPlayer.TryGetValue((check.MembershipType, check.MembershipId), out var history)
+                    || history is null
+                    || history.Any(activity => IsPriorCompletedRaid(
+                        activity,
+                        check.NormalizedRaidName,
+                        check.Pgcr.Period,
+                        check.Pgcr.ActivityDetails.InstanceId)))
+                {
+                    continue;
+                }
+
+                playersSherpaed[check.NormalizedRaidName] = playersSherpaed.GetValueOrDefault(check.NormalizedRaidName) + 1;
+            }
+        }
+
+        IEnumerable<(int MembershipType, long MembershipId)> GetCompletedFireteamMembers(
+            DestinyPostGameCarnageReportData raidPgcr,
+            long ownerMembershipId)
+        {
+            return GetActivityPlayerEntries(raidPgcr)
+                .Where(entry => GetStat(entry.Values, "completed") > 0)
+                .Select(entry => entry.Player?.DestinyUserInfo)
+                .Where(player => player?.MembershipType > 0 && player.MembershipId > 0)
+                .Where(player => player!.MembershipId != ownerMembershipId)
+                .GroupBy(player => (player!.MembershipType, player.MembershipId))
+                .Select(group => group.Key);
         }
     }
 
-    private async Task<IReadOnlyCollection<CompletedRaidActivity>> FetchCompletedRaidHistoryAsync(
+    private async Task<IReadOnlyCollection<CompletedRaidActivity>?> FetchCompletedRaidHistoryAsync(
         int platformId,
         long playerMembershipId,
         JObject activityDefinitions,
         CancellationToken cancellationToken)
     {
-        var characterIds = await FetchHistoricalCharacterIdsAsync(platformId, playerMembershipId, cancellationToken).ConfigureAwait(false);
+        long[] characterIds;
+        try
+        {
+            characterIds = await FetchHistoricalCharacterIdsAsync(platformId, playerMembershipId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsPrivateProfileException(ex))
+        {
+            logger.LogDebug("Skipping sherpa candidate {MembershipType}/{MembershipId} because their profile is not public.", platformId, playerMembershipId);
+            return null;
+        }
+
         if (characterIds.Length == 0)
         {
             return [];
@@ -814,7 +900,15 @@ public class CrawlerService(
 
         var results = new ConcurrentDictionary<long, CompletedRaidActivity>();
         var tasks = characterIds.Select(FetchCharacterRaidHistoryAsync);
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsPrivateProfileException(ex))
+        {
+            logger.LogDebug("Skipping sherpa candidate {MembershipType}/{MembershipId} because their activity history is not public.", platformId, playerMembershipId);
+            return null;
+        }
 
         return results.Values.ToArray();
 
@@ -833,6 +927,11 @@ public class CrawlerService(
                         page,
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                if (IsPrivateProfileResponse(response))
+                {
+                    throw new PrivateProfileUnavailableException(operation, response);
+                }
 
                 var payload = EnsureSuccess(response, item => item.Response, operation);
                 var activities = payload.Activities?.ToArray() ?? [];
@@ -883,6 +982,11 @@ public class CrawlerService(
                 platformId,
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (IsPrivateProfileResponse(response))
+        {
+            throw new PrivateProfileUnavailableException(operation, response);
+        }
 
         var accountStats = EnsureSuccess(response, item => item.Response, operation);
         return accountStats.Characters?
@@ -1722,6 +1826,17 @@ public class CrawlerService(
     }
 
     private sealed record CompletedRaidActivity(string RaidName, DateTimeOffset Period, long InstanceId);
+
+    private sealed record SherpaCheck(DestinyPostGameCarnageReportData Pgcr, string NormalizedRaidName);
+
+    private sealed record SherpaCandidateCheck(
+        DestinyPostGameCarnageReportData Pgcr,
+        string NormalizedRaidName,
+        int MembershipType,
+        long MembershipId);
+
+    private sealed class PrivateProfileUnavailableException(string operation, BungieResponse response)
+        : InvalidOperationException($"{operation} failed because the Destiny profile is not public. Bungie error code {response.ErrorCode}: {response.Message}");
 
     private sealed record WeaponDefinitionSummary(string Name, string IconUrl);
 
