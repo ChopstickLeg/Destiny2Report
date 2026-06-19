@@ -1,4 +1,5 @@
 using Destiny2Report.API.Bungie;
+using Destiny2Report.API.Features.Auth;
 using Destiny2Report.API.Features.Reports;
 using Destiny2Report.API.Features.Status;
 using Destiny2Report.API.RateLimiting;
@@ -17,6 +18,10 @@ builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddBungieClient(builder.Configuration);
+builder.Services.AddHttpClient<IBungieAuthService, BungieAuthService>(httpClient =>
+{
+    httpClient.BaseAddress = new Uri("https://www.bungie.net/Platform/");
+});
 builder.Services.Configure<ContestModeOptions>(builder.Configuration.GetSection(ContestModeOptions.SectionName));
 builder.Services.Configure<ActivityTriumphRecordOptions>(builder.Configuration.GetSection(ActivityTriumphRecordOptions.SectionName));
 builder.Services.AddStackExchangeRedisCache(options =>
@@ -103,6 +108,7 @@ var api = app.MapGroup("/api")
     .RequireRateLimiting(RateLimitPolicies.PublicRead);
 
 api.MapStatusEndpoints();
+api.MapAuthEndpoints();
 api.MapReportEndpoints();
 
 app.Run();
