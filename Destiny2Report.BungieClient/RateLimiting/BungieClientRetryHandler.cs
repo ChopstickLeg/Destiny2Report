@@ -5,6 +5,7 @@ namespace D2Report.BungieClient.RateLimiting;
 public sealed class BungieClientRetryHandler : DelegatingHandler
 {
     private const int DestinyThrottledByGameServerErrorCode = 1672;
+    private const int BungieTimeoutErrorCode = 1688;
     private const int MaxRetryAttempts = 5;
 
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
@@ -22,7 +23,7 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
             var response = await base.SendAsync(retryRequest, cancellationToken).ConfigureAwait(false);
             var errorCode = await TryReadBungieErrorCodeAsync(response, cancellationToken).ConfigureAwait(false);
 
-            if (errorCode != DestinyThrottledByGameServerErrorCode || attempt >= MaxRetryAttempts)
+            if (!IsRetryableBungieErrorCode(errorCode) || attempt >= MaxRetryAttempts)
             {
                 return response;
             }
@@ -99,5 +100,11 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
     {
         var delayMilliseconds = InitialRetryDelay.TotalMilliseconds * Math.Pow(2, attempt);
         return TimeSpan.FromMilliseconds(Math.Min(delayMilliseconds, MaxRetryDelay.TotalMilliseconds));
+    }
+
+    private static bool IsRetryableBungieErrorCode(int? errorCode)
+    {
+        return errorCode is DestinyThrottledByGameServerErrorCode
+            or BungieTimeoutErrorCode;
     }
 }

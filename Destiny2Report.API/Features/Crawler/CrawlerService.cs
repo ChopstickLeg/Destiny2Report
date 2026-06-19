@@ -31,6 +31,7 @@ public class CrawlerService(
     private const int MaxConcurrentPgcrRequests = 45;
     private const int MaxConcurrentSherpaHistoryRequests = 8;
     private const int DestinyPrivacyRestrictionErrorCode = 1665;
+    private const int AllMembershipTypes = 254;
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
 
     private static readonly int[] AccountStatGroups = [GeneralStatsGroup];
@@ -672,6 +673,7 @@ public class CrawlerService(
         var playersSherpaed = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var pendingSherpaChecks = new List<SherpaCheck>();
         var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>>();
+        var membershipTypeByPlayer = new ConcurrentDictionary<long, Lazy<Task<int?>>>();
         var activityTime = new TimeSpan();
 
         foreach (var pgcr in allPgcrs)
@@ -682,7 +684,8 @@ public class CrawlerService(
                 continue;
             }
 
-            var playerCompleted = GetStat(playerEntry.Values, "completed") > 0;
+            var completionReason = GetPgcrCompletionReason(pgcr);
+            var playerCompleted = IsNormallyCompleted(playerEntry.Values, completionReason);
             var playerKills = GetStat(playerEntry.Values, "kills");
             var playerDeaths = GetStat(playerEntry.Values, "deaths");
             if (playerKills <= 0)
@@ -717,9 +720,9 @@ public class CrawlerService(
             {
                 AddCompletion(raidCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
                 var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
-                if (HasPriorCompletedRaid(activityHistory, normalizedRaidName, pgcr.Period, pgcr.ActivityDetails.InstanceId, activityDefinitions))
+                if (HasPriorCompletedRaid(activityHistory, normalizedRaidName, activityCompletedAt, pgcr.ActivityDetails.InstanceId, activityDefinitions))
                 {
-                    pendingSherpaChecks.Add(new SherpaCheck(pgcr, normalizedRaidName));
+                    pendingSherpaChecks.Add(new SherpaCheck(pgcr, normalizedRaidName, activityCompletedAt));
                 }
             }
 
@@ -810,10 +813,19 @@ public class CrawlerService(
 
         async Task ApplySherpaChecksAsync(CancellationToken cancellationToken)
         {
-            var candidateChecks = pendingSherpaChecks
+            var unresolvedCandidateChecks = pendingSherpaChecks
                 .SelectMany(check => GetCompletedFireteamMembers(check.Pgcr, playerMembershipId)
-                    .Select(player => new SherpaCandidateCheck(check.Pgcr, check.NormalizedRaidName, player.MembershipType, player.MembershipId)))
+                    .Select(player => new SherpaCandidateCheck(
+                        check.Pgcr,
+                        check.NormalizedRaidName,
+                        check.CompletedAt,
+                        player.MembershipType,
+                        player.MembershipId)))
                 .ToArray();
+
+            var resolvedCandidateChecks = await Task.WhenAll(unresolvedCandidateChecks.Select(ResolveCandidateCheckAsync))
+                .ConfigureAwait(false);
+            var candidateChecks = resolvedCandidateChecks.OfType<SherpaCandidateCheck>().ToArray();
 
             if (candidateChecks.Length == 0)
             {
@@ -852,7 +864,7 @@ public class CrawlerService(
                     || history.Any(activity => IsPriorCompletedRaid(
                         activity,
                         check.NormalizedRaidName,
-                        check.Pgcr.Period,
+                        check.CompletedAt,
                         check.Pgcr.ActivityDetails.InstanceId)))
                 {
                     continue;
@@ -862,17 +874,68 @@ public class CrawlerService(
             }
         }
 
+        async Task<SherpaCandidateCheck?> ResolveCandidateCheckAsync(SherpaCandidateCheck check)
+        {
+            if (check.MembershipType > 0)
+            {
+                return check;
+            }
+
+            var resolvedMembershipType = await ResolveMembershipTypeAsync(check.MembershipId).ConfigureAwait(false);
+            if (resolvedMembershipType is not > 0)
+            {
+                logger.LogDebug(
+                    "Skipping sherpa candidate {MembershipId} because their membership type could not be resolved.",
+                    check.MembershipId);
+                return null;
+            }
+
+            return check with { MembershipType = resolvedMembershipType.Value };
+        }
+
+        async Task<int?> ResolveMembershipTypeAsync(long membershipId)
+        {
+            var lazyMembershipType = membershipTypeByPlayer.GetOrAdd(
+                membershipId,
+                key => new Lazy<Task<int?>>(() => FetchMembershipTypeAsync(key, cancellationToken)));
+
+            return await lazyMembershipType.Value.ConfigureAwait(false);
+        }
+
+        async Task<int?> FetchMembershipTypeAsync(long membershipId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var response = await bungieClient.Destiny2_GetLinkedProfilesAsync(
+                        getAllMemberships: true,
+                        membershipId: membershipId,
+                        membershipType: AllMembershipTypes,
+                        cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+
+                var payload = EnsureSuccess(response, item => item.Response, $"GetLinkedProfiles:{membershipId}");
+                return SelectLinkedProfileMembershipType(payload.Profiles, membershipId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Could not resolve membership type for sherpa candidate {MembershipId}.", membershipId);
+                return null;
+            }
+        }
+
         IEnumerable<(int MembershipType, long MembershipId)> GetCompletedFireteamMembers(
             DestinyPostGameCarnageReportData raidPgcr,
             long ownerMembershipId)
         {
             return GetActivityPlayerEntries(raidPgcr)
-                .Where(entry => GetStat(entry.Values, "completed") > 0)
+                .Where(entry => IsNormallyCompleted(entry.Values, GetPgcrCompletionReason(raidPgcr)))
                 .Select(entry => entry.Player?.DestinyUserInfo)
-                .Where(player => player?.MembershipType > 0 && player.MembershipId > 0)
+                .Where(player => player?.MembershipId > 0)
                 .Where(player => player!.MembershipId != ownerMembershipId)
-                .GroupBy(player => (player!.MembershipType, player.MembershipId))
-                .Select(group => group.Key);
+                .GroupBy(player => player!.MembershipId)
+                .Select(group => (
+                    MembershipType: group.Select(player => player!.MembershipType).FirstOrDefault(membershipType => membershipType > 0),
+                    MembershipId: group.Key));
         }
     }
 
@@ -942,7 +1005,7 @@ public class CrawlerService(
 
                 foreach (var activity in activities)
                 {
-                    if (GetStat(activity.Values, "completed") <= 0 || !IncludesMode(activity, ActivityModes.Raid))
+                    if (!IsNormallyCompleted(activity.Values) || !IncludesMode(activity, ActivityModes.Raid))
                     {
                         continue;
                     }
@@ -956,7 +1019,7 @@ public class CrawlerService(
                         activity.ActivityDetails.InstanceId,
                         new CompletedRaidActivity(
                             ContestModeLookup.NormalizeActivityName(raidName),
-                            activity.Period,
+                            GetActivityCompletedAt(activity),
                             activity.ActivityDetails.InstanceId));
                 }
 
@@ -1505,6 +1568,49 @@ public class CrawlerService(
             : pgcr.Period;
     }
 
+    private static DateTimeOffset GetActivityCompletedAt(DestinyHistoricalStatsPeriodGroup activity)
+    {
+        var durationSeconds = GetStat(activity.Values, "activityDurationSeconds");
+        return durationSeconds > 0
+            ? activity.Period.AddSeconds(durationSeconds)
+            : activity.Period;
+    }
+
+    private static bool IsNormallyCompleted(IDictionary<string, DestinyHistoricalStatsValue>? values)
+    {
+        return GetStat(values, "completed") > 0
+            && GetStat(values, "completionReason") == 0;
+    }
+
+    private static bool IsNormallyCompleted(
+        IDictionary<string, DestinyHistoricalStatsValue>? values,
+        double completionReason)
+    {
+        return GetStat(values, "completed") > 0
+            && completionReason == 0;
+    }
+
+    private static double GetPgcrCompletionReason(DestinyPostGameCarnageReportData pgcr)
+    {
+        return GetStat(pgcr.Entries?.FirstOrDefault()?.Values, "completionReason");
+    }
+
+    private static int? SelectLinkedProfileMembershipType(
+        IEnumerable<DestinyProfileUserInfoCard>? profiles,
+        long membershipId)
+    {
+        var matchingProfiles = (profiles ?? [])
+            .Where(profile => profile.MembershipId == membershipId && profile.MembershipType > 0)
+            .OrderByDescending(profile => profile.IsCrossSavePrimary)
+            .ThenBy(profile => profile.IsOverridden)
+            .ThenByDescending(profile => profile.DateLastPlayed)
+            .ToArray();
+
+        return matchingProfiles.Length > 0
+            ? matchingProfiles[0].MembershipType
+            : null;
+    }
+
     private static DestinyPostGameCarnageReportEntry[] GetActivityPlayerEntries(DestinyPostGameCarnageReportData pgcr)
     {
         return (pgcr.Entries ?? [])
@@ -1554,12 +1660,12 @@ public class CrawlerService(
     private static bool HasPriorCompletedRaid(
         IEnumerable<DestinyHistoricalStatsPeriodGroup> activities,
         string normalizedRaidName,
-        DateTimeOffset activityPeriod,
+        DateTimeOffset activityCompletedAt,
         long activityInstanceId,
         JObject activityDefinitions)
     {
         return activities
-            .Where(activity => GetStat(activity.Values, "completed") > 0)
+            .Where(activity => IsNormallyCompleted(activity.Values))
             .Where(activity => IncludesMode(activity, ActivityModes.Raid))
             .Any(activity =>
             {
@@ -1569,22 +1675,22 @@ public class CrawlerService(
                     activity.ActivityDetails.DirectorActivityHash);
                 var completedRaid = new CompletedRaidActivity(
                     ContestModeLookup.NormalizeActivityName(raidName),
-                    activity.Period,
+                    GetActivityCompletedAt(activity),
                     activity.ActivityDetails.InstanceId);
 
-                return IsPriorCompletedRaid(completedRaid, normalizedRaidName, activityPeriod, activityInstanceId);
+                return IsPriorCompletedRaid(completedRaid, normalizedRaidName, activityCompletedAt, activityInstanceId);
             });
     }
 
     private static bool IsPriorCompletedRaid(
         CompletedRaidActivity completedRaid,
         string normalizedRaidName,
-        DateTimeOffset activityPeriod,
+        DateTimeOffset activityCompletedAt,
         long activityInstanceId)
     {
         return string.Equals(completedRaid.RaidName, normalizedRaidName, StringComparison.OrdinalIgnoreCase)
             && completedRaid.InstanceId != activityInstanceId
-            && completedRaid.Period <= activityPeriod;
+            && completedRaid.CompletedAt <= activityCompletedAt;
     }
 
     private static List<SherpaReport> ToSherpaReports(IDictionary<string, int> playersSherpaed)
@@ -1825,13 +1931,14 @@ public class CrawlerService(
         public bool SoloFlawlessClear { get; set; }
     }
 
-    private sealed record CompletedRaidActivity(string RaidName, DateTimeOffset Period, long InstanceId);
+    private sealed record CompletedRaidActivity(string RaidName, DateTimeOffset CompletedAt, long InstanceId);
 
-    private sealed record SherpaCheck(DestinyPostGameCarnageReportData Pgcr, string NormalizedRaidName);
+    private sealed record SherpaCheck(DestinyPostGameCarnageReportData Pgcr, string NormalizedRaidName, DateTimeOffset CompletedAt);
 
     private sealed record SherpaCandidateCheck(
         DestinyPostGameCarnageReportData Pgcr,
         string NormalizedRaidName,
+        DateTimeOffset CompletedAt,
         int MembershipType,
         long MembershipId);
 
