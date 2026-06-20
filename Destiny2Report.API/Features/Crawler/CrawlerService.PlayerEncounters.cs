@@ -1,0 +1,132 @@
+using System.Collections.Concurrent;
+using D2Report.BungieClient;
+using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Observability;
+using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Options;
+using MongoDB.Driver;
+using Newtonsoft.Json.Linq;
+using System.Diagnostics;
+using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
+using ReportPlayer = Destiny2Report.API.Features.Crawler.Models.DestinyPlayer;
+
+namespace Destiny2Report.API.Features.Crawler;
+
+public partial class CrawlerService
+{
+    private async Task ApplyPlayerEncounterCountsAsync(
+        DestinyReport report,
+        int ownerMembershipType,
+        long ownerMembershipId,
+        IReadOnlyDictionary<(int MembershipType, long MembershipId), int> encounterCounts,
+        CancellationToken cancellationToken)
+    {
+        var encounters = mongoDatabase.GetCollection<PlayerEncounterAggregate>("player_encounters");
+        var ownerFilter = Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.OwnerMembershipType, ownerMembershipType)
+            & Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.OwnerMembershipId, ownerMembershipId)
+            & Builders<PlayerEncounterAggregate>.Filter.Gt(encounter => encounter.EncounteredMembershipType, 0)
+            & Builders<PlayerEncounterAggregate>.Filter.Gt(encounter => encounter.EncounteredMembershipId, 0);
+
+        await encounters.DeleteManyAsync(ownerFilter, cancellationToken).ConfigureAwait(false);
+
+        if (encounterCounts.Count > 0)
+        {
+            var inserts = encounterCounts
+                .Where(item => item.Key.MembershipType > 0 && item.Key.MembershipId > 0 && item.Value > 0)
+                .Select(item =>
+                {
+                    return new InsertOneModel<PlayerEncounterAggregate>(new PlayerEncounterAggregate
+                    {
+                        OwnerMembershipType = ownerMembershipType,
+                        OwnerMembershipId = ownerMembershipId,
+                        EncounteredMembershipType = item.Key.MembershipType,
+                        EncounteredMembershipId = item.Key.MembershipId,
+                        Count = item.Value
+                    });
+                })
+                .Cast<WriteModel<PlayerEncounterAggregate>>()
+                .ToArray();
+
+            if (inserts.Length > 0)
+            {
+                await encounters.BulkWriteAsync(inserts, new BulkWriteOptions { IsOrdered = false }, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        var uniquePlayers = await encounters.CountDocumentsAsync(ownerFilter, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        var mostPlayedWith = await encounters
+            .Find(ownerFilter)
+            .SortByDescending(encounter => encounter.Count)
+            .Limit(DestinyReport.MostPlayedWithLimit)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var populateMostPlayedWithTasks = mostPlayedWith
+            .Select(async encounter =>
+            {
+                return await GetPlayerInfoAsync(encounter, cancellationToken).ConfigureAwait(false);
+            })
+            .ToArray();
+        var mostPlayedWithInfo = await Task.WhenAll(populateMostPlayedWithTasks).ConfigureAwait(false);
+
+        report.UniquePlayersPlayedWith = uniquePlayers > int.MaxValue ? int.MaxValue : (int)uniquePlayers;
+        var mostPlayedWithInfoByMembershipId = mostPlayedWithInfo.ToDictionary(player => (player.MembershipType, player.MembershipId));
+        report.MostPlayedWith = mostPlayedWith
+            .Select(encounter => new PlayerEncounterReport
+            {
+                Player = mostPlayedWithInfoByMembershipId.GetValueOrDefault((encounter.EncounteredMembershipType, encounter.EncounteredMembershipId))
+                    ?? new ReportPlayer
+                    {
+                        MembershipId = encounter.EncounteredMembershipId,
+                        MembershipType = encounter.EncounteredMembershipType
+                    },
+                EncounterCount = encounter.Count
+            })
+            .ToList();
+    }
+
+    private static ReportPlayer ToReportPlayer(BungiePlayer player, string emblemUrl)
+    {
+        var user = player.DestinyUserInfo;
+        return new ReportPlayer
+        {
+            MembershipId = user?.MembershipId ?? 0,
+            MembershipType = user?.MembershipType ?? 0,
+            DisplayName = DisplayName(user),
+            EmblemUrl = emblemUrl
+        };
+    }
+
+    private static string DisplayName(UserInfoCard? user)
+    {
+        if (user is null)
+        {
+            return "";
+        }
+
+        if (!string.IsNullOrWhiteSpace(user.BungieGlobalDisplayName))
+        {
+            return user.BungieGlobalDisplayNameCode is > 0
+                ? $"{user.BungieGlobalDisplayName}#{user.BungieGlobalDisplayNameCode:0000}"
+                : user.BungieGlobalDisplayName;
+        }
+
+        return user.DisplayName ?? "";
+    }
+
+    private async Task<ReportPlayer> GetPlayerInfoAsync(PlayerEncounterAggregate player, CancellationToken cancellationToken)
+    {
+        var response = await bungieClient.Destiny2_GetProfileAsync(ProfileCharactersComponents, player.EncounteredMembershipId, player.EncounteredMembershipType, cancellationToken).ConfigureAwait(false);
+        var characterResponse = EnsureSuccess(response, profile => profile.Response, $"Destiny2_GetProfileAsync:Characters:{player.EncounteredMembershipType}:{player.EncounteredMembershipId}");
+        var lastPlayedCharacter = characterResponse?.Characters?.Data?.Values.OrderByDescending(c => c.DateLastPlayed).FirstOrDefault();
+        return new ReportPlayer
+        {
+            MembershipId = player.EncounteredMembershipId,
+            MembershipType = player.EncounteredMembershipType,
+            DisplayName = characterResponse?.Profile?.Data?.UserInfo?.DisplayName ?? "",
+            EmblemUrl = BungieUrl(lastPlayedCharacter?.EmblemPath)
+        };
+    }
+}
