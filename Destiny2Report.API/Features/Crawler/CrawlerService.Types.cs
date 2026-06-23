@@ -36,10 +36,16 @@ public partial class CrawlerService
 
     private sealed record CompletedRaidActivity(string RaidName, DateTimeOffset CompletedAt, long InstanceId);
 
-    private sealed record SherpaCheck(DestinyPostGameCarnageReportData Pgcr, string NormalizedRaidName, DateTimeOffset CompletedAt);
+    private sealed record SherpaCheck(
+        long InstanceId,
+        string NormalizedRaidName,
+        DateTimeOffset CompletedAt,
+        IReadOnlyCollection<SherpaCandidate> Candidates);
+
+    private sealed record SherpaCandidate(int MembershipType, long MembershipId);
 
     private sealed record SherpaCandidateCheck(
-        DestinyPostGameCarnageReportData Pgcr,
+        long InstanceId,
         string NormalizedRaidName,
         DateTimeOffset CompletedAt,
         int MembershipType,

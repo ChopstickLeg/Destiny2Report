@@ -90,21 +90,26 @@ public partial class CrawlerService
                     .ConfigureAwait(false);
 
                 var payload = EnsureSuccess(response, item => item.Response, operation);
-                var activities = payload.Activities?.ToArray() ?? [];
-                if (activities.Length == 0)
+                var activities = payload.Activities;
+                if (activities is null || activities.Count == 0)
                 {
                     break;
                 }
 
+                var reachedCrawlBoundary = false;
                 foreach (var activity in activities)
                 {
                     if (crawlAfter is null || activity.Period > crawlAfter)
                     {
                         results.TryAdd(activity.ActivityDetails.InstanceId, activity);
                     }
+                    else
+                    {
+                        reachedCrawlBoundary = true;
+                    }
                 }
 
-                if (activities.Length < PageSize || (crawlAfter is not null && activities.Any(activity => activity.Period <= crawlAfter)))
+                if (activities.Count < PageSize || reachedCrawlBoundary)
                 {
                     break;
                 }
@@ -114,29 +119,23 @@ public partial class CrawlerService
         }
     }
 
-    private async Task<Dictionary<long, DestinyPostGameCarnageReportData>> FetchPgcrsAsync(
-        IEnumerable<DestinyHistoricalStatsPeriodGroup> activities,
+    private async Task<List<(DestinyHistoricalStatsPeriodGroup Activity, DestinyPostGameCarnageReportData Pgcr)>> FetchPgcrBatchAsync(
+        IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activities,
         CancellationToken cancellationToken)
     {
-        var activityIds = activities
-            .Select(activity => activity.ActivityDetails.InstanceId)
-            .Where(instanceId => instanceId > 0)
-            .Distinct()
-            .ToArray();
-
-        var results = new ConcurrentDictionary<long, DestinyPostGameCarnageReportData>();
         using var throttler = new SemaphoreSlim(MaxConcurrentPgcrRequests);
-        var tasks = activityIds.Select(async activityId =>
+        var tasks = activities.Select(async activity =>
         {
             await throttler.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+                var activityId = activity.ActivityDetails.InstanceId;
                 var operation = $"GetPostGameCarnageReport:{activityId}";
                 var response = await bungieClient.Destiny2_GetPostGameCarnageReportAsync(activityId, cancellationToken)
                     .ConfigureAwait(false);
                 var pgcr = EnsureSuccess(response, item => item.Response, operation);
 
-                results.TryAdd(activityId, pgcr);
+                return (Activity: activity, Pgcr: pgcr);
             }
             finally
             {
@@ -144,8 +143,11 @@ public partial class CrawlerService
             }
         });
 
-        await Task.WhenAll(tasks).ConfigureAwait(false);
-        return results.ToDictionary(item => item.Key, item => item.Value);
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return results
+            .Where(item => item.Pgcr.ActivityDetails.InstanceId > 0)
+            .OrderBy(item => item.Pgcr.Period)
+            .ToList();
     }
 
     private async Task<IReadOnlyCollection<CompletedRaidActivity>?> FetchCompletedRaidHistoryAsync(
@@ -206,8 +208,8 @@ public partial class CrawlerService
                 }
 
                 var payload = EnsureSuccess(response, item => item.Response, operation);
-                var activities = payload.Activities?.ToArray() ?? [];
-                if (activities.Length == 0)
+                var activities = payload.Activities;
+                if (activities is null || activities.Count == 0)
                 {
                     break;
                 }
@@ -232,7 +234,7 @@ public partial class CrawlerService
                             activity.ActivityDetails.InstanceId));
                 }
 
-                if (activities.Length < PageSize)
+                if (activities.Count < PageSize)
                 {
                     break;
                 }

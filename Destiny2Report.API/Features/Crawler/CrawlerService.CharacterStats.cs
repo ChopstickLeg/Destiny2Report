@@ -29,17 +29,31 @@ public partial class CrawlerService
             }
         }
 
-        foreach (var entry in pgcrs
-                     .SelectMany(pgcr => pgcr.Entries ?? [])
-                     .Where(entry => entry.Player?.DestinyUserInfo?.MembershipId == playerMembershipId)
-                     .Where(entry => characterClasses.ContainsKey(entry.CharacterId))
-                     .Where(entry => characterClasses[entry.CharacterId] == "Unknown")
-                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Player.CharacterClass)))
+        foreach (var pgcr in pgcrs)
         {
-            characterClasses[entry.CharacterId] = entry.Player.CharacterClass;
+            TryFillCharacterClassFromPgcr(characterClasses, pgcr, playerMembershipId);
         }
 
         return characterClasses;
+    }
+
+    private static void TryFillCharacterClassFromPgcr(
+        IDictionary<long, string> characterClasses,
+        DestinyPostGameCarnageReportData pgcr,
+        long playerMembershipId)
+    {
+        foreach (var entry in pgcr.Entries ?? [])
+        {
+            if (entry.Player?.DestinyUserInfo?.MembershipId != playerMembershipId
+                || !characterClasses.TryGetValue(entry.CharacterId, out var currentClass)
+                || currentClass != "Unknown"
+                || string.IsNullOrWhiteSpace(entry.Player.CharacterClass))
+            {
+                continue;
+            }
+
+            characterClasses[entry.CharacterId] = entry.Player.CharacterClass;
+        }
     }
 
     private static bool TryReadHistoricalCharacterClass(DestinyHistoricalStatsPerCharacter character, out string className)
