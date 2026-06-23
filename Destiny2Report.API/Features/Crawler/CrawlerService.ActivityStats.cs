@@ -16,31 +16,35 @@ public partial class CrawlerService
 {
     private async Task ApplyActivityDerivedStatsAsync(
         DestinyReport report,
+        CrawlAccumulator accumulator,
         int platformId,
         long playerMembershipId,
         IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activityHistory,
         IReadOnlyDictionary<long, DestinyPostGameCarnageReportData> pgcrs,
         ManifestContext manifest,
+        bool resetWeaponAggregates,
         CancellationToken cancellationToken)
     {
         var activityDefinitions = await manifest.GetTableAsync("DestinyActivityDefinition", cancellationToken).ConfigureAwait(false);
         var destinationDefinitions = await manifest.GetTableAsync("DestinyDestinationDefinition", cancellationToken).ConfigureAwait(false);
 
-        ApplyPatrolTime(report, activityHistory.Where(activity => IncludesMode(activity, ActivityModes.Patrol)), activityDefinitions, destinationDefinitions);
+        ApplyPatrolTime(accumulator, activityHistory.Where(activity => IncludesMode(activity, ActivityModes.Patrol)), activityDefinitions, destinationDefinitions);
         await ApplyPgcrAggregatesAsync(
                 report,
+                accumulator,
                 platformId,
                 playerMembershipId,
                 activityHistory,
                 pgcrs,
                 activityDefinitions,
                 manifest,
+                resetWeaponAggregates,
                 cancellationToken)
             .ConfigureAwait(false);
     }
 
     private static void ApplyPatrolTime(
-        DestinyReport report,
+        CrawlAccumulator accumulator,
         IEnumerable<DestinyHistoricalStatsPeriodGroup> patrolActivities,
         JObject activityDefinitions,
         JObject destinationDefinitions)
@@ -63,35 +67,37 @@ public partial class CrawlerService
                 seconds = GetStat(activity.Values, "activityDurationSeconds");
             }
 
-            report.PatrolTimeByPlanet[destinationName] = report.PatrolTimeByPlanet.GetValueOrDefault(destinationName) + TimeSpan.FromSeconds(seconds);
+            accumulator.PatrolSecondsByPlanet[destinationName] = accumulator.PatrolSecondsByPlanet.GetValueOrDefault(destinationName) + (long)seconds;
         }
     }
 
     private async Task ApplyPgcrAggregatesAsync(
         DestinyReport report,
+        CrawlAccumulator accumulator,
         int platformId,
         long playerMembershipId,
         IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activityHistory,
         IReadOnlyDictionary<long, DestinyPostGameCarnageReportData> pgcrs,
         JObject activityDefinitions,
         ManifestContext manifest,
+        bool resetWeaponAggregates,
         CancellationToken cancellationToken)
     {
         var allPgcrs = pgcrs.Values.OrderBy(pgcr => pgcr.Period).ToArray();
-        var playerEncounterCounts = new Dictionary<(int MembershipType, long MembershipId), int>();
-        var pvpOpponents = new Dictionary<long, RivalAggregate>();
-        var gambitOpponents = new Dictionary<long, RivalAggregate>();
-        var pveWeapons = new Dictionary<int, int>();
-        var pvpWeapons = new Dictionary<int, int>();
-        var gambitWeapons = new Dictionary<int, int>();
-        var raidCompletions = new Dictionary<string, ActivityCompletionAggregate>(StringComparer.OrdinalIgnoreCase);
-        var dungeonCompletions = new Dictionary<string, ActivityCompletionAggregate>(StringComparer.OrdinalIgnoreCase);
-        var playersSherpaed = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var playerEncounterCounts = accumulator.EncounterCounts.Values
+            .ToDictionary(item => (item.MembershipType, item.MembershipId), item => item.Count);
+        var pvpOpponents = ToRivalAggregates(accumulator.CrucibleRivals);
+        var gambitOpponents = ToRivalAggregates(accumulator.GambitRivals);
+        var pveWeaponDeltas = new Dictionary<int, int>();
+        var pvpWeaponDeltas = new Dictionary<int, int>();
+        var gambitWeaponDeltas = new Dictionary<int, int>();
+        var raidCompletions = ToCompletionAggregates(accumulator.RaidCompletions);
+        var dungeonCompletions = ToCompletionAggregates(accumulator.DungeonCompletions);
+        var playersSherpaed = new Dictionary<string, int>(accumulator.PlayersSherpaed, StringComparer.OrdinalIgnoreCase);
         var pendingSherpaChecks = new List<SherpaCheck>();
         var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>>();
         var membershipTypeByPlayer = new ConcurrentDictionary<long, Lazy<Task<int?>>>();
-        var activityTime = new TimeSpan();
-
+        var currentCrawlEncounteredPlayers = new HashSet<(int MembershipType, long MembershipId)>();
         foreach (var pgcr in allPgcrs)
         {
             var playerEntry = FindPlayerEntry(pgcr, playerMembershipId);
@@ -106,7 +112,7 @@ public partial class CrawlerService
             var playerDeaths = GetStat(playerEntry.Values, "deaths");
             if (playerKills <= 0)
             {
-                report.ZeroKillActivities++;
+                accumulator.ZeroKillActivities++;
             }
 
             var activityName = ActivityName(activityDefinitions, pgcr.ActivityDetails.ReferenceId, pgcr.ActivityDetails.DirectorActivityHash);
@@ -130,13 +136,15 @@ public partial class CrawlerService
                 playerActivitySeconds = GetStat(playerEntry.Values, "activityDurationSeconds");
             }
 
-            activityTime += TimeSpan.FromSeconds(playerActivitySeconds);
+            accumulator.TotalActivitySeconds += (long)playerActivitySeconds;
 
             if (playerCompleted && isRaid)
             {
                 AddCompletion(raidCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
                 var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
-                if (HasPriorCompletedRaid(activityHistory, normalizedRaidName, activityCompletedAt, pgcr.ActivityDetails.InstanceId, activityDefinitions))
+                AddFirstRaidCompletion(accumulator, normalizedRaidName, activityCompletedAt, pgcr.ActivityDetails.InstanceId);
+                if (HasPriorCompletedRaid(accumulator, normalizedRaidName, activityCompletedAt, pgcr.ActivityDetails.InstanceId)
+                    || HasPriorCompletedRaid(activityHistory, normalizedRaidName, activityCompletedAt, pgcr.ActivityDetails.InstanceId, activityDefinitions))
                 {
                     pendingSherpaChecks.Add(new SherpaCheck(pgcr, normalizedRaidName, activityCompletedAt));
                 }
@@ -159,6 +167,10 @@ public partial class CrawlerService
             {
                 var key = (otherPlayer.MembershipType, otherPlayer.MembershipId);
                 playerEncounterCounts[key] = playerEncounterCounts.GetValueOrDefault(key) + 1;
+                if (IsCountablePlayerEncounter(key.MembershipType, key.MembershipId, 1))
+                {
+                    currentCrawlEncounteredPlayers.Add(key);
+                }
             }
 
             if (isPvp)
@@ -166,7 +178,7 @@ public partial class CrawlerService
                 if (!isPrivateCrucible)
                 {
                     TrackRivals(pvpOpponents, pgcr, playerEntry, playerMembershipId, playerKills, playerDeaths);
-                    AddWeapons(pvpWeapons, playerEntry);
+                    AddWeapons(pvpWeaponDeltas, playerEntry);
                 }
             }
             else if (isGambit)
@@ -174,19 +186,44 @@ public partial class CrawlerService
                 if (!isPrivateGambit)
                 {
                     TrackRivals(gambitOpponents, pgcr, playerEntry, playerMembershipId, playerKills, playerDeaths);
-                    AddWeapons(gambitWeapons, playerEntry);
-                    report.GambitMotesBanked += (int)GetMoteStat(playerEntry, "bank", "deposit");
-                    report.GambitMotesLost += (int)GetMoteStat(playerEntry, "lost");
+                    AddWeapons(gambitWeaponDeltas, playerEntry);
+                    accumulator.GambitMotesBanked += (int)GetMoteStat(playerEntry, "bank", "deposit");
+                    accumulator.GambitMotesLost += (int)GetMoteStat(playerEntry, "lost");
                 }
             }
             else
             {
-                AddWeapons(pveWeapons, playerEntry);
+                AddWeapons(pveWeaponDeltas, playerEntry);
             }
         }
 
         await ApplySherpaChecksAsync(cancellationToken).ConfigureAwait(false);
 
+        var persistedPlayerEncounterCounts = playerEncounterCounts
+            .Where(item => IsPersistablePlayerEncounter(item.Key.MembershipType, item.Key.MembershipId, item.Value))
+            .ToDictionary(item => item.Key, item => item.Value);
+
+        SaveCompletionAggregates(accumulator.RaidCompletions, raidCompletions);
+        SaveCompletionAggregates(accumulator.DungeonCompletions, dungeonCompletions);
+        accumulator.PlayersSherpaed = new Dictionary<string, int>(playersSherpaed, StringComparer.OrdinalIgnoreCase);
+        accumulator.EncounterCounts = persistedPlayerEncounterCounts.ToDictionary(
+            item => PlayerKey(item.Key.MembershipType, item.Key.MembershipId),
+            item => new EncounterAccumulator
+            {
+                MembershipType = item.Key.MembershipType,
+                MembershipId = item.Key.MembershipId,
+                Count = item.Value
+            });
+        accumulator.UniquePlayersPlayedWith += currentCrawlEncounteredPlayers.Count;
+        SaveRivalAggregates(accumulator.CrucibleRivals, pvpOpponents);
+        SaveRivalAggregates(accumulator.GambitRivals, gambitOpponents);
+
+        report.PatrolTimeByPlanet = accumulator.PatrolSecondsByPlanet.ToDictionary(
+            item => item.Key,
+            item => TimeSpan.FromSeconds(item.Value));
+        report.ZeroKillActivities = accumulator.ZeroKillActivities;
+        report.GambitMotesBanked = accumulator.GambitMotesBanked;
+        report.GambitMotesLost = accumulator.GambitMotesLost;
         report.RaidCompletions = ToCompletionSummaries(raidCompletions);
         report.DungeonCompletions = ToCompletionSummaries(dungeonCompletions);
         report.PlayersSherpaed = ToSherpaReports(playersSherpaed);
@@ -194,27 +231,37 @@ public partial class CrawlerService
                 report,
                 platformId,
                 playerMembershipId,
-                playerEncounterCounts,
+                persistedPlayerEncounterCounts,
+                accumulator.UniquePlayersPlayedWith,
                 cancellationToken)
             .ConfigureAwait(false);
 
         ApplyRival(report, pvpOpponents, isGambit: false);
         ApplyRival(report, gambitOpponents, isGambit: true);
 
-        var weaponDefinitions = await GetInventoryItemSummariesAsync(
+        await ApplyWeaponAggregateDeltasAsync(
+                report,
+                platformId,
+                playerMembershipId,
+                pveWeaponDeltas,
+                pvpWeaponDeltas,
+                gambitWeaponDeltas,
                 manifest.Manifest,
-                TopWeaponHashes(pveWeapons).Concat(TopWeaponHashes(pvpWeapons)).Concat(TopWeaponHashes(gambitWeapons)),
+                resetWeaponAggregates,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        report.PvETopWeapons = BuildWeaponReports(pveWeapons, weaponDefinitions);
-        report.CrucibleTopWeapons = BuildWeaponReports(pvpWeapons, weaponDefinitions);
-        report.GambitTopWeapons = BuildWeaponReports(gambitWeapons, weaponDefinitions);
-
-        report.TotalActivityTime = activityTime;
+        report.TotalActivityTime = TimeSpan.FromSeconds(accumulator.TotalActivitySeconds);
 
         async Task<IReadOnlyCollection<CompletedRaidActivity>?> GetCompletedRaidHistoryAsync(int membershipType, long membershipId)
         {
+            var accumulatorHistory = await FetchCompletedRaidHistoryFromAccumulatorAsync(membershipType, membershipId, cancellationToken)
+                .ConfigureAwait(false);
+            if (accumulatorHistory is not null)
+            {
+                return accumulatorHistory;
+            }
+
             var lazyHistory = completedRaidHistoryByPlayer.GetOrAdd(
                 (membershipType, membershipId),
                 key => new Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>(
@@ -225,6 +272,24 @@ public partial class CrawlerService
                         cancellationToken)));
 
             return await lazyHistory.Value.ConfigureAwait(false);
+        }
+
+        async Task<IReadOnlyCollection<CompletedRaidActivity>?> FetchCompletedRaidHistoryFromAccumulatorAsync(
+            int membershipType,
+            long membershipId,
+            CancellationToken cancellationToken)
+        {
+            var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
+            var filter = Builders<CrawlAccumulator>.Filter.Eq(item => item.PlatformId, membershipType)
+                & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, membershipId)
+                & Builders<CrawlAccumulator>.Filter.Eq(item => item.NeedsFullRecrawl, false);
+            var playerAccumulator = await accumulators.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (playerAccumulator is null || playerAccumulator.FirstRaidCompletions.Count == 0)
+            {
+                return null;
+            }
+
+            return ToCompletedRaidActivities(playerAccumulator).ToArray();
         }
 
         async Task ApplySherpaChecksAsync(CancellationToken cancellationToken)
@@ -546,6 +611,23 @@ public partial class CrawlerService
         completion.SoloFlawlessClear |= soloFlawlessClear;
     }
 
+    private static void AddFirstRaidCompletion(
+        CrawlAccumulator accumulator,
+        string normalizedRaidName,
+        DateTimeOffset completedAt,
+        long instanceId)
+    {
+        if (!accumulator.FirstRaidCompletions.TryGetValue(normalizedRaidName, out var existing)
+            || completedAt < existing.CompletedAt)
+        {
+            accumulator.FirstRaidCompletions[normalizedRaidName] = new RaidFirstCompletion
+            {
+                CompletedAt = completedAt,
+                InstanceId = instanceId
+            };
+        }
+    }
+
     private static List<ActivityCompletionSummary> ToCompletionSummaries(
         IDictionary<string, ActivityCompletionAggregate> completions)
     {
@@ -586,6 +668,24 @@ public partial class CrawlerService
 
                 return IsPriorCompletedRaid(completedRaid, normalizedRaidName, activityCompletedAt, activityInstanceId);
             });
+    }
+
+    private static bool HasPriorCompletedRaid(
+        CrawlAccumulator accumulator,
+        string normalizedRaidName,
+        DateTimeOffset activityCompletedAt,
+        long activityInstanceId)
+    {
+        return ToCompletedRaidActivities(accumulator)
+            .Any(activity => IsPriorCompletedRaid(activity, normalizedRaidName, activityCompletedAt, activityInstanceId));
+    }
+
+    private static IEnumerable<CompletedRaidActivity> ToCompletedRaidActivities(CrawlAccumulator accumulator)
+    {
+        return accumulator.FirstRaidCompletions.Select(item => new CompletedRaidActivity(
+            item.Key,
+            item.Value.CompletedAt,
+            item.Value.InstanceId));
     }
 
     private static bool IsPriorCompletedRaid(

@@ -30,6 +30,7 @@ public partial class CrawlerService(
     private const int PageSize = 250;
     private const int MaxConcurrentPgcrRequests = 45;
     private const int MaxConcurrentSherpaHistoryRequests = 8;
+    private const int RecentActivityInstanceIdLimit = 5000;
     private const int AllMembershipTypes = 254;
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
 
@@ -41,6 +42,7 @@ public partial class CrawlerService(
     private static readonly TimeSpan ManifestCacheDuration = TimeSpan.FromDays(1);
     private static readonly HashSet<long> PrivateGambitActivityTypeHashes = [146907730, 2516284680];
     private static readonly HashSet<long> PrivateCrucibleActivityTypeHashes = [4260058063];
+    private static readonly TimeSpan IncrementalCrawlOverlap = TimeSpan.FromHours(48);
     private static readonly DateTimeOffset BeyondLightRelease = new(2020, 11, 10, 17, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset WitchQueenRelease = new(2022, 2, 22, 17, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset SeasonOfTheHauntedRelease = new(2022, 5, 24, 17, 0, 0, TimeSpan.Zero);
@@ -66,47 +68,74 @@ public partial class CrawlerService(
         try
         {
             var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+            var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
+            var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, platformId)
+                & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
+            var accumulatorFilter = Builders<CrawlAccumulator>.Filter.Eq(item => item.PlatformId, platformId)
+                & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
+            var existingReportTask = reports.Find(filter).FirstOrDefaultAsync(cancellationToken);
+            var existingAccumulatorTask = accumulators.Find(accumulatorFilter).FirstOrDefaultAsync(cancellationToken);
             var manifest = await GetManifestAsync(cancellationToken).ConfigureAwait(false);
 
             var profileTask = bungieClient.Destiny2_GetProfileAsync(ProfileComponents, playerMembershipId, platformId, cancellationToken);
             var accountStatsTask = bungieClient.Destiny2_GetHistoricalStatsForAccountAsync(playerMembershipId, AccountStatGroups, platformId, cancellationToken);
 
-            await Task.WhenAll(profileTask, accountStatsTask).ConfigureAwait(false);
+            await Task.WhenAll(profileTask, accountStatsTask, existingReportTask, existingAccumulatorTask).ConfigureAwait(false);
 
             var profile = EnsureSuccess(profileTask.Result, response => response.Response, "GetProfile");
             var accountStats = EnsureSuccess(accountStatsTask.Result, response => response.Response, "GetHistoricalStatsForAccount");
             var historicalCharacters = accountStats.Characters?.ToArray() ?? [];
+            var existingReport = existingReportTask.Result;
+            var existingAccumulator = existingAccumulatorTask.Result;
+            var requiresFullCrawl = existingAccumulator is null
+                || existingAccumulator.NeedsFullRecrawl
+                || existingReport?.NeedsFullRecrawl == true;
+            var accumulator = requiresFullCrawl
+                ? NewAccumulator(platformId, playerMembershipId)
+                : existingAccumulator!;
+            var crawlAfter = requiresFullCrawl
+                ? (DateTimeOffset?)null
+                : accumulator.NewestActivityPeriod.Subtract(IncrementalCrawlOverlap);
 
             var characterIds = historicalCharacters.Select(character => character.CharacterId).ToArray();
 
             var historicalStatsTask = FetchModeStatsAsync(platformId, playerMembershipId, characterIds, cancellationToken);
             var weaponHistoryTask = FetchUniqueWeaponHistoryAsync(platformId, playerMembershipId, characterIds, cancellationToken);
-            var activityHistoryTask = FetchActivityHistoriesAsync(platformId, playerMembershipId, characterIds, cancellationToken);
+            var activityHistoryTask = FetchActivityHistoriesAsync(platformId, playerMembershipId, characterIds, crawlAfter, cancellationToken);
 
             await Task.WhenAll(historicalStatsTask, weaponHistoryTask, activityHistoryTask).ConfigureAwait(false);
 
             var activityHistory = activityHistoryTask.Result;
-            var pgcrs = await FetchPgcrsAsync(activityHistory, cancellationToken).ConfigureAwait(false);
+            var recentActivityIds = requiresFullCrawl
+                ? new HashSet<long>()
+                : accumulator.RecentActivityInstanceIds.ToHashSet();
+            var newActivityHistory = activityHistory
+                .Where(item => item.ActivityDetails.InstanceId > 0)
+                .Where(item => !recentActivityIds.Contains(item.ActivityDetails.InstanceId))
+                .ToArray();
+            var pgcrs = await FetchPgcrsAsync(newActivityHistory, cancellationToken).ConfigureAwait(false);
             var characterClassById = BuildCharacterClassMap(historicalCharacters, pgcrs.Values, playerMembershipId, characterIds);
 
             var report = new DestinyReport
             {
                 PlatformId = platformId,
-                PlayerMembershipId = playerMembershipId
+                PlayerMembershipId = playerMembershipId,
+                NeedsFullRecrawl = false,
+                FullRecrawlReason = ""
             };
 
             ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById);
             ApplyProfileStats(report, profile, manifest);
             ApplyModeStats(report, historicalStatsTask.Result);
-            await ApplyActivityDerivedStatsAsync(report, platformId, playerMembershipId, activityHistory, pgcrs, manifest, cancellationToken).ConfigureAwait(false);
+            await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, newActivityHistory, pgcrs, manifest, requiresFullCrawl, cancellationToken).ConfigureAwait(false);
             await ApplyWeaponStatsAsync(report, weaponHistoryTask.Result, manifest, cancellationToken).ConfigureAwait(false);
             ApplyTriumphSeals(report, profile, manifest);
             ApplyActivityTriumphRecords(report, profile);
-
-            var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, platformId)
-                & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
+            UpdateAccumulatorCrawlState(accumulator, activityHistory, pgcrs.Keys);
 
             await reports.ReplaceOneAsync(filter, report, new ReplaceOptions { IsUpsert = true }, cancellationToken)
+                .ConfigureAwait(false);
+            await accumulators.ReplaceOneAsync(accumulatorFilter, accumulator, new ReplaceOptions { IsUpsert = true }, cancellationToken)
                 .ConfigureAwait(false);
             activity?.SetStatus(ActivityStatusCode.Ok);
         }

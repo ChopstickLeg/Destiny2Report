@@ -95,6 +95,120 @@ public partial class CrawlerService
         }
     }
 
+    private async Task ApplyWeaponAggregateDeltasAsync(
+        DestinyReport report,
+        int ownerMembershipType,
+        long ownerMembershipId,
+        IReadOnlyDictionary<int, int> pveWeaponDeltas,
+        IReadOnlyDictionary<int, int> crucibleWeaponDeltas,
+        IReadOnlyDictionary<int, int> gambitWeaponDeltas,
+        DestinyManifest manifest,
+        bool resetWeaponAggregates,
+        CancellationToken cancellationToken)
+    {
+        var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
+        var ownerFilter = Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipType, ownerMembershipType)
+            & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipId, ownerMembershipId);
+
+        if (resetWeaponAggregates)
+        {
+            await weapons.DeleteManyAsync(ownerFilter, cancellationToken).ConfigureAwait(false);
+        }
+
+        var allHashes = pveWeaponDeltas.Keys
+            .Concat(crucibleWeaponDeltas.Keys)
+            .Concat(gambitWeaponDeltas.Keys)
+            .Distinct()
+            .ToArray();
+        var weaponDefinitions = await GetInventoryItemSummariesAsync(manifest, allHashes, cancellationToken)
+            .ConfigureAwait(false);
+
+        var writes = BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "PvE", pveWeaponDeltas, weaponDefinitions)
+            .Concat(BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "Crucible", crucibleWeaponDeltas, weaponDefinitions))
+            .Concat(BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "Gambit", gambitWeaponDeltas, weaponDefinitions))
+            .ToArray();
+
+        if (writes.Length > 0)
+        {
+            await weapons.BulkWriteAsync(writes, new BulkWriteOptions { IsOrdered = false }, cancellationToken).ConfigureAwait(false);
+        }
+
+        report.PvETopWeapons = await GetTopWeaponReportsAsync(weapons, ownerFilter, "PvE", cancellationToken).ConfigureAwait(false);
+        report.CrucibleTopWeapons = await GetTopWeaponReportsAsync(weapons, ownerFilter, "Crucible", cancellationToken).ConfigureAwait(false);
+        report.GambitTopWeapons = await GetTopWeaponReportsAsync(weapons, ownerFilter, "Gambit", cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IEnumerable<WriteModel<WeaponAggregate>> BuildWeaponAggregateWrites(
+        int ownerMembershipType,
+        long ownerMembershipId,
+        string activityMode,
+        IReadOnlyDictionary<int, int> weaponDeltas,
+        IReadOnlyDictionary<int, WeaponDefinitionSummary> weaponDefinitions)
+    {
+        return weaponDeltas
+            .Where(item => item.Value > 0)
+            .Select(item =>
+            {
+                weaponDefinitions.TryGetValue(item.Key, out var definition);
+                var weaponName = definition?.Name ?? item.Key.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var weaponKey = NormalizeWeaponKey(weaponName);
+                return new
+                {
+                    WeaponName = weaponName,
+                    WeaponKey = weaponKey,
+                    IconUrl = definition?.IconUrl ?? "",
+                    Kills = item.Value
+                };
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.WeaponKey))
+            .GroupBy(item => item.WeaponKey, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var first = group.First();
+                var filter = Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipType, ownerMembershipType)
+                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipId, ownerMembershipId)
+                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, activityMode)
+                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.WeaponKey, group.Key);
+                var update = Builders<WeaponAggregate>.Update
+                    .SetOnInsert(weapon => weapon.OwnerMembershipType, ownerMembershipType)
+                    .SetOnInsert(weapon => weapon.OwnerMembershipId, ownerMembershipId)
+                    .SetOnInsert(weapon => weapon.ActivityMode, activityMode)
+                    .SetOnInsert(weapon => weapon.WeaponKey, group.Key)
+                    .Set(weapon => weapon.WeaponName, first.WeaponName)
+                    .Set(weapon => weapon.IconUrl, first.IconUrl)
+                    .Inc(weapon => weapon.TotalKills, group.Sum(item => item.Kills));
+
+                return new UpdateOneModel<WeaponAggregate>(filter, update)
+                {
+                    IsUpsert = true
+                };
+            });
+    }
+
+    private static async Task<List<WeaponReport>> GetTopWeaponReportsAsync(
+        IMongoCollection<WeaponAggregate> weapons,
+        FilterDefinition<WeaponAggregate> ownerFilter,
+        string activityMode,
+        CancellationToken cancellationToken)
+    {
+        var modeFilter = ownerFilter & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, activityMode);
+        var topWeapons = await weapons
+            .Find(modeFilter)
+            .SortByDescending(weapon => weapon.TotalKills)
+            .Limit(10)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return topWeapons
+            .Select(weapon => new WeaponReport
+            {
+                Name = weapon.WeaponName,
+                IconUrl = weapon.IconUrl,
+                TotalKills = weapon.TotalKills
+            })
+            .ToList();
+    }
+
     private static void TrackRivals(
         IDictionary<long, RivalAggregate> rivals,
         DestinyPostGameCarnageReportData pgcr,
@@ -215,20 +329,36 @@ public partial class CrawlerService
     {
         return weaponKills
             .Where(item => item.Value > 0)
-            .OrderByDescending(item => item.Value)
-            .Take(10)
             .Select(item =>
             {
                 WeaponDefinitionSummary? definition = null;
                 weaponDefinitions?.TryGetValue(item.Key, out definition);
-                return new WeaponReport
+                return new
                 {
-                    Name = definition?.Name ?? item.Key.ToString(),
+                    Name = definition?.Name ?? item.Key.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     IconUrl = definition?.IconUrl ?? "",
-                    TotalKills = item.Value
+                    Kills = item.Value
                 };
             })
+            .GroupBy(item => NormalizeWeaponKey(item.Name), StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var first = group.First();
+                return new WeaponReport
+                {
+                    Name = first.Name,
+                    IconUrl = first.IconUrl,
+                    TotalKills = group.Sum(item => item.Kills)
+                };
+            })
+            .OrderByDescending(item => item.TotalKills)
+            .Take(10)
             .ToList();
+    }
+
+    private static string NormalizeWeaponKey(string weaponName)
+    {
+        return weaponName.Trim().ToUpperInvariant();
     }
 
     private static WeaponDefinitionSummary ToWeaponDefinitionSummary(DestinyDefinition definition)

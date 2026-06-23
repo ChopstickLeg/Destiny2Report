@@ -14,6 +14,8 @@ public record DestinyReport
     public int PlatformId { get; init; }
     public long PlayerMembershipId { get; init; }
     public DateTimeOffset CrawledAt { get; init; } = DateTimeOffset.UtcNow;
+    public bool NeedsFullRecrawl { get; set; }
+    public string FullRecrawlReason { get; set; } = "";
     public TimeSpan TotalPlaytime { get; set; }
     public Dictionary<string, TimeSpan> PlaytimeByClass { get; set; } = new();
     public Dictionary<string, TimeSpan> PlaytimeByActivity { get; set; } = new();
@@ -105,6 +107,76 @@ public record PlayerEncounterReport
 {
     public DestinyPlayer Player { get; init; } = new();
     public int EncounterCount { get; init; }
+}
+
+[BsonIgnoreExtraElements]
+public record CrawlAccumulator
+{
+    public int PlatformId { get; set; }
+    public long PlayerMembershipId { get; set; }
+    public DateTimeOffset LastSuccessfulCrawlAt { get; set; }
+    public DateTimeOffset NewestActivityPeriod { get; set; }
+    public List<long> RecentActivityInstanceIds { get; set; } = new();
+    public bool NeedsFullRecrawl { get; set; }
+    public string FullRecrawlReason { get; set; } = "";
+    public int SchemaVersion { get; set; } = 1;
+    public Dictionary<string, long> PatrolSecondsByPlanet { get; set; } = new();
+    public Dictionary<string, ActivityCompletionAccumulator> RaidCompletions { get; set; } = new();
+    public Dictionary<string, ActivityCompletionAccumulator> DungeonCompletions { get; set; } = new();
+    public Dictionary<string, RaidFirstCompletion> FirstRaidCompletions { get; set; } = new();
+    public Dictionary<string, EncounterAccumulator> EncounterCounts { get; set; } = new();
+    public int UniquePlayersPlayedWith { get; set; }
+    public Dictionary<string, RivalAccumulator> CrucibleRivals { get; set; } = new();
+    public Dictionary<string, RivalAccumulator> GambitRivals { get; set; } = new();
+    public int ZeroKillActivities { get; set; }
+    public long TotalActivitySeconds { get; set; }
+    public int GambitMotesBanked { get; set; }
+    public int GambitMotesLost { get; set; }
+    public Dictionary<string, int> PlayersSherpaed { get; set; } = new();
+}
+
+public record ActivityCompletionAccumulator
+{
+    public int CompletionCount { get; set; }
+    public bool ContestClear { get; set; }
+    public bool FlawlessClear { get; set; }
+    public bool SoloClear { get; set; }
+    public bool SoloFlawlessClear { get; set; }
+}
+
+public record RaidFirstCompletion
+{
+    public DateTimeOffset CompletedAt { get; set; }
+    public long InstanceId { get; set; }
+}
+
+public record EncounterAccumulator
+{
+    public int MembershipType { get; set; }
+    public long MembershipId { get; set; }
+    public int Count { get; set; }
+}
+
+public record RivalAccumulator
+{
+    public DestinyPlayer Player { get; set; } = new();
+    public int Matches { get; set; }
+    public int Wins { get; set; }
+    public int Losses { get; set; }
+    public double Kills { get; set; }
+    public double Deaths { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public record WeaponAggregate
+{
+    public int OwnerMembershipType { get; set; }
+    public long OwnerMembershipId { get; set; }
+    public string ActivityMode { get; set; } = "";
+    public string WeaponKey { get; set; } = "";
+    public string WeaponName { get; set; } = "";
+    public string IconUrl { get; set; } = "";
+    public int TotalKills { get; set; }
 }
 
 [BsonIgnoreExtraElements]

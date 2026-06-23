@@ -130,6 +130,49 @@ static async Task EnsureMongoIndexesAsync(IServiceProvider serviceProvider)
 
     await reports.Indexes.CreateOneAsync(reportIndexModel);
 
+    var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
+    var accumulatorIndexKeys = Builders<CrawlAccumulator>.IndexKeys
+        .Ascending(accumulator => accumulator.PlatformId)
+        .Ascending(accumulator => accumulator.PlayerMembershipId);
+    var accumulatorIndexModel = new CreateIndexModel<CrawlAccumulator>(
+        accumulatorIndexKeys,
+        new CreateIndexOptions
+        {
+            Name = "ux_crawl_accumulators_platform_player",
+            Unique = true
+        });
+
+    await accumulators.Indexes.CreateOneAsync(accumulatorIndexModel);
+
+    var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
+    var weaponUniqueIndexKeys = Builders<WeaponAggregate>.IndexKeys
+        .Ascending(weapon => weapon.OwnerMembershipType)
+        .Ascending(weapon => weapon.OwnerMembershipId)
+        .Ascending(weapon => weapon.ActivityMode)
+        .Ascending(weapon => weapon.WeaponKey);
+    var weaponTopIndexKeys = Builders<WeaponAggregate>.IndexKeys
+        .Ascending(weapon => weapon.OwnerMembershipType)
+        .Ascending(weapon => weapon.OwnerMembershipId)
+        .Ascending(weapon => weapon.ActivityMode)
+        .Descending(weapon => weapon.TotalKills);
+
+    await weapons.Indexes.CreateManyAsync(
+        [
+            new CreateIndexModel<WeaponAggregate>(
+                weaponUniqueIndexKeys,
+                new CreateIndexOptions
+                {
+                    Name = "ux_weapon_aggregates_owner_mode_key",
+                    Unique = true
+                }),
+            new CreateIndexModel<WeaponAggregate>(
+                weaponTopIndexKeys,
+                new CreateIndexOptions
+                {
+                    Name = "ix_weapon_aggregates_owner_mode_kills"
+                })
+        ]);
+
     var encounters = mongoDatabase.GetCollection<PlayerEncounterAggregate>("player_encounters");
     var encounterPairIndexKeys = Builders<PlayerEncounterAggregate>.IndexKeys
         .Ascending(encounter => encounter.OwnerMembershipType)

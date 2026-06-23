@@ -1,0 +1,147 @@
+using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.Tests.TestSupport;
+
+namespace Destiny2Report.Tests.Features.Crawler;
+
+public sealed class CrawlerAccumulatorTests
+{
+    [Fact]
+    public void AddFirstRaidCompletion_keeps_earliest_normalized_raid_clear()
+    {
+        var accumulator = new CrawlAccumulator();
+
+        CrawlerReflection.Invoke(
+            "AddFirstRaidCompletion",
+            accumulator,
+            "Root of Nightmares",
+            DateTimeOffset.Parse("2024-02-01T01:00:00Z"),
+            20L);
+        CrawlerReflection.Invoke(
+            "AddFirstRaidCompletion",
+            accumulator,
+            "Root of Nightmares",
+            DateTimeOffset.Parse("2024-01-01T01:00:00Z"),
+            10L);
+        CrawlerReflection.Invoke(
+            "AddFirstRaidCompletion",
+            accumulator,
+            "Root of Nightmares",
+            DateTimeOffset.Parse("2024-03-01T01:00:00Z"),
+            30L);
+
+        var firstClear = Assert.Single(accumulator.FirstRaidCompletions).Value;
+        Assert.Equal(DateTimeOffset.Parse("2024-01-01T01:00:00Z"), firstClear.CompletedAt);
+        Assert.Equal(10L, firstClear.InstanceId);
+    }
+
+    [Fact]
+    public void HasPriorCompletedRaid_uses_accumulator_first_clear_instance_to_avoid_current_run()
+    {
+        var accumulator = new CrawlAccumulator
+        {
+            FirstRaidCompletions =
+            {
+                ["King's Fall"] = new RaidFirstCompletion
+                {
+                    CompletedAt = DateTimeOffset.Parse("2024-01-02T01:00:00Z"),
+                    InstanceId = 99L
+                }
+            }
+        };
+
+        var sameRun = (bool)CrawlerReflection.Invoke(
+            "HasPriorCompletedRaid",
+            accumulator,
+            "King's Fall",
+            DateTimeOffset.Parse("2024-01-02T01:00:00Z"),
+            99L)!;
+        var laterRun = (bool)CrawlerReflection.Invoke(
+            "HasPriorCompletedRaid",
+            accumulator,
+            "King's Fall",
+            DateTimeOffset.Parse("2024-01-03T01:00:00Z"),
+            100L)!;
+
+        Assert.False(sameRun);
+        Assert.True(laterRun);
+    }
+
+    [Fact]
+    public void UpdateAccumulatorCrawlState_advances_watermark_and_keeps_recent_ids_distinct()
+    {
+        var accumulator = new CrawlAccumulator
+        {
+            NeedsFullRecrawl = true,
+            FullRecrawlReason = "stat migration",
+            NewestActivityPeriod = DateTimeOffset.Parse("2024-01-01T00:00:00Z"),
+            RecentActivityInstanceIds = [1, 2, 3]
+        };
+        var fetchedActivities = new[]
+        {
+            BungieFixture.Activity(DateTimeOffset.Parse("2024-01-03T00:00:00Z"), 7, 4, 100, 100),
+            BungieFixture.Activity(DateTimeOffset.Parse("2024-01-02T00:00:00Z"), 7, 2, 100, 100)
+        };
+
+        CrawlerReflection.Invoke("UpdateAccumulatorCrawlState", accumulator, fetchedActivities, new[] { 4L, 5L });
+
+        Assert.False(accumulator.NeedsFullRecrawl);
+        Assert.Empty(accumulator.FullRecrawlReason);
+        Assert.Equal(DateTimeOffset.Parse("2024-01-03T00:00:00Z"), accumulator.NewestActivityPeriod);
+        Assert.Equal([4, 2, 5, 1, 3], accumulator.RecentActivityInstanceIds);
+        Assert.True(accumulator.LastSuccessfulCrawlAt > DateTimeOffset.MinValue);
+    }
+
+    [Theory]
+    [InlineData(1, 100, 1, false)]
+    [InlineData(1, 100, 2, true)]
+    [InlineData(0, 100, 2, false)]
+    [InlineData(1, 0, 2, false)]
+    public void IsPersistablePlayerEncounter_requires_valid_player_seen_more_than_once(
+        int membershipType,
+        long membershipId,
+        int count,
+        bool expected)
+    {
+        var actual = (bool)CrawlerReflection.Invoke(
+            "IsPersistablePlayerEncounter",
+            membershipType,
+            membershipId,
+            count)!;
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData(1, 100, 1, true)]
+    [InlineData(1, 100, 2, true)]
+    [InlineData(0, 100, 1, false)]
+    [InlineData(1, 0, 1, false)]
+    [InlineData(1, 100, 0, false)]
+    public void IsCountablePlayerEncounter_includes_valid_one_time_encounters(
+        int membershipType,
+        long membershipId,
+        int count,
+        bool expected)
+    {
+        var actual = (bool)CrawlerReflection.Invoke(
+            "IsCountablePlayerEncounter",
+            membershipType,
+            membershipId,
+            count)!;
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void DestinyReport_can_be_flagged_for_full_recrawl()
+    {
+        var report = new DestinyReport
+        {
+            NeedsFullRecrawl = true,
+            FullRecrawlReason = "recompute gambit mote stats"
+        };
+
+        Assert.True(report.NeedsFullRecrawl);
+        Assert.Equal("recompute gambit mote stats", report.FullRecrawlReason);
+    }
+}

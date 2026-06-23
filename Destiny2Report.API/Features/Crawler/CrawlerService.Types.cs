@@ -14,6 +14,8 @@ namespace Destiny2Report.API.Features.Crawler;
 
 public partial class CrawlerService
 {
+    private const int MinPersistedPlayerEncounterCount = 2;
+
     private sealed record RivalAggregate(ReportPlayer Player)
     {
         public int Matches { get; set; }
@@ -47,6 +49,139 @@ public partial class CrawlerService
         : InvalidOperationException($"{operation} failed because the Destiny profile is not public. Bungie error code {response.ErrorCode}: {response.Message}");
 
     private sealed record WeaponDefinitionSummary(string Name, string IconUrl);
+
+    private static CrawlAccumulator NewAccumulator(int platformId, long playerMembershipId)
+    {
+        return new CrawlAccumulator
+        {
+            PlatformId = platformId,
+            PlayerMembershipId = playerMembershipId,
+            NeedsFullRecrawl = false,
+            FullRecrawlReason = ""
+        };
+    }
+
+    private static void UpdateAccumulatorCrawlState(
+        CrawlAccumulator accumulator,
+        IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> fetchedActivities,
+        IEnumerable<long> processedActivityIds)
+    {
+        accumulator.LastSuccessfulCrawlAt = DateTimeOffset.UtcNow;
+        accumulator.NeedsFullRecrawl = false;
+        accumulator.FullRecrawlReason = "";
+
+        var newestFetchedActivity = fetchedActivities
+            .OrderByDescending(activity => activity.Period)
+            .FirstOrDefault();
+        if (newestFetchedActivity is not null && newestFetchedActivity.Period > accumulator.NewestActivityPeriod)
+        {
+            accumulator.NewestActivityPeriod = newestFetchedActivity.Period;
+        }
+
+        accumulator.RecentActivityInstanceIds = fetchedActivities
+            .Where(activity => activity.ActivityDetails.InstanceId > 0)
+            .OrderByDescending(activity => activity.Period)
+            .Select(activity => activity.ActivityDetails.InstanceId)
+            .Concat(processedActivityIds.Where(instanceId => instanceId > 0))
+            .Concat(accumulator.RecentActivityInstanceIds)
+            .Distinct()
+            .Take(RecentActivityInstanceIdLimit)
+            .ToList();
+    }
+
+    private static string PlayerKey(int membershipType, long membershipId)
+    {
+        return $"{membershipType}:{membershipId}";
+    }
+
+    private static bool IsPersistablePlayerEncounter(int membershipType, long membershipId, int count)
+    {
+        return membershipType > 0
+            && membershipId > 0
+            && count >= MinPersistedPlayerEncounterCount;
+    }
+
+    private static bool IsCountablePlayerEncounter(int membershipType, long membershipId, int count)
+    {
+        return membershipType > 0
+            && membershipId > 0
+            && count > 0;
+    }
+
+    private static Dictionary<string, ActivityCompletionAggregate> ToCompletionAggregates(
+        IReadOnlyDictionary<string, ActivityCompletionAccumulator> source)
+    {
+        return source.ToDictionary(
+            item => item.Key,
+            item => new ActivityCompletionAggregate(item.Key)
+            {
+                CompletionCount = item.Value.CompletionCount,
+                ContestClear = item.Value.ContestClear,
+                FlawlessClear = item.Value.FlawlessClear,
+                SoloClear = item.Value.SoloClear,
+                SoloFlawlessClear = item.Value.SoloFlawlessClear
+            },
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static void SaveCompletionAggregates(
+        Dictionary<string, ActivityCompletionAccumulator> target,
+        IReadOnlyDictionary<string, ActivityCompletionAggregate> source)
+    {
+        target.Clear();
+        foreach (var item in source)
+        {
+            target[item.Key] = new ActivityCompletionAccumulator
+            {
+                CompletionCount = item.Value.CompletionCount,
+                ContestClear = item.Value.ContestClear,
+                FlawlessClear = item.Value.FlawlessClear,
+                SoloClear = item.Value.SoloClear,
+                SoloFlawlessClear = item.Value.SoloFlawlessClear
+            };
+        }
+    }
+
+    private static Dictionary<long, RivalAggregate> ToRivalAggregates(
+        IReadOnlyDictionary<string, RivalAccumulator> source)
+    {
+        return source.Values
+            .Where(item => item.Player.MembershipId > 0)
+            .GroupBy(item => item.Player.MembershipId)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var item = group.First();
+                    return new RivalAggregate(item.Player)
+                    {
+                        Matches = item.Matches,
+                        Wins = item.Wins,
+                        Losses = item.Losses,
+                        Kills = item.Kills,
+                        Deaths = item.Deaths
+                    };
+                });
+    }
+
+    private static void SaveRivalAggregates(
+        Dictionary<string, RivalAccumulator> target,
+        IReadOnlyDictionary<long, RivalAggregate> source)
+    {
+        target.Clear();
+        foreach (var item in source.Values)
+        {
+            target[PlayerKey(item.Player.MembershipType, item.Player.MembershipId)] = new RivalAccumulator
+            {
+                Player = item.Player,
+                Matches = item.Matches,
+                Wins = item.Wins,
+                Losses = item.Losses,
+                Kills = item.Kills,
+                Deaths = item.Deaths
+            };
+        }
+    }
 
     private static class ActivityModes
     {

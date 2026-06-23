@@ -19,6 +19,7 @@ public partial class CrawlerService
         int ownerMembershipType,
         long ownerMembershipId,
         IReadOnlyDictionary<(int MembershipType, long MembershipId), int> encounterCounts,
+        int uniquePlayersPlayedWith,
         CancellationToken cancellationToken)
     {
         var encounters = mongoDatabase.GetCollection<PlayerEncounterAggregate>("player_encounters");
@@ -32,7 +33,7 @@ public partial class CrawlerService
         if (encounterCounts.Count > 0)
         {
             var inserts = encounterCounts
-                .Where(item => item.Key.MembershipType > 0 && item.Key.MembershipId > 0 && item.Value > 0)
+                .Where(item => IsPersistablePlayerEncounter(item.Key.MembershipType, item.Key.MembershipId, item.Value))
                 .Select(item =>
                 {
                     return new InsertOneModel<PlayerEncounterAggregate>(new PlayerEncounterAggregate
@@ -54,8 +55,6 @@ public partial class CrawlerService
             }
         }
 
-        var uniquePlayers = await encounters.CountDocumentsAsync(ownerFilter, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
         var mostPlayedWith = await encounters
             .Find(ownerFilter)
             .SortByDescending(encounter => encounter.Count)
@@ -71,7 +70,7 @@ public partial class CrawlerService
             .ToArray();
         var mostPlayedWithInfo = await Task.WhenAll(populateMostPlayedWithTasks).ConfigureAwait(false);
 
-        report.UniquePlayersPlayedWith = uniquePlayers > int.MaxValue ? int.MaxValue : (int)uniquePlayers;
+        report.UniquePlayersPlayedWith = uniquePlayersPlayedWith;
         var mostPlayedWithInfoByMembershipId = mostPlayedWithInfo.ToDictionary(player => (player.MembershipType, player.MembershipId));
         report.MostPlayedWith = mostPlayedWith
             .Select(encounter => new PlayerEncounterReport

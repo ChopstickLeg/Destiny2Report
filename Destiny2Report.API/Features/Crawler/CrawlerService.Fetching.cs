@@ -70,6 +70,7 @@ public partial class CrawlerService
         int platformId,
         long playerMembershipId,
         IReadOnlyCollection<long> characterIds,
+        DateTimeOffset? crawlAfter,
         CancellationToken cancellationToken)
     {
         var results = new ConcurrentDictionary<long, DestinyHistoricalStatsPeriodGroup>();
@@ -97,10 +98,13 @@ public partial class CrawlerService
 
                 foreach (var activity in activities)
                 {
-                    results.TryAdd(activity.ActivityDetails.InstanceId, activity);
+                    if (crawlAfter is null || activity.Period > crawlAfter)
+                    {
+                        results.TryAdd(activity.ActivityDetails.InstanceId, activity);
+                    }
                 }
 
-                if (activities.Length < PageSize)
+                if (activities.Length < PageSize || (crawlAfter is not null && activities.Any(activity => activity.Period <= crawlAfter)))
                 {
                     break;
                 }

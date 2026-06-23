@@ -63,6 +63,39 @@ public sealed class CrawlerWeaponAndRivalTests
     }
 
     [Fact]
+    public void BuildWeaponReports_groups_different_hashes_by_resolved_weapon_name()
+    {
+        var weaponKills = new Dictionary<int, int>
+        {
+            [100] = 7,
+            [200] = 13,
+            [300] = 5
+        };
+        var summaryType = CrawlerReflection.NestedType("WeaponDefinitionSummary");
+        var definitionsType = typeof(Dictionary<,>).MakeGenericType(typeof(int), summaryType);
+        var definitions = (IDictionary)Activator.CreateInstance(definitionsType)!;
+
+        definitions.Add(100, Activator.CreateInstance(summaryType, "Edge Transit", "/edge-old.png"));
+        definitions.Add(200, Activator.CreateInstance(summaryType, "Edge Transit", "/edge-new.png"));
+        definitions.Add(300, Activator.CreateInstance(summaryType, "Other Half", "/other.png"));
+
+        var result = (List<WeaponReport>)CrawlerReflection.Invoke("BuildWeaponReports", weaponKills, definitions)!;
+
+        Assert.Collection(
+            result,
+            weapon =>
+            {
+                Assert.Equal("Edge Transit", weapon.Name);
+                Assert.Equal(20, weapon.TotalKills);
+            },
+            weapon =>
+            {
+                Assert.Equal("Other Half", weapon.Name);
+                Assert.Equal(5, weapon.TotalKills);
+            });
+    }
+
+    [Fact]
     public void TrackRivals_counts_only_opposing_team_players_once_per_match()
     {
         var aggregateType = CrawlerReflection.NestedType("RivalAggregate");

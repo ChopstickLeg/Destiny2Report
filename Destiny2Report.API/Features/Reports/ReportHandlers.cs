@@ -91,7 +91,7 @@ public static class ReportHandlers
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (existingStatus is not null && existingStatus.Status is "queued" or "running" or "completed")
+        if (existingStatus is not null && existingStatus.Status is "queued" or "running")
         {
             var existingResponse = new ReportQueueResponse(
                 JobId: existingStatus.StreamEntryId ?? "",
