@@ -195,6 +195,7 @@ public partial class CrawlerService
         public const int AllPvP = 5;
         public const int Patrol = 6;
         public const int AllPvE = 7;
+        public const int AllPvECompetitive = 64;
         public const int Gambit = 63;
         public const int GambitPrime = 75;
         public const int Dungeon = 82;

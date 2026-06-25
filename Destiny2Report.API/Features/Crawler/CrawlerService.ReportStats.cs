@@ -54,15 +54,6 @@ public partial class CrawlerService
         DestinyReport report,
         IReadOnlyDictionary<(long CharacterId, int Mode), IDictionary<string, DestinyHistoricalStatsByPeriod>> modeStats)
     {
-        var pveSeconds = SumModeStat(modeStats, ActivityModes.AllPvE, "secondsPlayed");
-        var pvpSeconds = SumModeStat(modeStats, ActivityModes.AllPvP, "secondsPlayed");
-        var gambitSeconds = SumModeStat(modeStats, ActivityModes.Gambit, "secondsPlayed")
-            + SumModeStat(modeStats, ActivityModes.GambitPrime, "secondsPlayed");
-
-        report.PlaytimeByActivity["PvE"] = TimeSpan.FromSeconds(pveSeconds);
-        report.PlaytimeByActivity["Crucible"] = TimeSpan.FromSeconds(pvpSeconds);
-        report.PlaytimeByActivity["Gambit"] = TimeSpan.FromSeconds(gambitSeconds);
-
         report.CrucibleKd = WeightedRatio(modeStats, ActivityModes.AllPvP, "kills", "deaths", "killsDeathsRatio");
         report.CrucibleKda = AverageModeStat(modeStats, ActivityModes.AllPvP, "killsDeathsAssists");
         report.GambitKd = WeightedRatio(modeStats, [ActivityModes.Gambit, ActivityModes.GambitPrime], "kills", "deaths", "killsDeathsRatio");

@@ -26,6 +26,7 @@ public partial class CrawlerService
         CancellationToken cancellationToken)
     {
         var activityDefinitions = await manifest.GetTableAsync("DestinyActivityDefinition", cancellationToken).ConfigureAwait(false);
+        var activityModeDefinitions = await manifest.GetTableAsync("DestinyActivityModeDefinition", cancellationToken).ConfigureAwait(false);
         var destinationDefinitions = await manifest.GetTableAsync("DestinyDestinationDefinition", cancellationToken).ConfigureAwait(false);
 
         ApplyPatrolTime(accumulator, activityHistory.Where(activity => IncludesMode(activity, ActivityModes.Patrol)), activityDefinitions, destinationDefinitions);
@@ -37,6 +38,7 @@ public partial class CrawlerService
                 activityHistory,
                 characterClassById,
                 activityDefinitions,
+                activityModeDefinitions,
                 manifest,
                 resetWeaponAggregates,
                 cancellationToken)
@@ -79,6 +81,7 @@ public partial class CrawlerService
         IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activityHistory,
         IDictionary<long, string> characterClassById,
         JObject activityDefinitions,
+        JObject activityModeDefinitions,
         ManifestContext manifest,
         bool resetWeaponAggregates,
         CancellationToken cancellationToken)
@@ -144,6 +147,7 @@ public partial class CrawlerService
                 }
 
                 accumulator.TotalActivitySeconds += (long)playerActivitySeconds;
+                AddActivityModePlaytime(accumulator, pgcr, (long)playerActivitySeconds);
 
                 if (playerCompleted && isRaid)
                 {
@@ -227,6 +231,7 @@ public partial class CrawlerService
         report.PatrolTimeByPlanet = accumulator.PatrolSecondsByPlanet.ToDictionary(
             item => item.Key,
             item => TimeSpan.FromSeconds(item.Value));
+        report.PlaytimeByActivityMode = ToActivityModePlaytimeReports(accumulator.PlaytimeByActivityMode, activityModeDefinitions);
         report.ZeroKillActivities = accumulator.ZeroKillActivities;
         report.GambitMotesBanked = accumulator.GambitMotesBanked;
         report.GambitMotesLost = accumulator.GambitMotesLost;
@@ -439,6 +444,105 @@ public partial class CrawlerService
     private static bool IncludesMode(DestinyHistoricalStatsPeriodGroup activity, int mode)
     {
         return activity.ActivityDetails.Mode == mode || (activity.ActivityDetails.Modes?.Contains(mode) ?? false);
+    }
+
+    private static void AddActivityModePlaytime(
+        CrawlAccumulator accumulator,
+        DestinyPostGameCarnageReportData pgcr,
+        long seconds)
+    {
+        if (seconds <= 0)
+        {
+            return;
+        }
+
+        foreach (var broadMode in EnumerateActivityPlaytimeBroadModes(pgcr))
+        {
+            var broadModeKey = broadMode.ToString();
+            if (!accumulator.PlaytimeByActivityMode.TryGetValue(broadModeKey, out var playtime))
+            {
+                playtime = new ActivityModePlaytimeAccumulator();
+                accumulator.PlaytimeByActivityMode[broadModeKey] = playtime;
+            }
+
+            playtime.TotalSeconds += seconds;
+            var mostSpecificModeKey = pgcr.ActivityDetails.Mode.ToString();
+            playtime.MostSpecificModeSeconds[mostSpecificModeKey] =
+                playtime.MostSpecificModeSeconds.GetValueOrDefault(mostSpecificModeKey) + seconds;
+        }
+    }
+
+    private static IEnumerable<int> EnumerateActivityPlaytimeBroadModes(DestinyPostGameCarnageReportData pgcr)
+    {
+        foreach (var mode in ActivityPlaytimeBroadModes)
+        {
+            if (IncludesMode(pgcr, mode))
+            {
+                yield return mode;
+            }
+        }
+    }
+
+    private static List<ActivityModePlaytimeReport> ToActivityModePlaytimeReports(
+        IReadOnlyDictionary<string, ActivityModePlaytimeAccumulator> playtimeByActivityMode,
+        JObject activityModeDefinitions)
+    {
+        return ActivityPlaytimeBroadModes
+            .Select(mode => (Mode: mode, Playtime: GetActivityModePlaytime(playtimeByActivityMode, mode)))
+            .Where(item => item.Playtime is not null)
+            .Select(item => new ActivityModePlaytimeReport
+            {
+                Mode = item.Mode,
+                ModeName = GetActivityModeName(activityModeDefinitions, item.Mode),
+                TotalPlaytime = TimeSpan.FromSeconds(item.Playtime!.TotalSeconds),
+                MostSpecificModes = item.Playtime.MostSpecificModeSeconds
+                    .Select(modePlaytime => ToActivityModePlaytimeBreakdown(modePlaytime, activityModeDefinitions))
+                    .OrderByDescending(modePlaytime => modePlaytime.Playtime)
+                    .ThenBy(modePlaytime => modePlaytime.Mode)
+                    .ToList()
+            })
+            .ToList();
+    }
+
+    private static ActivityModePlaytimeBreakdown ToActivityModePlaytimeBreakdown(
+        KeyValuePair<string, long> modePlaytime,
+        JObject activityModeDefinitions)
+    {
+        var mode = int.TryParse(modePlaytime.Key, out var parsedMode) ? parsedMode : 0;
+        return new ActivityModePlaytimeBreakdown
+        {
+            Mode = mode,
+            ModeName = GetActivityModeName(activityModeDefinitions, mode),
+            Playtime = TimeSpan.FromSeconds(modePlaytime.Value)
+        };
+    }
+
+    private static ActivityModePlaytimeAccumulator? GetActivityModePlaytime(
+        IReadOnlyDictionary<string, ActivityModePlaytimeAccumulator> playtimeByActivityMode,
+        int mode)
+    {
+        return playtimeByActivityMode.TryGetValue(mode.ToString(), out var playtime)
+            ? playtime
+            : null;
+    }
+
+    private static string GetActivityModeName(JObject activityModeDefinitions, int mode)
+    {
+        foreach (var definition in activityModeDefinitions.Properties())
+        {
+            if (definition.Value["modeType"]?.Value<int>() != mode)
+            {
+                continue;
+            }
+
+            var name = definition.Value["displayProperties"]?["name"]?.Value<string>();
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+        }
+
+        return ActivityModeTypeNames.GetValueOrDefault(mode) ?? $"Mode {mode}";
     }
 
     private static bool HasActivityTypeHash(

@@ -48,9 +48,6 @@ public sealed class CrawlerModeStatsTests
 
         CrawlerReflection.Invoke("ApplyModeStats", report, modeStats);
 
-        Assert.Equal(TimeSpan.FromHours(2), report.PlaytimeByActivity["PvE"]);
-        Assert.Equal(TimeSpan.FromMinutes(30), report.PlaytimeByActivity["Crucible"]);
-        Assert.Equal(TimeSpan.FromMinutes(25), report.PlaytimeByActivity["Gambit"]);
         Assert.Equal(2.0, report.CrucibleKd);
         Assert.Equal(2.25, report.CrucibleKda);
         Assert.Equal(2.75, report.GambitKd);
@@ -94,7 +91,6 @@ public sealed class CrawlerModeStatsTests
         CrawlerReflection.Invoke("ApplyModeStats", report, modeStats);
 
         Assert.Equal(2.0, report.CrucibleKd);
-        Assert.Equal(TimeSpan.FromSeconds(120), report.PlaytimeByActivity["Crucible"]);
     }
 
     private static IReadOnlyDictionary<(long CharacterId, int Mode), IDictionary<string, DestinyHistoricalStatsByPeriod>> ModeStats(

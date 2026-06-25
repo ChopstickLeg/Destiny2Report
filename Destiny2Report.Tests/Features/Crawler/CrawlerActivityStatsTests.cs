@@ -78,6 +78,89 @@ public sealed class CrawlerActivityStatsTests
     }
 
     [Fact]
+    public void AddActivityModePlaytime_adds_seconds_to_big_bucket_and_most_specific_mode()
+    {
+        var accumulator = new CrawlAccumulator();
+        var pgcr = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 4, 1);
+        pgcr.ActivityDetails.Modes = [7, 4];
+
+        CrawlerReflection.Invoke("AddActivityModePlaytime", accumulator, pgcr, 1800L);
+
+        var report = Assert.Single((List<ActivityModePlaytimeReport>)CrawlerReflection.Invoke(
+            "ToActivityModePlaytimeReports",
+            accumulator.PlaytimeByActivityMode,
+            ActivityModeDefinitions())!);
+        Assert.Equal(7, report.Mode);
+        Assert.Equal("All PvE Activities", report.ModeName);
+        Assert.Equal(TimeSpan.FromMinutes(30), report.TotalPlaytime);
+        var specificMode = Assert.Single(report.MostSpecificModes);
+        Assert.Equal(4, specificMode.Mode);
+        Assert.Equal("Raids", specificMode.ModeName);
+        Assert.Equal(TimeSpan.FromMinutes(30), specificMode.Playtime);
+    }
+
+    [Fact]
+    public void AddActivityModePlaytime_adds_seconds_to_every_applicable_big_bucket()
+    {
+        var accumulator = new CrawlAccumulator();
+        var pgcr = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 63, 1);
+        pgcr.ActivityDetails.Modes = [7, 64, 63];
+
+        CrawlerReflection.Invoke("AddActivityModePlaytime", accumulator, pgcr, 900L);
+
+        var reports = (List<ActivityModePlaytimeReport>)CrawlerReflection.Invoke(
+            "ToActivityModePlaytimeReports",
+            accumulator.PlaytimeByActivityMode,
+            ActivityModeDefinitions())!;
+
+        Assert.Equal([7, 64], reports.Select(report => report.Mode));
+        Assert.Equal(["All PvE Activities", "All PvE Competitive"], reports.Select(report => report.ModeName));
+        Assert.All(reports, report =>
+        {
+            Assert.Equal(TimeSpan.FromMinutes(15), report.TotalPlaytime);
+            var specificMode = Assert.Single(report.MostSpecificModes);
+            Assert.Equal(63, specificMode.Mode);
+            Assert.Equal("Gambit", specificMode.ModeName);
+            Assert.Equal(TimeSpan.FromMinutes(15), specificMode.Playtime);
+        });
+    }
+
+    [Fact]
+    public void AddActivityModePlaytime_is_additive_for_existing_accumulator_seconds()
+    {
+        var accumulator = new CrawlAccumulator
+        {
+            PlaytimeByActivityMode =
+            {
+                ["5"] = new ActivityModePlaytimeAccumulator
+                {
+                    TotalSeconds = 300,
+                    MostSpecificModeSeconds =
+                    {
+                        ["69"] = 300
+                    }
+                }
+            }
+        };
+        var pgcr = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 69, 1);
+        pgcr.ActivityDetails.Modes = [5, 69];
+
+        CrawlerReflection.Invoke("AddActivityModePlaytime", accumulator, pgcr, 120L);
+
+        var report = Assert.Single((List<ActivityModePlaytimeReport>)CrawlerReflection.Invoke(
+            "ToActivityModePlaytimeReports",
+            accumulator.PlaytimeByActivityMode,
+            new JObject())!);
+        Assert.Equal(5, report.Mode);
+        Assert.Equal("AllPvP", report.ModeName);
+        Assert.Equal(TimeSpan.FromMinutes(7), report.TotalPlaytime);
+        var specificMode = Assert.Single(report.MostSpecificModes);
+        Assert.Equal(69, specificMode.Mode);
+        Assert.Equal("PvPCompetitive", specificMode.ModeName);
+        Assert.Equal(TimeSpan.FromMinutes(7), specificMode.Playtime);
+    }
+
+    [Fact]
     public void HasPriorCompletedRaid_matches_same_normalized_raid_before_current_instance_only()
     {
         var activityDefinitions = JObject.Parse(
@@ -163,5 +246,30 @@ public sealed class CrawlerActivityStatsTests
         var result = (int?)CrawlerReflection.Invoke("SelectLinkedProfileMembershipType", profiles, 4611686018463095984L);
 
         Assert.Equal(1, result);
+    }
+
+    private static JObject ActivityModeDefinitions()
+    {
+        return JObject.Parse(
+            """
+            {
+              "100": {
+                "modeType": 4,
+                "displayProperties": { "name": "Raids" }
+              },
+              "101": {
+                "modeType": 7,
+                "displayProperties": { "name": "All PvE Activities" }
+              },
+              "102": {
+                "modeType": 63,
+                "displayProperties": { "name": "Gambit" }
+              },
+              "103": {
+                "modeType": 64,
+                "displayProperties": { "name": "All PvE Competitive" }
+              }
+            }
+            """);
     }
 }

@@ -18,7 +18,7 @@ public record DestinyReport
     public string FullRecrawlReason { get; set; } = "";
     public TimeSpan TotalPlaytime { get; set; }
     public Dictionary<string, TimeSpan> PlaytimeByClass { get; set; } = new();
-    public Dictionary<string, TimeSpan> PlaytimeByActivity { get; set; } = new();
+    public List<ActivityModePlaytimeReport> PlaytimeByActivityMode { get; set; } = new();
     public Dictionary<string, TimeSpan> PatrolTimeByPlanet { get; set; } = new();
     public int GoodBoyProtocol { get; set; }
     public int FishCaught { get; set; }
@@ -95,6 +95,21 @@ public record ActivityCompletionSummary
     public bool SoloFlawlessClear { get; init; }
 }
 
+public record ActivityModePlaytimeReport
+{
+    public int Mode { get; init; }
+    public string ModeName { get; init; } = "";
+    public TimeSpan TotalPlaytime { get; init; }
+    public List<ActivityModePlaytimeBreakdown> MostSpecificModes { get; init; } = new();
+}
+
+public record ActivityModePlaytimeBreakdown
+{
+    public int Mode { get; init; }
+    public string ModeName { get; init; } = "";
+    public TimeSpan Playtime { get; init; }
+}
+
 public record DestinyPlayer
 {
     public long MembershipId { get; init; }
@@ -130,9 +145,16 @@ public record CrawlAccumulator
     public Dictionary<string, RivalAccumulator> GambitRivals { get; set; } = new();
     public int ZeroKillActivities { get; set; }
     public long TotalActivitySeconds { get; set; }
+    public Dictionary<string, ActivityModePlaytimeAccumulator> PlaytimeByActivityMode { get; set; } = new();
     public int GambitMotesBanked { get; set; }
     public int GambitMotesLost { get; set; }
     public Dictionary<string, int> PlayersSherpaed { get; set; } = new();
+}
+
+public record ActivityModePlaytimeAccumulator
+{
+    public long TotalSeconds { get; set; }
+    public Dictionary<string, long> MostSpecificModeSeconds { get; set; } = new();
 }
 
 public record ActivityCompletionAccumulator
