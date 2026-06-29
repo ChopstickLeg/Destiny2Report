@@ -38,6 +38,11 @@ public record DestinyReport
     public double KdAgainstGambitRival { get; set; }
     public int GambitMotesBanked { get; set; }
     public int GambitMotesLost { get; set; }
+    public Dictionary<string, int> GambitMotesBankedByMode { get; set; } = new();
+    public Dictionary<string, int> GambitMotesLostByMode { get; set; } = new();
+    public int GambitBankOverage { get; set; }
+    public Dictionary<string, int> GambitBankOverageByMode { get; set; } = new();
+    public Dictionary<string, int> GambitMotesBankedByCompletionStatus { get; set; } = new();
     public List<DestinyTriumphSeal> TriumphSeals
     {
         get => _triumphSeals;
@@ -148,6 +153,11 @@ public record CrawlAccumulator
     public Dictionary<string, ActivityModePlaytimeAccumulator> PlaytimeByActivityMode { get; set; } = new();
     public int GambitMotesBanked { get; set; }
     public int GambitMotesLost { get; set; }
+    public Dictionary<string, int> GambitMotesBankedByMode { get; set; } = new();
+    public Dictionary<string, int> GambitMotesLostByMode { get; set; } = new();
+    public int GambitBankOverage { get; set; }
+    public Dictionary<string, int> GambitBankOverageByMode { get; set; } = new();
+    public Dictionary<string, int> GambitMotesBankedByCompletionStatus { get; set; } = new();
     public Dictionary<string, int> PlayersSherpaed { get; set; } = new();
 }
 

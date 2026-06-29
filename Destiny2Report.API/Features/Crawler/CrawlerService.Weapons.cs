@@ -288,12 +288,45 @@ public partial class CrawlerService
         }
     }
 
-    private static double GetMoteStat(DestinyPostGameCarnageReportEntry entry, params string[] needles)
+    private static void AddGambitMoteStats(
+        CrawlAccumulator accumulator,
+        DestinyPostGameCarnageReportData pgcr,
+        DestinyPostGameCarnageReportEntry entry,
+        bool playerCompleted)
+    {
+        var mode = GetGambitMoteMode(pgcr);
+        var modeKey = mode.ToString();
+        var completionStatusKey = playerCompleted ? "completed" : "incomplete";
+        var banked = (int)GetMoteStat(entry, "motesDeposited");
+        var lost = (int)GetMoteStat(entry, "motesLost");
+        var overage = (int)GetMoteStat(entry, "bankOverage");
+
+        accumulator.GambitMotesBanked += banked;
+        accumulator.GambitMotesLost += lost;
+        accumulator.GambitBankOverage += overage;
+        accumulator.GambitMotesBankedByMode[modeKey] = accumulator.GambitMotesBankedByMode.GetValueOrDefault(modeKey) + banked;
+        accumulator.GambitMotesLostByMode[modeKey] = accumulator.GambitMotesLostByMode.GetValueOrDefault(modeKey) + lost;
+        accumulator.GambitBankOverageByMode[modeKey] = accumulator.GambitBankOverageByMode.GetValueOrDefault(modeKey) + overage;
+        accumulator.GambitMotesBankedByCompletionStatus[completionStatusKey] =
+            accumulator.GambitMotesBankedByCompletionStatus.GetValueOrDefault(completionStatusKey) + banked;
+    }
+
+    private static int GetGambitMoteMode(DestinyPostGameCarnageReportData pgcr)
+    {
+        return pgcr.ActivityDetails.Mode switch
+        {
+            ActivityModes.Gambit => ActivityModes.Gambit,
+            ActivityModes.GambitPrime => ActivityModes.GambitPrime,
+            _ when IncludesMode(pgcr, ActivityModes.GambitPrime) => ActivityModes.GambitPrime,
+            _ => ActivityModes.Gambit
+        };
+    }
+
+    private static double GetMoteStat(DestinyPostGameCarnageReportEntry entry, string statId)
     {
         return EnumerateValueDictionaries(entry)
-            .SelectMany(dictionary => dictionary)
-            .Where(item => needles.Any(needle => item.Key.Contains(needle, StringComparison.OrdinalIgnoreCase)))
-            .Sum(item => item.Value.Basic?.Value ?? 0);
+            .Select(dictionary => GetStat(dictionary, statId))
+            .FirstOrDefault(value => value > 0);
     }
 
     private static IEnumerable<IDictionary<string, DestinyHistoricalStatsValue>> EnumerateValueDictionaries(DestinyPostGameCarnageReportEntry entry)

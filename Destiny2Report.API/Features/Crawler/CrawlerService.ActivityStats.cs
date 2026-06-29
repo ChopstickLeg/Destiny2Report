@@ -192,12 +192,11 @@ public partial class CrawlerService
                 }
                 else if (isGambit)
                 {
+                    AddGambitMoteStats(accumulator, pgcr, playerEntry, playerCompleted);
                     if (!isPrivateGambit)
                     {
                         TrackRivals(gambitOpponents, pgcr, playerEntry, playerMembershipId, playerKills, playerDeaths);
                         AddWeapons(gambitWeaponDeltas, playerEntry);
-                        accumulator.GambitMotesBanked += (int)GetMoteStat(playerEntry, "bank", "deposit");
-                        accumulator.GambitMotesLost += (int)GetMoteStat(playerEntry, "lost");
                     }
                 }
                 else
@@ -235,6 +234,11 @@ public partial class CrawlerService
         report.ZeroKillActivities = accumulator.ZeroKillActivities;
         report.GambitMotesBanked = accumulator.GambitMotesBanked;
         report.GambitMotesLost = accumulator.GambitMotesLost;
+        report.GambitMotesBankedByMode = new Dictionary<string, int>(accumulator.GambitMotesBankedByMode);
+        report.GambitMotesLostByMode = new Dictionary<string, int>(accumulator.GambitMotesLostByMode);
+        report.GambitBankOverage = accumulator.GambitBankOverage;
+        report.GambitBankOverageByMode = new Dictionary<string, int>(accumulator.GambitBankOverageByMode);
+        report.GambitMotesBankedByCompletionStatus = new Dictionary<string, int>(accumulator.GambitMotesBankedByCompletionStatus);
         report.RaidCompletions = ToCompletionSummaries(raidCompletions);
         report.DungeonCompletions = ToCompletionSummaries(dungeonCompletions);
         report.PlayersSherpaed = ToSherpaReports(playersSherpaed);

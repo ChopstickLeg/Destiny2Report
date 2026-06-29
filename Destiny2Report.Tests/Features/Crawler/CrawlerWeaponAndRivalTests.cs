@@ -30,7 +30,7 @@ public sealed class CrawlerWeaponAndRivalTests
     }
 
     [Fact]
-    public void GetMoteStat_sums_matching_values_from_base_extended_and_scoreboard_stats()
+    public void GetMoteStat_returns_exact_stat_and_ignores_other_mote_like_values()
     {
         var entry = BungieFixture.Entry(
             4611686018463095984,
@@ -41,11 +41,42 @@ public sealed class CrawlerWeaponAndRivalTests
                 ScoreboardValues = BungieFixture.Stats(("primevalMotesBanked", 5), ("deaths", 1))
             });
 
-        var banked = (double)CrawlerReflection.Invoke("GetMoteStat", entry, new[] { "bank", "deposit" })!;
-        var lost = (double)CrawlerReflection.Invoke("GetMoteStat", entry, new[] { "lost" })!;
+        var banked = (double)CrawlerReflection.Invoke("GetMoteStat", entry, "motesDeposited")!;
+        var lost = (double)CrawlerReflection.Invoke("GetMoteStat", entry, "motesLost")!;
 
-        Assert.Equal(25, banked);
+        Assert.Equal(12, banked);
         Assert.Equal(3, lost);
+    }
+
+    [Fact]
+    public void AddGambitMoteStats_tracks_totals_by_gambit_mode()
+    {
+        var accumulator = new CrawlAccumulator();
+        var gambitEntry = BungieFixture.Entry(
+            4611686018463095984,
+            values: BungieFixture.Stats(("motesDeposited", 12), ("motesLost", 3), ("bankOverage", 4)));
+        var gambitPgcr = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 63, 1, gambitEntry);
+        gambitPgcr.ActivityDetails.Modes = [7, 64, 63, 75];
+        var primeEntry = BungieFixture.Entry(
+            4611686018463095984,
+            values: BungieFixture.Stats(("motesDeposited", 9), ("motesLost", 2), ("bankOverage", 5)));
+        var primePgcr = BungieFixture.Pgcr(DateTimeOffset.Parse("2020-01-01T00:00:00Z"), 75, 2, primeEntry);
+        primePgcr.ActivityDetails.Modes = [7, 64, 75];
+
+        CrawlerReflection.Invoke("AddGambitMoteStats", accumulator, gambitPgcr, gambitEntry, true);
+        CrawlerReflection.Invoke("AddGambitMoteStats", accumulator, primePgcr, primeEntry, false);
+
+        Assert.Equal(21, accumulator.GambitMotesBanked);
+        Assert.Equal(5, accumulator.GambitMotesLost);
+        Assert.Equal(9, accumulator.GambitBankOverage);
+        Assert.Equal(12, accumulator.GambitMotesBankedByMode["63"]);
+        Assert.Equal(9, accumulator.GambitMotesBankedByMode["75"]);
+        Assert.Equal(3, accumulator.GambitMotesLostByMode["63"]);
+        Assert.Equal(2, accumulator.GambitMotesLostByMode["75"]);
+        Assert.Equal(4, accumulator.GambitBankOverageByMode["63"]);
+        Assert.Equal(5, accumulator.GambitBankOverageByMode["75"]);
+        Assert.Equal(12, accumulator.GambitMotesBankedByCompletionStatus["completed"]);
+        Assert.Equal(9, accumulator.GambitMotesBankedByCompletionStatus["incomplete"]);
     }
 
     [Fact]
