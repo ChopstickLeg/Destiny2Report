@@ -161,6 +161,86 @@ public sealed class CrawlerActivityStatsTests
     }
 
     [Fact]
+    public void AddPgcrPlayerStats_accumulates_kills_and_deaths_from_all_player_entries()
+    {
+        var accumulator = new CrawlAccumulator
+        {
+            TotalKills = 100,
+            TotalDeaths = 10
+        };
+        var firstEntry = BungieFixture.Entry(
+            4611686018463095984,
+            values: BungieFixture.Stats(("kills", 25), ("deaths", 3)));
+        var secondEntry = BungieFixture.Entry(
+            4611686018463095984,
+            values: BungieFixture.Stats(("kills", 7), ("deaths", 2)));
+
+        CrawlerReflection.Invoke("AddPgcrPlayerStats", accumulator, new[] { firstEntry, secondEntry });
+
+        Assert.Equal(132, accumulator.TotalKills);
+        Assert.Equal(15, accumulator.TotalDeaths);
+    }
+
+    [Fact]
+    public void FindPlayerEntries_returns_all_entries_for_same_membership()
+    {
+        var matchingFirst = BungieFixture.Entry(
+            4611686018463095984,
+            membershipType: 3,
+            values: BungieFixture.Stats(("kills", 11)));
+        var matchingSecond = BungieFixture.Entry(
+            4611686018463095984,
+            membershipType: 3,
+            values: BungieFixture.Stats(("kills", 4)));
+        var otherPlayer = BungieFixture.Entry(
+            4611686018463095985,
+            membershipType: 3,
+            values: BungieFixture.Stats(("kills", 99)));
+        var otherMembershipType = BungieFixture.Entry(
+            4611686018463095984,
+            membershipType: 2,
+            values: BungieFixture.Stats(("kills", 99)));
+        var pgcr = BungieFixture.Pgcr(
+            DateTimeOffset.Parse("2024-01-01T00:00:00Z"),
+            7,
+            1,
+            matchingFirst,
+            otherPlayer,
+            matchingSecond,
+            otherMembershipType);
+
+        var playerEntries = (DestinyPostGameCarnageReportEntry[])CrawlerReflection.Invoke(
+            "FindPlayerEntries",
+            pgcr,
+            3,
+            4611686018463095984L)!;
+
+        Assert.Equal([11, 4], playerEntries.Select(entry => (int)entry.Values["kills"].Basic.Value));
+    }
+
+    [Fact]
+    public void ToCrucibleKillsReport_returns_totals_by_primary_mode_name()
+    {
+        var accumulator = new CrawlAccumulator();
+        var controlPgcr = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 10, 1);
+        controlPgcr.ActivityDetails.Modes = [5, 10];
+        var clashPgcr = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 12, 2);
+        clashPgcr.ActivityDetails.Modes = [5, 12];
+
+        CrawlerReflection.Invoke("AddCrucibleKills", accumulator, controlPgcr, 20L);
+        CrawlerReflection.Invoke("AddCrucibleKills", accumulator, clashPgcr, 7L);
+        CrawlerReflection.Invoke("AddCrucibleKills", accumulator, controlPgcr, 3L);
+
+        var report = (CrucibleKillsReport)CrawlerReflection.Invoke("ToCrucibleKillsReport", accumulator)!;
+
+        Assert.Equal(30, report.Total);
+        Assert.Equal(23, report.ByMode["Control"]);
+        Assert.Equal(7, report.ByMode["Clash"]);
+        Assert.DoesNotContain("10", report.ByMode.Keys);
+        Assert.DoesNotContain("12", report.ByMode.Keys);
+    }
+
+    [Fact]
     public void HasPriorCompletedRaid_matches_same_normalized_raid_before_current_instance_only()
     {
         var activityDefinitions = JObject.Parse(

@@ -1,14 +1,6 @@
-using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
-using Destiny2Report.API.Observability;
-using Microsoft.Extensions.Caching.Hybrid;
-using Microsoft.Extensions.Options;
 using MongoDB.Driver;
-using Newtonsoft.Json.Linq;
-using System.Diagnostics;
-using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
-using ReportPlayer = Destiny2Report.API.Features.Crawler.Models.DestinyPlayer;
 
 namespace Destiny2Report.API.Features.Crawler;
 
@@ -20,8 +12,6 @@ public partial class CrawlerService
         IEnumerable<DestinyHistoricalStatsPerCharacter> historicalCharacters,
         IReadOnlyDictionary<long, string> characterClassById)
     {
-        report.TotalKills = (long)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("kills", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
-        report.TotalDeaths = (long)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("deaths", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
         report.Misadventures = (int)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("suicides", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
 
         report.PlaytimeByClass = BuildPlaytimeByClass(historicalCharacters, characterClassById);

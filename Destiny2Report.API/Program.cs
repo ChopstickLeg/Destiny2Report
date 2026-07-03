@@ -155,6 +155,12 @@ static async Task EnsureMongoIndexesAsync(IServiceProvider serviceProvider)
         .Ascending(weapon => weapon.OwnerMembershipId)
         .Ascending(weapon => weapon.ActivityMode)
         .Descending(weapon => weapon.TotalKills);
+    var weaponCategoryIndexKeys = Builders<WeaponAggregate>.IndexKeys
+        .Ascending(weapon => weapon.OwnerMembershipType)
+        .Ascending(weapon => weapon.OwnerMembershipId)
+        .Ascending(weapon => weapon.ActivityMode)
+        .Ascending(weapon => weapon.CategoryKey)
+        .Descending(weapon => weapon.TotalKills);
 
     await weapons.Indexes.CreateManyAsync(
         [
@@ -170,6 +176,41 @@ static async Task EnsureMongoIndexesAsync(IServiceProvider serviceProvider)
                 new CreateIndexOptions
                 {
                     Name = "ix_weapon_aggregates_owner_mode_kills"
+                }),
+            new CreateIndexModel<WeaponAggregate>(
+                weaponCategoryIndexKeys,
+                new CreateIndexOptions
+                {
+                    Name = "ix_weapon_aggregates_owner_mode_category_kills"
+                })
+        ]);
+
+    var weaponCategories = mongoDatabase.GetCollection<WeaponCategoryAggregate>("weapon_category_aggregates");
+    var weaponCategoryUniqueIndexKeys = Builders<WeaponCategoryAggregate>.IndexKeys
+        .Ascending(category => category.OwnerMembershipType)
+        .Ascending(category => category.OwnerMembershipId)
+        .Ascending(category => category.ActivityMode)
+        .Ascending(category => category.CategoryKey);
+    var weaponCategoryTopIndexKeys = Builders<WeaponCategoryAggregate>.IndexKeys
+        .Ascending(category => category.OwnerMembershipType)
+        .Ascending(category => category.OwnerMembershipId)
+        .Ascending(category => category.ActivityMode)
+        .Descending(category => category.TotalKills);
+
+    await weaponCategories.Indexes.CreateManyAsync(
+        [
+            new CreateIndexModel<WeaponCategoryAggregate>(
+                weaponCategoryUniqueIndexKeys,
+                new CreateIndexOptions
+                {
+                    Name = "ux_weapon_category_aggregates_owner_mode_category",
+                    Unique = true
+                }),
+            new CreateIndexModel<WeaponCategoryAggregate>(
+                weaponCategoryTopIndexKeys,
+                new CreateIndexOptions
+                {
+                    Name = "ix_weapon_category_aggregates_owner_mode_kills"
                 })
         ]);
 

@@ -88,11 +88,9 @@ public partial class CrawlerService
     {
         var playerEncounterCounts = accumulator.EncounterCounts.Values
             .ToDictionary(item => (item.MembershipType, item.MembershipId), item => item.Count);
-        var pvpOpponents = ToRivalAggregates(accumulator.CrucibleRivals);
-        var gambitOpponents = ToRivalAggregates(accumulator.GambitRivals);
-        var pveWeaponDeltas = new Dictionary<int, int>();
-        var pvpWeaponDeltas = new Dictionary<int, int>();
-        var gambitWeaponDeltas = new Dictionary<int, int>();
+        var pveWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
+        var pvpWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
+        var gambitWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
         var raidCompletions = ToCompletionAggregates(accumulator.RaidCompletions);
         var dungeonCompletions = ToCompletionAggregates(accumulator.DungeonCompletions);
         var playersSherpaed = new Dictionary<string, int>(accumulator.PlayersSherpaed, StringComparer.OrdinalIgnoreCase);
@@ -110,16 +108,16 @@ public partial class CrawlerService
                 var instanceId = activity.ActivityDetails.InstanceId;
                 TryFillCharacterClassFromPgcr(characterClassById, pgcr, playerMembershipId);
 
-                var playerEntry = FindPlayerEntry(pgcr, playerMembershipId);
-                if (playerEntry is null)
+                var playerEntries = FindPlayerEntries(pgcr, platformId, playerMembershipId);
+                if (playerEntries.Length == 0)
                 {
                     continue;
                 }
 
                 var completionReason = GetPgcrCompletionReason(pgcr);
-                var playerCompleted = IsNormallyCompleted(playerEntry.Values, completionReason);
-                var playerKills = GetStat(playerEntry.Values, "kills");
-                var playerDeaths = GetStat(playerEntry.Values, "deaths");
+                var playerCompleted = playerEntries.Any(entry => IsNormallyCompleted(entry.Values, completionReason));
+                var playerKills = SumStats(playerEntries, "kills");
+                AddPgcrPlayerStats(accumulator, playerEntries);
                 if (playerKills <= 0)
                 {
                     accumulator.ZeroKillActivities++;
@@ -130,6 +128,7 @@ public partial class CrawlerService
                 var isDungeon = IncludesMode(pgcr, ActivityModes.Dungeon);
                 var isPvp = IncludesMode(pgcr, ActivityModes.AllPvP);
                 var isGambit = IncludesMode(pgcr, ActivityModes.Gambit) || IncludesMode(pgcr, ActivityModes.GambitPrime);
+                var hasGambitMoteStats = IncludesMode(pgcr, ActivityModes.AllPvECompetitive);
                 var isPrivateCrucible = isPvp && HasActivityTypeHash(pgcr, activityDefinitions, PrivateCrucibleActivityTypeHashes);
                 var isPrivateGambit = isGambit && HasActivityTypeHash(pgcr, activityDefinitions, PrivateGambitActivityTypeHashes);
                 var activityPlayerEntries = GetActivityPlayerEntries(pgcr);
@@ -137,14 +136,10 @@ public partial class CrawlerService
                 var wasStartedFromBeginning = activityWasStartedFromBeginning == true;
                 var isFlawless = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && activityPlayerEntries.Length > 0 && activityPlayerEntries.All(entry => GetStat(entry.Values, "deaths") <= 0);
                 var isSolo = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && IsSoloActivity(activityPlayerEntries);
-                var activityCompletedAt = GetActivityCompletedAt(pgcr, playerEntry);
+                var activityCompletedAt = GetActivityCompletedAt(pgcr, playerEntries);
                 var isContest = IsContest(pgcr, activityCompletedAt, isRaid, isDungeon);
                 var isSoloFlawless = isSolo && isFlawless;
-                var playerActivitySeconds = GetStat(playerEntry.Values, "timePlayedSeconds");
-                if (playerActivitySeconds <= 0)
-                {
-                    playerActivitySeconds = GetStat(playerEntry.Values, "activityDurationSeconds");
-                }
+                var playerActivitySeconds = SumPlayerActivitySeconds(playerEntries);
 
                 accumulator.TotalActivitySeconds += (long)playerActivitySeconds;
                 AddActivityModePlaytime(accumulator, pgcr, (long)playerActivitySeconds);
@@ -182,26 +177,32 @@ public partial class CrawlerService
                     }
                 }
 
+                if (hasGambitMoteStats)
+                {
+                    foreach (var playerEntry in playerEntries)
+                    {
+                        AddGambitMoteStats(accumulator, pgcr, playerEntry);
+                    }
+                }
+
                 if (isPvp)
                 {
+                    AddCrucibleKills(accumulator, pgcr, (long)playerKills);
                     if (!isPrivateCrucible)
                     {
-                        TrackRivals(pvpOpponents, pgcr, playerEntry, playerMembershipId, playerKills, playerDeaths);
-                        AddWeapons(pvpWeaponDeltas, playerEntry);
+                        AddWeapons(pvpWeaponDeltas, playerEntries);
                     }
                 }
                 else if (isGambit)
                 {
-                    AddGambitMoteStats(accumulator, pgcr, playerEntry, playerCompleted);
                     if (!isPrivateGambit)
                     {
-                        TrackRivals(gambitOpponents, pgcr, playerEntry, playerMembershipId, playerKills, playerDeaths);
-                        AddWeapons(gambitWeaponDeltas, playerEntry);
+                        AddWeapons(gambitWeaponDeltas, playerEntries);
                     }
                 }
                 else
                 {
-                    AddWeapons(pveWeaponDeltas, playerEntry);
+                    AddWeapons(pveWeaponDeltas, playerEntries);
                 }
             }
         }
@@ -224,21 +225,16 @@ public partial class CrawlerService
                 Count = item.Value
             });
         accumulator.UniquePlayersPlayedWith += currentCrawlEncounteredPlayers.Count;
-        SaveRivalAggregates(accumulator.CrucibleRivals, pvpOpponents);
-        SaveRivalAggregates(accumulator.GambitRivals, gambitOpponents);
 
         report.PatrolTimeByPlanet = accumulator.PatrolSecondsByPlanet.ToDictionary(
             item => item.Key,
             item => TimeSpan.FromSeconds(item.Value));
+        report.TotalKills = accumulator.TotalKills;
+        report.TotalDeaths = accumulator.TotalDeaths;
         report.PlaytimeByActivityMode = ToActivityModePlaytimeReports(accumulator.PlaytimeByActivityMode, activityModeDefinitions);
         report.ZeroKillActivities = accumulator.ZeroKillActivities;
-        report.GambitMotesBanked = accumulator.GambitMotesBanked;
-        report.GambitMotesLost = accumulator.GambitMotesLost;
-        report.GambitMotesBankedByMode = new Dictionary<string, int>(accumulator.GambitMotesBankedByMode);
-        report.GambitMotesLostByMode = new Dictionary<string, int>(accumulator.GambitMotesLostByMode);
-        report.GambitBankOverage = accumulator.GambitBankOverage;
-        report.GambitBankOverageByMode = new Dictionary<string, int>(accumulator.GambitBankOverageByMode);
-        report.GambitMotesBankedByCompletionStatus = new Dictionary<string, int>(accumulator.GambitMotesBankedByCompletionStatus);
+        report.CrucibleKills = ToCrucibleKillsReport(accumulator);
+        report.GambitMotes = ToGambitMotesReport(accumulator);
         report.RaidCompletions = ToCompletionSummaries(raidCompletions);
         report.DungeonCompletions = ToCompletionSummaries(dungeonCompletions);
         report.PlayersSherpaed = ToSherpaReports(playersSherpaed);
@@ -250,9 +246,6 @@ public partial class CrawlerService
                 accumulator.UniquePlayersPlayedWith,
                 cancellationToken)
             .ConfigureAwait(false);
-
-        ApplyRival(report, pvpOpponents, isGambit: false);
-        ApplyRival(report, gambitOpponents, isGambit: true);
 
         await ApplyWeaponAggregateDeltasAsync(
                 report,
@@ -435,9 +428,55 @@ public partial class CrawlerService
         }
     }
 
-    private static DestinyPostGameCarnageReportEntry? FindPlayerEntry(DestinyPostGameCarnageReportData pgcr, long membershipId)
+    private static DestinyPostGameCarnageReportEntry[] FindPlayerEntries(
+        DestinyPostGameCarnageReportData pgcr,
+        int membershipType,
+        long membershipId)
     {
-        return pgcr.Entries?.FirstOrDefault(entry => entry.Player?.DestinyUserInfo?.MembershipId == membershipId);
+        return (pgcr.Entries ?? [])
+            .Where(entry =>
+            {
+                var player = entry.Player?.DestinyUserInfo;
+                return player?.MembershipId == membershipId
+                    && (membershipType <= 0 || player.MembershipType <= 0 || player.MembershipType == membershipType);
+            })
+            .ToArray();
+    }
+
+    private static void AddPgcrPlayerStats(
+        CrawlAccumulator accumulator,
+        IReadOnlyCollection<DestinyPostGameCarnageReportEntry> playerEntries)
+    {
+        accumulator.TotalKills += (long)SumStats(playerEntries, "kills");
+        accumulator.TotalDeaths += (long)SumStats(playerEntries, "deaths");
+    }
+
+    private static void AddCrucibleKills(
+        CrawlAccumulator accumulator,
+        DestinyPostGameCarnageReportData pgcr,
+        long kills)
+    {
+        var modeKey = pgcr.ActivityDetails.Mode.ToString();
+        accumulator.CrucibleKills += kills;
+        accumulator.CrucibleKillsByMode[modeKey] = accumulator.CrucibleKillsByMode.GetValueOrDefault(modeKey) + kills;
+    }
+
+    private static double SumStats(
+        IEnumerable<DestinyPostGameCarnageReportEntry> playerEntries,
+        string statId)
+    {
+        return playerEntries.Sum(entry => GetStat(entry.Values, statId));
+    }
+
+    private static double SumPlayerActivitySeconds(IEnumerable<DestinyPostGameCarnageReportEntry> playerEntries)
+    {
+        return playerEntries.Sum(entry =>
+        {
+            var seconds = GetStat(entry.Values, "timePlayedSeconds");
+            return seconds > 0
+                ? seconds
+                : GetStat(entry.Values, "activityDurationSeconds");
+        });
     }
 
     private static bool IncludesMode(DestinyPostGameCarnageReportData pgcr, int mode)
@@ -549,6 +588,62 @@ public partial class CrawlerService
         return ActivityModeTypeNames.GetValueOrDefault(mode) ?? $"Mode {mode}";
     }
 
+    private static GambitMotesReport ToGambitMotesReport(CrawlAccumulator accumulator)
+    {
+        return new GambitMotesReport
+        {
+            MotesBanked = ToGambitMoteStatReport(
+                accumulator.GambitMotesBanked + accumulator.GambitBankOverage,
+                SumModeTotals(accumulator.GambitMotesBankedByMode, accumulator.GambitBankOverageByMode)),
+            MotesLost = ToGambitMoteStatReport(accumulator.GambitMotesLost, accumulator.GambitMotesLostByMode),
+            MotesDenied = ToGambitMoteStatReport(accumulator.GambitMotesDenied, accumulator.GambitMotesDeniedByMode)
+        };
+    }
+
+    private static CrucibleKillsReport ToCrucibleKillsReport(CrawlAccumulator accumulator)
+    {
+        return new CrucibleKillsReport
+        {
+            Total = accumulator.CrucibleKills,
+            ByMode = accumulator.CrucibleKillsByMode
+                .GroupBy(item => GetActivityModeName(item.Key), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Sum(item => item.Value), StringComparer.OrdinalIgnoreCase)
+        };
+    }
+
+    private static GambitMoteStatReport ToGambitMoteStatReport(
+        int total,
+        IReadOnlyDictionary<string, int> totalsByMode)
+    {
+        return new GambitMoteStatReport
+        {
+            Total = total,
+            ByMode = totalsByMode
+                .GroupBy(item => GetActivityModeName(item.Key), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.Sum(item => item.Value), StringComparer.OrdinalIgnoreCase)
+        };
+    }
+
+    private static Dictionary<string, int> SumModeTotals(
+        IReadOnlyDictionary<string, int> first,
+        IReadOnlyDictionary<string, int> second)
+    {
+        var result = new Dictionary<string, int>(first, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in second)
+        {
+            result[item.Key] = result.GetValueOrDefault(item.Key) + item.Value;
+        }
+
+        return result;
+    }
+
+    private static string GetActivityModeName(string modeKey)
+    {
+        return int.TryParse(modeKey, out var mode)
+            ? ActivityModeTypeNames.GetValueOrDefault(mode) ?? $"Mode {mode}"
+            : modeKey;
+    }
+
     private static bool HasActivityTypeHash(
         DestinyPostGameCarnageReportData pgcr,
         JObject activityDefinitions,
@@ -645,9 +740,9 @@ public partial class CrawlerService
 
     private static DateTimeOffset GetActivityCompletedAt(
         DestinyPostGameCarnageReportData pgcr,
-        DestinyPostGameCarnageReportEntry playerEntry)
+        IEnumerable<DestinyPostGameCarnageReportEntry> playerEntries)
     {
-        var durationSeconds = GetStat(playerEntry.Values, "activityDurationSeconds");
+        var durationSeconds = playerEntries.Max(entry => GetStat(entry.Values, "activityDurationSeconds"));
         return durationSeconds > 0
             ? pgcr.Period.AddSeconds(durationSeconds)
             : pgcr.Period;

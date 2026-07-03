@@ -8,22 +8,12 @@ using MongoDB.Driver;
 using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
-using ReportPlayer = Destiny2Report.API.Features.Crawler.Models.DestinyPlayer;
 
 namespace Destiny2Report.API.Features.Crawler;
 
 public partial class CrawlerService
 {
     private const int MinPersistedPlayerEncounterCount = 2;
-
-    private sealed record RivalAggregate(ReportPlayer Player)
-    {
-        public int Matches { get; set; }
-        public int Wins { get; set; }
-        public int Losses { get; set; }
-        public double Kills { get; set; }
-        public double Deaths { get; set; }
-    }
 
     private sealed record ActivityCompletionAggregate(string ActivityName)
     {
@@ -54,7 +44,26 @@ public partial class CrawlerService
     private sealed class PrivateProfileUnavailableException(string operation, BungieResponse response)
         : InvalidOperationException($"{operation} failed because the Destiny profile is not public. Bungie error code {response.ErrorCode}: {response.Message}");
 
-    private sealed record WeaponDefinitionSummary(string Name, string IconUrl);
+    private sealed record WeaponDefinitionSummary(string Name, string IconUrl, string CategoryName, string CategoryKey);
+
+    private sealed class WeaponKillDelta
+    {
+        public int UniqueWeaponKills { get; set; }
+        public int WeaponKills { get; set; }
+        public int GrenadeKills { get; set; }
+        public int MeleeKills { get; set; }
+        public int SuperKills { get; set; }
+        public int TotalKills => UniqueWeaponKills + WeaponKills + GrenadeKills + MeleeKills + SuperKills;
+
+        public void Add(WeaponKillDelta delta)
+        {
+            UniqueWeaponKills += delta.UniqueWeaponKills;
+            WeaponKills += delta.WeaponKills;
+            GrenadeKills += delta.GrenadeKills;
+            MeleeKills += delta.MeleeKills;
+            SuperKills += delta.SuperKills;
+        }
+    }
 
     private static CrawlAccumulator NewAccumulator(int platformId, long playerMembershipId)
     {
@@ -144,47 +153,6 @@ public partial class CrawlerService
                 FlawlessClear = item.Value.FlawlessClear,
                 SoloClear = item.Value.SoloClear,
                 SoloFlawlessClear = item.Value.SoloFlawlessClear
-            };
-        }
-    }
-
-    private static Dictionary<long, RivalAggregate> ToRivalAggregates(
-        IReadOnlyDictionary<string, RivalAccumulator> source)
-    {
-        return source.Values
-            .Where(item => item.Player.MembershipId > 0)
-            .GroupBy(item => item.Player.MembershipId)
-            .ToDictionary(
-                group => group.Key,
-                group =>
-                {
-                    var item = group.First();
-                    return new RivalAggregate(item.Player)
-                    {
-                        Matches = item.Matches,
-                        Wins = item.Wins,
-                        Losses = item.Losses,
-                        Kills = item.Kills,
-                        Deaths = item.Deaths
-                    };
-                });
-    }
-
-    private static void SaveRivalAggregates(
-        Dictionary<string, RivalAccumulator> target,
-        IReadOnlyDictionary<long, RivalAggregate> source)
-    {
-        target.Clear();
-        foreach (var item in source.Values)
-        {
-            target[PlayerKey(item.Player.MembershipType, item.Player.MembershipId)] = new RivalAccumulator
-            {
-                Player = item.Player,
-                Matches = item.Matches,
-                Wins = item.Wins,
-                Losses = item.Losses,
-                Kills = item.Kills,
-                Deaths = item.Deaths
             };
         }
     }

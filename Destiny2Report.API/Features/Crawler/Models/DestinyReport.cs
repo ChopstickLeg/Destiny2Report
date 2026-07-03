@@ -1,4 +1,3 @@
-using System.Net;
 using MongoDB.Bson.Serialization.Attributes;
 
 namespace Destiny2Report.API.Features.Crawler.Models;
@@ -32,17 +31,8 @@ public record DestinyReport
     public int GambitMatchesPlayed { get; set; }
     public int CrucibleWins { get; set; }
     public int GambitWins { get; set; }
-    public DestinyPlayer? CrucibleRival { get; set; }
-    public DestinyPlayer? GambitRival { get; set; }
-    public double KdAgainstCrucibleRival { get; set; }
-    public double KdAgainstGambitRival { get; set; }
-    public int GambitMotesBanked { get; set; }
-    public int GambitMotesLost { get; set; }
-    public Dictionary<string, int> GambitMotesBankedByMode { get; set; } = new();
-    public Dictionary<string, int> GambitMotesLostByMode { get; set; } = new();
-    public int GambitBankOverage { get; set; }
-    public Dictionary<string, int> GambitBankOverageByMode { get; set; } = new();
-    public Dictionary<string, int> GambitMotesBankedByCompletionStatus { get; set; } = new();
+    public CrucibleKillsReport CrucibleKills { get; set; } = new();
+    public GambitMotesReport GambitMotes { get; set; } = new();
     public List<DestinyTriumphSeal> TriumphSeals
     {
         get => _triumphSeals;
@@ -115,6 +105,25 @@ public record ActivityModePlaytimeBreakdown
     public TimeSpan Playtime { get; init; }
 }
 
+public record GambitMotesReport
+{
+    public GambitMoteStatReport MotesBanked { get; init; } = new();
+    public GambitMoteStatReport MotesLost { get; init; } = new();
+    public GambitMoteStatReport MotesDenied { get; init; } = new();
+}
+
+public record GambitMoteStatReport
+{
+    public int Total { get; init; }
+    public Dictionary<string, int> ByMode { get; init; } = new();
+}
+
+public record CrucibleKillsReport
+{
+    public long Total { get; init; }
+    public Dictionary<string, long> ByMode { get; init; } = new();
+}
+
 public record DestinyPlayer
 {
     public long MembershipId { get; init; }
@@ -139,25 +148,27 @@ public record CrawlAccumulator
     public List<long> RecentActivityInstanceIds { get; set; } = new();
     public bool NeedsFullRecrawl { get; set; }
     public string FullRecrawlReason { get; set; } = "";
-    public int SchemaVersion { get; set; } = 1;
+    public long TotalKills { get; set; }
+    public long TotalDeaths { get; set; }
     public Dictionary<string, long> PatrolSecondsByPlanet { get; set; } = new();
     public Dictionary<string, ActivityCompletionAccumulator> RaidCompletions { get; set; } = new();
     public Dictionary<string, ActivityCompletionAccumulator> DungeonCompletions { get; set; } = new();
     public Dictionary<string, RaidFirstCompletion> FirstRaidCompletions { get; set; } = new();
     public Dictionary<string, EncounterAccumulator> EncounterCounts { get; set; } = new();
     public int UniquePlayersPlayedWith { get; set; }
-    public Dictionary<string, RivalAccumulator> CrucibleRivals { get; set; } = new();
-    public Dictionary<string, RivalAccumulator> GambitRivals { get; set; } = new();
     public int ZeroKillActivities { get; set; }
     public long TotalActivitySeconds { get; set; }
     public Dictionary<string, ActivityModePlaytimeAccumulator> PlaytimeByActivityMode { get; set; } = new();
     public int GambitMotesBanked { get; set; }
     public int GambitMotesLost { get; set; }
+    public int GambitMotesDenied { get; set; }
     public Dictionary<string, int> GambitMotesBankedByMode { get; set; } = new();
     public Dictionary<string, int> GambitMotesLostByMode { get; set; } = new();
+    public Dictionary<string, int> GambitMotesDeniedByMode { get; set; } = new();
     public int GambitBankOverage { get; set; }
     public Dictionary<string, int> GambitBankOverageByMode { get; set; } = new();
-    public Dictionary<string, int> GambitMotesBankedByCompletionStatus { get; set; } = new();
+    public long CrucibleKills { get; set; }
+    public Dictionary<string, long> CrucibleKillsByMode { get; set; } = new();
     public Dictionary<string, int> PlayersSherpaed { get; set; } = new();
 }
 
@@ -189,16 +200,6 @@ public record EncounterAccumulator
     public int Count { get; set; }
 }
 
-public record RivalAccumulator
-{
-    public DestinyPlayer Player { get; set; } = new();
-    public int Matches { get; set; }
-    public int Wins { get; set; }
-    public int Losses { get; set; }
-    public double Kills { get; set; }
-    public double Deaths { get; set; }
-}
-
 [BsonIgnoreExtraElements]
 public record WeaponAggregate
 {
@@ -207,7 +208,31 @@ public record WeaponAggregate
     public string ActivityMode { get; set; } = "";
     public string WeaponKey { get; set; } = "";
     public string WeaponName { get; set; } = "";
+    public long? ReferenceId { get; set; }
     public string IconUrl { get; set; } = "";
+    public string CategoryKey { get; set; } = "";
+    public string CategoryName { get; set; } = "";
+    public int UniqueWeaponKills { get; set; }
+    public int WeaponKills { get; set; }
+    public int GrenadeKills { get; set; }
+    public int MeleeKills { get; set; }
+    public int SuperKills { get; set; }
+    public int TotalKills { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public record WeaponCategoryAggregate
+{
+    public int OwnerMembershipType { get; set; }
+    public long OwnerMembershipId { get; set; }
+    public string ActivityMode { get; set; } = "";
+    public string CategoryKey { get; set; } = "";
+    public string CategoryName { get; set; } = "";
+    public int UniqueWeaponKills { get; set; }
+    public int WeaponKills { get; set; }
+    public int GrenadeKills { get; set; }
+    public int MeleeKills { get; set; }
+    public int SuperKills { get; set; }
     public int TotalKills { get; set; }
 }
 
