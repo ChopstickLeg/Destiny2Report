@@ -91,6 +91,7 @@ internal static class BungieFixture
         int membershipType = 1,
         long characterId = 1,
         int standing = 0,
+        int emblemHash = 0,
         string displayName = "Player",
         string characterClass = "Warlock",
         IDictionary<string, DestinyHistoricalStatsValue>? values = null,
@@ -103,6 +104,7 @@ internal static class BungieFixture
             Player = new Player
             {
                 CharacterClass = characterClass,
+                EmblemHash = emblemHash,
                 DestinyUserInfo = new DestinyUserInfo
                 {
                     MembershipId = membershipId,

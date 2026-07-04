@@ -182,6 +182,80 @@ public sealed class CrawlerActivityStatsTests
     }
 
     [Fact]
+    public void AddEmblemPlaytime_accumulates_entry_seconds_by_pgcr_emblem_hash()
+    {
+        var emblemSeconds = new Dictionary<long, long>
+        {
+            [123] = 60
+        };
+        var firstEntry = BungieFixture.Entry(
+            4611686018463095984,
+            emblemHash: 123,
+            values: BungieFixture.Stats(("timePlayedSeconds", 900), ("activityDurationSeconds", 1000)));
+        var secondEntry = BungieFixture.Entry(
+            4611686018463095984,
+            emblemHash: 456,
+            values: BungieFixture.Stats(("activityDurationSeconds", 300)));
+        var missingEmblem = BungieFixture.Entry(
+            4611686018463095984,
+            values: BungieFixture.Stats(("timePlayedSeconds", 999)));
+        var missingPlaytime = BungieFixture.Entry(
+            4611686018463095984,
+            emblemHash: 789);
+
+        CrawlerReflection.Invoke(
+            "AddEmblemPlaytime",
+            emblemSeconds,
+            new[] { firstEntry, secondEntry, missingEmblem, missingPlaytime });
+
+        Assert.Equal(960, emblemSeconds[123]);
+        Assert.Equal(300, emblemSeconds[456]);
+        Assert.DoesNotContain(789, emblemSeconds.Keys);
+    }
+
+    [Fact]
+    public void AddEmblemPlaytime_treats_pgcr_emblem_hash_as_unsigned()
+    {
+        var emblemSeconds = new Dictionary<long, long>();
+        var unsignedHash = 4_000_000_000u;
+        var entry = BungieFixture.Entry(
+            4611686018463095984,
+            emblemHash: unchecked((int)unsignedHash),
+            values: BungieFixture.Stats(("timePlayedSeconds", 120)));
+
+        CrawlerReflection.Invoke("AddEmblemPlaytime", emblemSeconds, new[] { entry });
+
+        Assert.Equal(120, emblemSeconds[unsignedHash]);
+    }
+
+    [Fact]
+    public void ToEmblemDefinitionSummary_maps_secondary_icon_to_background_url()
+    {
+        var definition = new DestinyDefinition
+        {
+            Hash = 123,
+            AdditionalProperties =
+            {
+                ["displayProperties"] = JObject.Parse(
+                    """
+                    {
+                      "name": "A Good Emblem",
+                      "icon": "/common/destiny2_content/icons/emblem_icon.jpg",
+                      "secondaryIcon": "/common/destiny2_content/icons/emblem_background.jpg"
+                    }
+                    """)
+            }
+        };
+
+        var summary = CrawlerReflection.Invoke("ToEmblemDefinitionSummary", definition)!;
+        var summaryType = summary.GetType();
+
+        Assert.Equal("A Good Emblem", summaryType.GetProperty("Name")!.GetValue(summary));
+        Assert.Equal("https://www.bungie.net/common/destiny2_content/icons/emblem_icon.jpg", summaryType.GetProperty("IconUrl")!.GetValue(summary));
+        Assert.Equal("https://www.bungie.net/common/destiny2_content/icons/emblem_background.jpg", summaryType.GetProperty("BackgroundUrl")!.GetValue(summary));
+    }
+
+    [Fact]
     public void FindPlayerEntries_returns_all_entries_for_same_membership()
     {
         var matchingFirst = BungieFixture.Entry(

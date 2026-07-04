@@ -22,7 +22,7 @@ public partial class CrawlerService
         IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activityHistory,
         IDictionary<long, string> characterClassById,
         ManifestContext manifest,
-        bool resetWeaponAggregates,
+        bool resetDerivedAggregates,
         CancellationToken cancellationToken)
     {
         var activityDefinitions = await manifest.GetTableAsync("DestinyActivityDefinition", cancellationToken).ConfigureAwait(false);
@@ -40,7 +40,7 @@ public partial class CrawlerService
                 activityDefinitions,
                 activityModeDefinitions,
                 manifest,
-                resetWeaponAggregates,
+                resetDerivedAggregates,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -83,7 +83,7 @@ public partial class CrawlerService
         JObject activityDefinitions,
         JObject activityModeDefinitions,
         ManifestContext manifest,
-        bool resetWeaponAggregates,
+        bool resetDerivedAggregates,
         CancellationToken cancellationToken)
     {
         var playerEncounterCounts = accumulator.EncounterCounts.Values
@@ -91,6 +91,7 @@ public partial class CrawlerService
         var pveWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
         var pvpWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
         var gambitWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
+        var emblemSecondsDeltas = new Dictionary<long, long>();
         var raidCompletions = ToCompletionAggregates(accumulator.RaidCompletions);
         var dungeonCompletions = ToCompletionAggregates(accumulator.DungeonCompletions);
         var playersSherpaed = new Dictionary<string, int>(accumulator.PlayersSherpaed, StringComparer.OrdinalIgnoreCase);
@@ -143,6 +144,7 @@ public partial class CrawlerService
 
                 accumulator.TotalActivitySeconds += (long)playerActivitySeconds;
                 AddActivityModePlaytime(accumulator, pgcr, (long)playerActivitySeconds);
+                AddEmblemPlaytime(emblemSecondsDeltas, playerEntries);
 
                 if (playerCompleted && isRaid)
                 {
@@ -255,7 +257,17 @@ public partial class CrawlerService
                 pvpWeaponDeltas,
                 gambitWeaponDeltas,
                 manifest.Manifest,
-                resetWeaponAggregates,
+                resetDerivedAggregates,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await ApplyEmblemAggregateDeltasAsync(
+                report,
+                platformId,
+                playerMembershipId,
+                emblemSecondsDeltas,
+                manifest.Manifest,
+                resetDerivedAggregates,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -470,13 +482,7 @@ public partial class CrawlerService
 
     private static double SumPlayerActivitySeconds(IEnumerable<DestinyPostGameCarnageReportEntry> playerEntries)
     {
-        return playerEntries.Sum(entry =>
-        {
-            var seconds = GetStat(entry.Values, "timePlayedSeconds");
-            return seconds > 0
-                ? seconds
-                : GetStat(entry.Values, "activityDurationSeconds");
-        });
+        return playerEntries.Sum(GetPlayerActivitySeconds);
     }
 
     private static bool IncludesMode(DestinyPostGameCarnageReportData pgcr, int mode)

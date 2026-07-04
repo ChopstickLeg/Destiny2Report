@@ -4,10 +4,9 @@ using Destiny2Report.API.Features.Reports;
 using Destiny2Report.API.Features.Status;
 using Destiny2Report.API.RateLimiting;
 using Destiny2Report.API.Features.Crawler;
-using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Mongo;
 using Destiny2Report.API.Observability;
 using Microsoft.AspNetCore.RateLimiting;
-using MongoDB.Driver;
 using StackExchange.Redis;
 using System.Threading.RateLimiting;
 
@@ -36,24 +35,7 @@ builder.Services.AddHybridCache(options =>
 });
 builder.Services.AddScoped<ICrawlerService, CrawlerService>();
 builder.Services.AddHostedService<CrawlerBackgroundJob>();
-
-builder.Services.AddSingleton<IMongoClient>(_ =>
-{
-    var connectionString = builder.Configuration.GetConnectionString("MongoDb")
-        ?? throw new InvalidOperationException("ConnectionStrings:MongoDb is required.");
-
-    return new MongoClient(connectionString);
-});
-
-builder.Services.AddSingleton(provider =>
-{
-    var databaseName = builder.Configuration["Mongo:DatabaseName"]
-        ?? throw new InvalidOperationException("Mongo:DatabaseName is required.");
-
-    var mongoClient = provider.GetRequiredService<IMongoClient>();
-
-    return mongoClient.GetDatabase(databaseName);
-});
+builder.Services.AddMongo(builder.Configuration);
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 {
@@ -100,7 +82,7 @@ if (!app.Environment.IsProduction())
     app.UseSwaggerUI();
 }
 
-await EnsureMongoIndexesAsync(app.Services);
+await app.EnsureMongoIndexesAsync();
 
 app.UseRateLimiter();
 
@@ -112,133 +94,3 @@ api.MapAuthEndpoints();
 api.MapReportEndpoints();
 
 app.Run();
-
-static async Task EnsureMongoIndexesAsync(IServiceProvider serviceProvider)
-{
-    var mongoDatabase = serviceProvider.GetRequiredService<IMongoDatabase>();
-    var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
-    var reportIndexKeys = Builders<DestinyReport>.IndexKeys
-        .Ascending(report => report.PlatformId)
-        .Ascending(report => report.PlayerMembershipId);
-    var reportIndexModel = new CreateIndexModel<DestinyReport>(
-        reportIndexKeys,
-        new CreateIndexOptions
-        {
-            Name = "ux_destiny_reports_platform_player",
-            Unique = true
-        });
-
-    await reports.Indexes.CreateOneAsync(reportIndexModel);
-
-    var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
-    var accumulatorIndexKeys = Builders<CrawlAccumulator>.IndexKeys
-        .Ascending(accumulator => accumulator.PlatformId)
-        .Ascending(accumulator => accumulator.PlayerMembershipId);
-    var accumulatorIndexModel = new CreateIndexModel<CrawlAccumulator>(
-        accumulatorIndexKeys,
-        new CreateIndexOptions
-        {
-            Name = "ux_crawl_accumulators_platform_player",
-            Unique = true
-        });
-
-    await accumulators.Indexes.CreateOneAsync(accumulatorIndexModel);
-
-    var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
-    var weaponUniqueIndexKeys = Builders<WeaponAggregate>.IndexKeys
-        .Ascending(weapon => weapon.OwnerMembershipType)
-        .Ascending(weapon => weapon.OwnerMembershipId)
-        .Ascending(weapon => weapon.ActivityMode)
-        .Ascending(weapon => weapon.WeaponKey);
-    var weaponTopIndexKeys = Builders<WeaponAggregate>.IndexKeys
-        .Ascending(weapon => weapon.OwnerMembershipType)
-        .Ascending(weapon => weapon.OwnerMembershipId)
-        .Ascending(weapon => weapon.ActivityMode)
-        .Descending(weapon => weapon.TotalKills);
-    var weaponCategoryIndexKeys = Builders<WeaponAggregate>.IndexKeys
-        .Ascending(weapon => weapon.OwnerMembershipType)
-        .Ascending(weapon => weapon.OwnerMembershipId)
-        .Ascending(weapon => weapon.ActivityMode)
-        .Ascending(weapon => weapon.CategoryKey)
-        .Descending(weapon => weapon.TotalKills);
-
-    await weapons.Indexes.CreateManyAsync(
-        [
-            new CreateIndexModel<WeaponAggregate>(
-                weaponUniqueIndexKeys,
-                new CreateIndexOptions
-                {
-                    Name = "ux_weapon_aggregates_owner_mode_key",
-                    Unique = true
-                }),
-            new CreateIndexModel<WeaponAggregate>(
-                weaponTopIndexKeys,
-                new CreateIndexOptions
-                {
-                    Name = "ix_weapon_aggregates_owner_mode_kills"
-                }),
-            new CreateIndexModel<WeaponAggregate>(
-                weaponCategoryIndexKeys,
-                new CreateIndexOptions
-                {
-                    Name = "ix_weapon_aggregates_owner_mode_category_kills"
-                })
-        ]);
-
-    var weaponCategories = mongoDatabase.GetCollection<WeaponCategoryAggregate>("weapon_category_aggregates");
-    var weaponCategoryUniqueIndexKeys = Builders<WeaponCategoryAggregate>.IndexKeys
-        .Ascending(category => category.OwnerMembershipType)
-        .Ascending(category => category.OwnerMembershipId)
-        .Ascending(category => category.ActivityMode)
-        .Ascending(category => category.CategoryKey);
-    var weaponCategoryTopIndexKeys = Builders<WeaponCategoryAggregate>.IndexKeys
-        .Ascending(category => category.OwnerMembershipType)
-        .Ascending(category => category.OwnerMembershipId)
-        .Ascending(category => category.ActivityMode)
-        .Descending(category => category.TotalKills);
-
-    await weaponCategories.Indexes.CreateManyAsync(
-        [
-            new CreateIndexModel<WeaponCategoryAggregate>(
-                weaponCategoryUniqueIndexKeys,
-                new CreateIndexOptions
-                {
-                    Name = "ux_weapon_category_aggregates_owner_mode_category",
-                    Unique = true
-                }),
-            new CreateIndexModel<WeaponCategoryAggregate>(
-                weaponCategoryTopIndexKeys,
-                new CreateIndexOptions
-                {
-                    Name = "ix_weapon_category_aggregates_owner_mode_kills"
-                })
-        ]);
-
-    var encounters = mongoDatabase.GetCollection<PlayerEncounterAggregate>("player_encounters");
-    var encounterPairIndexKeys = Builders<PlayerEncounterAggregate>.IndexKeys
-        .Ascending(encounter => encounter.OwnerMembershipType)
-        .Ascending(encounter => encounter.OwnerMembershipId)
-        .Ascending(encounter => encounter.EncounteredMembershipType)
-        .Ascending(encounter => encounter.EncounteredMembershipId);
-    var encounterTopIndexKeys = Builders<PlayerEncounterAggregate>.IndexKeys
-        .Ascending(encounter => encounter.OwnerMembershipType)
-        .Ascending(encounter => encounter.OwnerMembershipId)
-        .Descending(encounter => encounter.Count);
-
-    await encounters.Indexes.CreateManyAsync(
-        [
-            new CreateIndexModel<PlayerEncounterAggregate>(
-                encounterPairIndexKeys,
-                new CreateIndexOptions
-                {
-                    Name = "ux_player_encounters_owner_encountered",
-                    Unique = true
-                }),
-            new CreateIndexModel<PlayerEncounterAggregate>(
-                encounterTopIndexKeys,
-                new CreateIndexOptions
-                {
-                    Name = "ix_player_encounters_owner_count"
-                })
-        ]);
-}

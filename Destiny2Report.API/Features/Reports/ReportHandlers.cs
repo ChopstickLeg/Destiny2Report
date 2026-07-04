@@ -72,6 +72,64 @@ public static class ReportHandlers
             : TypedResults.Ok(report);
     }
 
+    public static async Task<Results<Ok<IReadOnlyCollection<WeaponCategoryAggregateReport>>, NotFound, BadRequest<ProblemDetails>>> GetWeapons(
+        int membershipTypeId,
+        long membershipId,
+        WeaponActivityMode activityMode,
+        IMongoDatabase mongoDatabase,
+        CancellationToken cancellationToken)
+    {
+        if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
+        {
+            return TypedResults.BadRequest(problemDetails);
+        }
+
+        var storedActivityMode = ToStoredActivityMode(activityMode);
+        var categories = mongoDatabase.GetCollection<WeaponCategoryAggregate>("weapon_category_aggregates");
+        var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
+        var categoryFilter = Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipType, membershipTypeId)
+            & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipId, membershipId)
+            & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.ActivityMode, storedActivityMode);
+        var weaponFilter = Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipType, membershipTypeId)
+            & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipId, membershipId)
+            & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, storedActivityMode);
+
+        var categoryAggregates = await categories
+            .Find(categoryFilter)
+            .SortByDescending(category => category.Kills)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (categoryAggregates.Count == 0)
+        {
+            return TypedResults.NotFound();
+        }
+
+        var weaponAggregates = await weapons
+            .Find(weaponFilter)
+            .SortBy(weapon => weapon.CategoryKey)
+            .ThenByDescending(weapon => weapon.Kills)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var weaponsByCategory = weaponAggregates
+            .GroupBy(weapon => weapon.CategoryKey)
+            .ToDictionary(group => group.Key, group => (IReadOnlyCollection<WeaponAggregate>)group.ToList());
+        var response = categoryAggregates
+            .Select(category => new WeaponCategoryAggregateReport
+            {
+                OwnerMembershipType = category.OwnerMembershipType,
+                OwnerMembershipId = category.OwnerMembershipId,
+                ActivityMode = category.ActivityMode,
+                CategoryKey = category.CategoryKey,
+                CategoryName = category.CategoryName,
+                Kills = category.Kills,
+                Weapons = weaponsByCategory.GetValueOrDefault(category.CategoryKey) ?? []
+            })
+            .ToList();
+
+        return TypedResults.Ok<IReadOnlyCollection<WeaponCategoryAggregateReport>>(response);
+    }
+
     public static async Task<Results<Accepted<ReportQueueResponse>, BadRequest<ProblemDetails>>> QueueCrawl(
         ReportQueueRequest request,
         IConnectionMultiplexer redis,
@@ -299,6 +357,17 @@ public static class ReportHandlers
         return await reports.Find(filter)
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private static string ToStoredActivityMode(WeaponActivityMode activityMode)
+    {
+        return activityMode switch
+        {
+            WeaponActivityMode.PvP => "Crucible",
+            WeaponActivityMode.PvE => "PvE",
+            WeaponActivityMode.Gambit => "Gambit",
+            _ => ""
+        };
     }
 
     private static async Task<ReportQueueStatusResponse?> GetQueueStatusAsync(

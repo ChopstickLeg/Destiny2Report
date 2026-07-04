@@ -214,12 +214,7 @@ public partial class CrawlerService
                     .Set(weapon => weapon.IconUrl, first.IconUrl)
                     .Set(weapon => weapon.CategoryKey, first.CategoryKey)
                     .Set(weapon => weapon.CategoryName, first.CategoryName)
-                    .Inc(weapon => weapon.UniqueWeaponKills, group.Sum(item => item.Delta.UniqueWeaponKills))
-                    .Inc(weapon => weapon.WeaponKills, group.Sum(item => item.Delta.WeaponKills))
-                    .Inc(weapon => weapon.GrenadeKills, group.Sum(item => item.Delta.GrenadeKills))
-                    .Inc(weapon => weapon.MeleeKills, group.Sum(item => item.Delta.MeleeKills))
-                    .Inc(weapon => weapon.SuperKills, group.Sum(item => item.Delta.SuperKills))
-                    .Inc(weapon => weapon.TotalKills, group.Sum(item => item.Delta.TotalKills));
+                    .Inc(weapon => weapon.Kills, group.Sum(item => item.Delta.TotalKills));
 
                 return new UpdateOneModel<WeaponAggregate>(filter, update)
                 {
@@ -262,12 +257,7 @@ public partial class CrawlerService
                     .SetOnInsert(category => category.ActivityMode, activityMode)
                     .SetOnInsert(category => category.CategoryKey, group.Key)
                     .Set(category => category.CategoryName, first.CategoryName)
-                    .Inc(category => category.UniqueWeaponKills, group.Sum(item => item.Delta.UniqueWeaponKills))
-                    .Inc(category => category.WeaponKills, group.Sum(item => item.Delta.WeaponKills))
-                    .Inc(category => category.GrenadeKills, group.Sum(item => item.Delta.GrenadeKills))
-                    .Inc(category => category.MeleeKills, group.Sum(item => item.Delta.MeleeKills))
-                    .Inc(category => category.SuperKills, group.Sum(item => item.Delta.SuperKills))
-                    .Inc(category => category.TotalKills, group.Sum(item => item.Delta.TotalKills));
+                    .Inc(category => category.Kills, group.Sum(item => item.Delta.TotalKills));
 
                 return new UpdateOneModel<WeaponCategoryAggregate>(filter, update)
                 {
@@ -285,7 +275,7 @@ public partial class CrawlerService
         var modeFilter = ownerFilter & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, activityMode);
         var topWeapons = await weapons
             .Find(modeFilter)
-            .SortByDescending(weapon => weapon.TotalKills)
+            .SortByDescending(weapon => weapon.Kills)
             .Limit(10)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -295,7 +285,7 @@ public partial class CrawlerService
             {
                 Name = weapon.WeaponName,
                 IconUrl = weapon.IconUrl,
-                TotalKills = weapon.TotalKills
+                TotalKills = weapon.Kills
             })
             .ToList();
     }

@@ -46,6 +46,8 @@ public partial class CrawlerService
 
     private sealed record WeaponDefinitionSummary(string Name, string IconUrl, string CategoryName, string CategoryKey);
 
+    private sealed record EmblemDefinitionSummary(string Name, string IconUrl, string BackgroundUrl);
+
     private sealed class WeaponKillDelta
     {
         public int UniqueWeaponKills { get; set; }

@@ -13,6 +13,10 @@ public static class ReportEndpoints
             .WithName("GetReport")
             .WithSummary("Returns a crawled Destiny player report from MongoDB.");
 
+        reports.MapGet("/{membershipTypeId:int}/{membershipId:long}/weapons/{activityMode}", ReportHandlers.GetWeapons)
+            .WithName("GetReportWeapons")
+            .WithSummary("Returns weapon category aggregates with all weapon aggregates for a crawled Destiny player and activity mode.");
+
         reports.MapPost("/queue", ReportHandlers.QueueCrawl)
             .WithName("QueueReportCrawl")
             .WithSummary("Queues a Destiny player report crawl.")
