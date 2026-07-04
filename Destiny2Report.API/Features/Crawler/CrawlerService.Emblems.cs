@@ -202,10 +202,9 @@ public partial class CrawlerService
     private static EmblemDefinitionSummary ToEmblemDefinitionSummary(DestinyDefinition definition)
     {
         var displayProperties = TryGetJObject(definition.AdditionalProperties, "displayProperties");
-        var secondaryIcon = TryGetJObject(definition.AdditionalProperties, "secondaryIcon");
         return new EmblemDefinitionSummary(
             displayProperties?["name"]?.Value<string>() ?? ToUnsignedHashIdentifier(definition.Hash),
             BungieUrl(displayProperties?["icon"]?.Value<string>()),
-            BungieUrl(secondaryIcon?.Value<string>()));
+            BungieUrl(displayProperties?["secondaryIcon"]?.Value<string>()));
     }
 }

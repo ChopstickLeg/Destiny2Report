@@ -41,6 +41,36 @@ public partial class CrawlerService
         int MembershipType,
         long MembershipId);
 
+    private readonly record struct ActivityReference(long InstanceId, DateTimeOffset Period);
+
+    private sealed class ActivityCrawlState
+    {
+        private readonly List<ActivityReference> _recentActivities = [];
+
+        public DateTimeOffset NewestActivityPeriod { get; private set; }
+
+        public IReadOnlyCollection<ActivityReference> RecentActivities => _recentActivities;
+
+        public void AddFetched(IEnumerable<DestinyHistoricalStatsPeriodGroup> activities)
+        {
+            foreach (var activity in activities)
+            {
+                var instanceId = activity.ActivityDetails.InstanceId;
+                if (instanceId <= 0)
+                {
+                    continue;
+                }
+
+                if (activity.Period > NewestActivityPeriod)
+                {
+                    NewestActivityPeriod = activity.Period;
+                }
+
+                _recentActivities.Add(new ActivityReference(instanceId, activity.Period));
+            }
+        }
+    }
+
     private sealed class PrivateProfileUnavailableException(string operation, BungieResponse response)
         : InvalidOperationException($"{operation} failed because the Destiny profile is not public. Bungie error code {response.ErrorCode}: {response.Message}");
 
@@ -99,6 +129,30 @@ public partial class CrawlerService
             .Where(activity => activity.ActivityDetails.InstanceId > 0)
             .OrderByDescending(activity => activity.Period)
             .Select(activity => activity.ActivityDetails.InstanceId)
+            .Concat(processedActivityIds.Where(instanceId => instanceId > 0))
+            .Concat(accumulator.RecentActivityInstanceIds)
+            .Distinct()
+            .Take(RecentActivityInstanceIdLimit)
+            .ToList();
+    }
+
+    private static void UpdateAccumulatorCrawlStateFromState(
+        CrawlAccumulator accumulator,
+        ActivityCrawlState crawlState,
+        IEnumerable<long> processedActivityIds)
+    {
+        accumulator.LastSuccessfulCrawlAt = DateTimeOffset.UtcNow;
+        accumulator.NeedsFullRecrawl = false;
+        accumulator.FullRecrawlReason = "";
+
+        if (crawlState.NewestActivityPeriod > accumulator.NewestActivityPeriod)
+        {
+            accumulator.NewestActivityPeriod = crawlState.NewestActivityPeriod;
+        }
+
+        accumulator.RecentActivityInstanceIds = crawlState.RecentActivities
+            .OrderByDescending(activity => activity.Period)
+            .Select(activity => activity.InstanceId)
             .Concat(processedActivityIds.Where(instanceId => instanceId > 0))
             .Concat(accumulator.RecentActivityInstanceIds)
             .Distinct()

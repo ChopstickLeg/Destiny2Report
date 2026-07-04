@@ -19,7 +19,8 @@ public partial class CrawlerService(
     HybridCache cache,
     IHttpClientFactory httpClientFactory,
     IOptions<ContestModeOptions> contestModeOptions,
-    IOptions<ActivityTriumphRecordOptions> activityTriumphRecordOptions) : ICrawlerService
+    IOptions<ActivityTriumphRecordOptions> activityTriumphRecordOptions,
+    IOptions<CrawlerOptions> crawlerOptions) : ICrawlerService
 {
     private const string BungieNetBaseUrl = "https://www.bungie.net";
     private const int GeneralStatsGroup = 1;
@@ -28,8 +29,6 @@ public partial class CrawlerService(
     private const int ProfileRecordsComponent = 900;
     private const int MetricsComponent = 1100;
     private const int PageSize = 250;
-    private const int MaxConcurrentPgcrRequests = 128;
-    private const int MaxBufferedPgcrs = MaxConcurrentPgcrRequests * 2;
     private const int MaxConcurrentSherpaHistoryRequests = 8;
     private const int RecentActivityInstanceIdLimit = 5000;
     private const int AllMembershipTypes = 254;
@@ -152,6 +151,9 @@ public partial class CrawlerService(
     ];
     private readonly ContestModeLookup contestMode = ContestModeLookup.FromOptions(contestModeOptions.Value);
     private readonly ActivityTriumphRecordOptions activityTriumphRecords = activityTriumphRecordOptions.Value;
+    private readonly CrawlerOptions crawler = crawlerOptions.Value;
+    private int MaxConcurrentPgcrRequests => Math.Max(1, crawler.MaxConcurrentPgcrRequests);
+    private int MaxBufferedPgcrs => Math.Max(1, crawler.MaxBufferedPgcrs ?? MaxConcurrentPgcrRequests * 2);
 
     public async Task CrawlAsync(int platformId, long playerMembershipId, CancellationToken cancellationToken)
     {
@@ -197,18 +199,19 @@ public partial class CrawlerService(
 
             var historicalStatsTask = FetchModeStatsAsync(platformId, playerMembershipId, characterIds, cancellationToken);
             var weaponHistoryTask = FetchUniqueWeaponHistoryAsync(platformId, playerMembershipId, characterIds, cancellationToken);
-            var activityHistoryTask = FetchActivityHistoriesAsync(platformId, playerMembershipId, characterIds, crawlAfter, cancellationToken);
 
-            await Task.WhenAll(historicalStatsTask, weaponHistoryTask, activityHistoryTask).ConfigureAwait(false);
+            await Task.WhenAll(historicalStatsTask, weaponHistoryTask).ConfigureAwait(false);
 
-            var activityHistory = activityHistoryTask.Result;
             var recentActivityIds = requiresFullCrawl
                 ? new HashSet<long>()
                 : accumulator.RecentActivityInstanceIds.ToHashSet();
-            var newActivityHistory = activityHistory
-                .Where(item => item.ActivityDetails.InstanceId > 0)
-                .Where(item => !recentActivityIds.Contains(item.ActivityDetails.InstanceId))
-                .ToArray();
+            var activityHistoryBatches = FetchActivityHistoryBatchesAsync(
+                platformId,
+                playerMembershipId,
+                characterIds,
+                crawlAfter,
+                MaxBufferedPgcrs,
+                cancellationToken);
             var characterClassById = BuildCharacterClassMap(historicalCharacters, [], playerMembershipId, characterIds);
 
             var report = new DestinyReport
@@ -222,11 +225,10 @@ public partial class CrawlerService(
             ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById);
             ApplyProfileStats(report, profile, manifest);
             ApplyModeStats(report, historicalStatsTask.Result);
-            await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, newActivityHistory, characterClassById, manifest, requiresFullCrawl, cancellationToken).ConfigureAwait(false);
+            await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, activityHistoryBatches, recentActivityIds, characterClassById, manifest, requiresFullCrawl, cancellationToken).ConfigureAwait(false);
             await ApplyWeaponStatsAsync(report, weaponHistoryTask.Result, manifest, cancellationToken).ConfigureAwait(false);
             ApplyTriumphSeals(report, profile, manifest);
             ApplyActivityTriumphRecords(report, profile);
-            UpdateAccumulatorCrawlState(accumulator, activityHistory, []);
 
             await reports.ReplaceOneAsync(filter, report, new ReplaceOptions { IsUpsert = true }, cancellationToken)
                 .ConfigureAwait(false);

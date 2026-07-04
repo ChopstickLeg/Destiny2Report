@@ -7,6 +7,8 @@ using Microsoft.Extensions.Options;
 using MongoDB.Driver;
 using Newtonsoft.Json.Linq;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
 using ReportPlayer = Destiny2Report.API.Features.Crawler.Models.DestinyPlayer;
 
@@ -66,21 +68,52 @@ public partial class CrawlerService
         return results.ToDictionary(item => item.characterId, item => item.Weapons);
     }
 
-    private async Task<List<DestinyHistoricalStatsPeriodGroup>> FetchActivityHistoriesAsync(
+    private async IAsyncEnumerable<IReadOnlyList<DestinyHistoricalStatsPeriodGroup>> FetchActivityHistoryBatchesAsync(
         int platformId,
         long playerMembershipId,
         IReadOnlyCollection<long> characterIds,
         DateTimeOffset? crawlAfter,
-        CancellationToken cancellationToken)
+        int batchSize,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var results = new ConcurrentDictionary<long, DestinyHistoricalStatsPeriodGroup>();
+        var seenActivityIds = new HashSet<long>();
+        var batch = new List<DestinyHistoricalStatsPeriodGroup>(batchSize);
+        var channel = Channel.CreateBounded<DestinyHistoricalStatsPeriodGroup>(
+            new BoundedChannelOptions(batchSize)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false
+            });
 
-        var tasks = characterIds.Select(FetchPagesAsync);
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        var producerTasks = characterIds
+            .Select(characterId => FetchPagesAsync(characterId, channel.Writer))
+            .ToArray();
+        _ = CompleteWhenProducersFinishAsync(producerTasks, channel.Writer);
 
-        return results.Values.OrderBy(activity => activity.Period).ToList();
+        await foreach (var activity in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var instanceId = activity.ActivityDetails.InstanceId;
+            if (instanceId <= 0 || !seenActivityIds.Add(instanceId))
+            {
+                continue;
+            }
 
-        async Task FetchPagesAsync(long characterId)
+            batch.Add(activity);
+            if (batch.Count >= batchSize)
+            {
+                yield return DrainBatch();
+            }
+        }
+
+        if (batch.Count > 0)
+        {
+            yield return DrainBatch();
+        }
+
+        async Task FetchPagesAsync(
+            long characterId,
+            ChannelWriter<DestinyHistoricalStatsPeriodGroup> writer)
         {
             var page = 0;
             while (!cancellationToken.IsCancellationRequested)
@@ -99,9 +132,15 @@ public partial class CrawlerService
                 var reachedCrawlBoundary = false;
                 foreach (var activity in activities)
                 {
+                    var instanceId = activity.ActivityDetails.InstanceId;
+                    if (instanceId <= 0)
+                    {
+                        continue;
+                    }
+
                     if (crawlAfter is null || activity.Period > crawlAfter)
                     {
-                        results.TryAdd(activity.ActivityDetails.InstanceId, activity);
+                        await writer.WriteAsync(activity, cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {
@@ -117,37 +156,73 @@ public partial class CrawlerService
                 page++;
             }
         }
-    }
 
-    private async Task<List<(DestinyHistoricalStatsPeriodGroup Activity, DestinyPostGameCarnageReportData Pgcr)>> FetchPgcrBatchAsync(
-        IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activities,
-        CancellationToken cancellationToken)
-    {
-        using var throttler = new SemaphoreSlim(MaxConcurrentPgcrRequests);
-        var tasks = activities.Select(async activity =>
+        static async Task CompleteWhenProducersFinishAsync(
+            Task[] producers,
+            ChannelWriter<DestinyHistoricalStatsPeriodGroup> writer)
         {
-            await throttler.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var activityId = activity.ActivityDetails.InstanceId;
-                var operation = $"GetPostGameCarnageReport:{activityId}";
-                var response = await bungieClient.Destiny2_GetPostGameCarnageReportAsync(activityId, cancellationToken)
-                    .ConfigureAwait(false);
-                var pgcr = EnsureSuccess(response, item => item.Response, operation);
-
-                return (Activity: activity, Pgcr: pgcr);
+                await Task.WhenAll(producers).ConfigureAwait(false);
+                writer.TryComplete();
             }
-            finally
+            catch (Exception ex)
             {
-                throttler.Release();
+                writer.TryComplete(ex);
             }
-        });
+        }
 
-        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
-        return results
-            .Where(item => item.Pgcr.ActivityDetails.InstanceId > 0)
-            .OrderBy(item => item.Pgcr.Period)
-            .ToList();
+        List<DestinyHistoricalStatsPeriodGroup> DrainBatch()
+        {
+            var result = batch
+                .OrderBy(activity => activity.Period)
+                .ToList();
+            batch = new List<DestinyHistoricalStatsPeriodGroup>(batchSize);
+            return result;
+        }
+    }
+
+    private async IAsyncEnumerable<(DestinyHistoricalStatsPeriodGroup Activity, DestinyPostGameCarnageReportData Pgcr)> FetchPgcrBatchAsync(
+        IReadOnlyList<DestinyHistoricalStatsPeriodGroup> activities,
+        int maxConcurrency,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var nextIndex = 0;
+        var pending = new List<Task<(DestinyHistoricalStatsPeriodGroup Activity, DestinyPostGameCarnageReportData Pgcr)>>(Math.Min(maxConcurrency, activities.Count));
+
+        while (nextIndex < activities.Count && pending.Count < maxConcurrency)
+        {
+            pending.Add(FetchPgcrAsync(activities[nextIndex++]));
+        }
+
+        while (pending.Count > 0)
+        {
+            var completed = await Task.WhenAny(pending).ConfigureAwait(false);
+            pending.Remove(completed);
+
+            if (nextIndex < activities.Count)
+            {
+                pending.Add(FetchPgcrAsync(activities[nextIndex++]));
+            }
+
+            var result = await completed.ConfigureAwait(false);
+            if (result.Pgcr.ActivityDetails.InstanceId > 0)
+            {
+                yield return result;
+            }
+        }
+
+        async Task<(DestinyHistoricalStatsPeriodGroup Activity, DestinyPostGameCarnageReportData Pgcr)> FetchPgcrAsync(
+            DestinyHistoricalStatsPeriodGroup activity)
+        {
+            var activityId = activity.ActivityDetails.InstanceId;
+            var operation = $"GetPostGameCarnageReport:{activityId}";
+            var response = await bungieClient.Destiny2_GetPostGameCarnageReportAsync(activityId, cancellationToken)
+                .ConfigureAwait(false);
+            var pgcr = EnsureSuccess(response, item => item.Response, operation);
+
+            return (Activity: activity, Pgcr: pgcr);
+        }
     }
 
     private async Task<IReadOnlyCollection<CompletedRaidActivity>?> FetchCompletedRaidHistoryAsync(

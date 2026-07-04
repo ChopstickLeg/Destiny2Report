@@ -19,7 +19,8 @@ public partial class CrawlerService
         CrawlAccumulator accumulator,
         int platformId,
         long playerMembershipId,
-        IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activityHistory,
+        IAsyncEnumerable<IReadOnlyList<DestinyHistoricalStatsPeriodGroup>> activityHistoryBatches,
+        IReadOnlySet<long> recentActivityIds,
         IDictionary<long, string> characterClassById,
         ManifestContext manifest,
         bool resetDerivedAggregates,
@@ -29,16 +30,17 @@ public partial class CrawlerService
         var activityModeDefinitions = await manifest.GetTableAsync("DestinyActivityModeDefinition", cancellationToken).ConfigureAwait(false);
         var destinationDefinitions = await manifest.GetTableAsync("DestinyDestinationDefinition", cancellationToken).ConfigureAwait(false);
 
-        ApplyPatrolTime(accumulator, activityHistory.Where(activity => IncludesMode(activity, ActivityModes.Patrol)), activityDefinitions, destinationDefinitions);
         await ApplyPgcrAggregatesAsync(
                 report,
                 accumulator,
                 platformId,
                 playerMembershipId,
-                activityHistory,
+                activityHistoryBatches,
+                recentActivityIds,
                 characterClassById,
                 activityDefinitions,
                 activityModeDefinitions,
+                destinationDefinitions,
                 manifest,
                 resetDerivedAggregates,
                 cancellationToken)
@@ -78,10 +80,12 @@ public partial class CrawlerService
         CrawlAccumulator accumulator,
         int platformId,
         long playerMembershipId,
-        IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> activityHistory,
+        IAsyncEnumerable<IReadOnlyList<DestinyHistoricalStatsPeriodGroup>> activityHistoryBatches,
+        IReadOnlySet<long> recentActivityIds,
         IDictionary<long, string> characterClassById,
         JObject activityDefinitions,
         JObject activityModeDefinitions,
+        JObject destinationDefinitions,
         ManifestContext manifest,
         bool resetDerivedAggregates,
         CancellationToken cancellationToken)
@@ -99,12 +103,24 @@ public partial class CrawlerService
         var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>>();
         var membershipTypeByPlayer = new ConcurrentDictionary<long, Lazy<Task<int?>>>();
         var currentCrawlEncounteredPlayers = new HashSet<(int MembershipType, long MembershipId)>();
-        var completedRaidActivities = ToCompletedRaidActivities(activityHistory, activityDefinitions).ToArray();
+        var completedRaidActivities = new List<CompletedRaidActivity>();
+        var crawlState = new ActivityCrawlState();
 
-        foreach (var activityBatch in activityHistory.Chunk(MaxBufferedPgcrs))
+        await foreach (var fetchedActivityBatch in activityHistoryBatches.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
-            var pgcrBatch = await FetchPgcrBatchAsync(activityBatch, cancellationToken).ConfigureAwait(false);
-            foreach (var (activity, pgcr) in pgcrBatch)
+            crawlState.AddFetched(fetchedActivityBatch);
+
+            var activityBatch = fetchedActivityBatch
+                .Where(activity => !recentActivityIds.Contains(activity.ActivityDetails.InstanceId))
+                .ToArray();
+            if (activityBatch.Length == 0)
+            {
+                continue;
+            }
+
+            ApplyPatrolTime(accumulator, activityBatch.Where(activity => IncludesMode(activity, ActivityModes.Patrol)), activityDefinitions, destinationDefinitions);
+
+            await foreach (var (activity, pgcr) in FetchPgcrBatchAsync(activityBatch, MaxConcurrentPgcrRequests, cancellationToken).ConfigureAwait(false))
             {
                 var instanceId = activity.ActivityDetails.InstanceId;
                 TryFillCharacterClassFromPgcr(characterClassById, pgcr, playerMembershipId);
@@ -151,15 +167,12 @@ public partial class CrawlerService
                     AddCompletion(raidCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
                     var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
                     AddFirstRaidCompletion(accumulator, normalizedRaidName, activityCompletedAt, instanceId);
-                    if (HasPriorCompletedRaid(accumulator, normalizedRaidName, activityCompletedAt, instanceId)
-                        || HasPriorCompletedRaidInHistory(completedRaidActivities, normalizedRaidName, activityCompletedAt, instanceId))
-                    {
-                        pendingSherpaChecks.Add(new SherpaCheck(
-                            instanceId,
-                            normalizedRaidName,
-                            activityCompletedAt,
-                            GetCompletedFireteamMembers(pgcr, playerMembershipId).ToArray()));
-                    }
+                    completedRaidActivities.Add(new CompletedRaidActivity(normalizedRaidName, activityCompletedAt, instanceId));
+                    pendingSherpaChecks.Add(new SherpaCheck(
+                        instanceId,
+                        normalizedRaidName,
+                        activityCompletedAt,
+                        GetCompletedFireteamMembers(pgcr, playerMembershipId).ToArray()));
                 }
 
                 if (playerCompleted && isDungeon)
@@ -210,6 +223,7 @@ public partial class CrawlerService
         }
 
         await ApplySherpaChecksAsync(cancellationToken).ConfigureAwait(false);
+        UpdateAccumulatorCrawlStateFromState(accumulator, crawlState, []);
 
         var persistedPlayerEncounterCounts = playerEncounterCounts
             .Where(item => IsPersistablePlayerEncounter(item.Key.MembershipType, item.Key.MembershipId, item.Value))
@@ -315,6 +329,9 @@ public partial class CrawlerService
         async Task ApplySherpaChecksAsync(CancellationToken cancellationToken)
         {
             var unresolvedCandidateChecks = pendingSherpaChecks
+                .Where(check =>
+                    HasPriorCompletedRaid(accumulator, check.NormalizedRaidName, check.CompletedAt, check.InstanceId)
+                    || HasPriorCompletedRaidInHistory(completedRaidActivities, check.NormalizedRaidName, check.CompletedAt, check.InstanceId))
                 .SelectMany(check => check.Candidates
                     .Select(player => new SherpaCandidateCheck(
                         check.InstanceId,

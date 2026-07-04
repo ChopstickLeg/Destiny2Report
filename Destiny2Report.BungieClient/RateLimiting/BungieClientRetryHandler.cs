@@ -7,6 +7,7 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
     private const int DestinyThrottledByGameServerErrorCode = 1672;
     private const int BungieTimeoutErrorCode = 1688;
     private const int MaxRetryAttempts = 5;
+    private const long MaxInspectableErrorPayloadBytes = 64 * 1024;
 
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(30);
@@ -69,6 +70,11 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
         }
 
         var content = response.Content;
+        if (content.Headers.ContentLength is > MaxInspectableErrorPayloadBytes)
+        {
+            return null;
+        }
+
         var headers = content.Headers.ToArray();
         var bytes = await content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
