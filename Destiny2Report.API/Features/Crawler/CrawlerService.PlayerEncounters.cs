@@ -55,6 +55,8 @@ public partial class CrawlerService
             }
         }
 
+        await QueueDiscoveredPlayersAsync(encounterCounts.Keys, cancellationToken).ConfigureAwait(false);
+
         var mostPlayedWith = await encounters
             .Find(ownerFilter)
             .SortByDescending(encounter => encounter.Count)
@@ -84,6 +86,44 @@ public partial class CrawlerService
                 EncounterCount = encounter.Count
             })
             .ToList();
+    }
+
+    private async Task QueueDiscoveredPlayersAsync(
+        IEnumerable<(int MembershipType, long MembershipId)> players,
+        CancellationToken cancellationToken)
+    {
+        const int batchSize = 500;
+        var now = DateTimeOffset.UtcNow;
+        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+
+        foreach (var batch in players.Where(player => player.MembershipType > 0 && player.MembershipId > 0).Chunk(batchSize))
+        {
+            var writes = batch
+                .Select(player =>
+                {
+                    var filter = Builders<DestinyReport>.Filter.Eq(report => report.PlatformId, player.MembershipType)
+                        & Builders<DestinyReport>.Filter.Eq(report => report.PlayerMembershipId, player.MembershipId);
+                    var update = Builders<DestinyReport>.Update
+                        .SetOnInsert(report => report.PlatformId, player.MembershipType)
+                        .SetOnInsert(report => report.PlayerMembershipId, player.MembershipId)
+                        .SetOnInsert(report => report.CrawlState, DestinyReport.CrawlStateQueued)
+                        .SetOnInsert(report => report.QueuedInRedis, false)
+                        .SetOnInsert(report => report.QueuedAtUtc, now)
+                        .SetOnInsert(report => report.CrawlError, "");
+
+                    return (WriteModel<DestinyReport>)new UpdateOneModel<DestinyReport>(filter, update)
+                    {
+                        IsUpsert = true
+                    };
+                })
+                .ToArray();
+
+            if (writes.Length > 0)
+            {
+                await reports.BulkWriteAsync(writes, new BulkWriteOptions { IsOrdered = false }, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
     }
 
     private static ReportPlayer ToReportPlayer(BungiePlayer player, string emblemUrl)

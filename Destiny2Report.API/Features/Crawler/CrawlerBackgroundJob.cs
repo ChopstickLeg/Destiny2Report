@@ -1,4 +1,6 @@
+using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Observability;
+using MongoDB.Driver;
 using StackExchange.Redis;
 using System.Diagnostics;
 using System.Text.Json;
@@ -13,16 +15,19 @@ public class CrawlerBackgroundJob : BackgroundService
     private readonly ILogger<CrawlerBackgroundJob> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly IConnectionMultiplexer _redis;
+    private readonly IMongoDatabase _mongoDatabase;
     private readonly string _consumerName = $"{Environment.MachineName}-{Guid.NewGuid():N}";
 
     public CrawlerBackgroundJob(
         ILogger<CrawlerBackgroundJob> logger,
         IServiceProvider serviceProvider,
-        IConnectionMultiplexer redis)
+        IConnectionMultiplexer redis,
+        IMongoDatabase mongoDatabase)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
         _redis = redis;
+        _mongoDatabase = mongoDatabase;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -58,6 +63,13 @@ public class CrawlerBackgroundJob : BackgroundService
 
                 if (entries.Length == 0)
                 {
+                    var backgroundJob = await ClaimBackgroundJobAsync(stoppingToken).ConfigureAwait(false);
+                    if (backgroundJob is not null)
+                    {
+                        await ProcessBackgroundJobAsync(backgroundJob, stoppingToken).ConfigureAwait(false);
+                        continue;
+                    }
+
                     await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
                     continue;
                 }
@@ -140,7 +152,9 @@ public class CrawlerBackgroundJob : BackgroundService
         activity?.SetTag("messaging.destination.name", CrawlerQueue.StreamName);
         activity?.SetTag("messaging.message.id", entry.Id.ToString());
 
-        await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "running", null)
+        await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, DestinyReport.CrawlStateRunning, null)
+            .ConfigureAwait(false);
+        await UpdateReportCrawlStateAsync(membershipTypeId, membershipId, DestinyReport.CrawlStateRunning, queuedInRedis: true, null, stoppingToken)
             .ConfigureAwait(false);
 
         const int maxAttempts = 2;
@@ -151,7 +165,7 @@ public class CrawlerBackgroundJob : BackgroundService
                 await crawlerService.CrawlAsync(membershipTypeId, membershipId, stoppingToken).ConfigureAwait(false);
                 await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
                     .ConfigureAwait(false);
-                await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "completed", null)
+                await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, DestinyReport.CrawlStateCompleted, null)
                     .ConfigureAwait(false);
                 activity?.SetStatus(ActivityStatusCode.Ok);
 
@@ -168,9 +182,11 @@ public class CrawlerBackgroundJob : BackgroundService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "failed", ex.Message)
+                await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, DestinyReport.CrawlStateFailed, ex.Message)
                     .ConfigureAwait(false);
                 await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
+                    .ConfigureAwait(false);
+                await UpdateReportCrawlStateAsync(membershipTypeId, membershipId, DestinyReport.CrawlStateFailed, queuedInRedis: false, ex.Message, stoppingToken)
                     .ConfigureAwait(false);
                 activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
 
@@ -183,6 +199,101 @@ public class CrawlerBackgroundJob : BackgroundService
             }
         }
 
+    }
+
+    private async Task<DestinyReport?> ClaimBackgroundJobAsync(CancellationToken stoppingToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var reports = _mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var filter = Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateQueued)
+            & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false);
+        var update = Builders<DestinyReport>.Update
+            .Set(report => report.CrawlState, DestinyReport.CrawlStateRunning)
+            .Set(report => report.StartedAtUtc, now)
+            .Set(report => report.CrawlError, "");
+        var options = new FindOneAndUpdateOptions<DestinyReport>
+        {
+            Sort = Builders<DestinyReport>.Sort.Ascending(report => report.QueuedAtUtc),
+            ReturnDocument = ReturnDocument.After
+        };
+
+        return await reports.FindOneAndUpdateAsync(filter, update, options, stoppingToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task ProcessBackgroundJobAsync(DestinyReport job, CancellationToken stoppingToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var crawlerService = scope.ServiceProvider.GetRequiredService<ICrawlerService>();
+        using var activity = AppTelemetry.ActivitySource.StartActivity("crawler.player.background_process", ActivityKind.Consumer);
+
+        activity?.SetTag("destiny.membership_type_id", job.PlatformId);
+        activity?.SetTag("destiny.membership_id", job.PlayerMembershipId);
+        activity?.SetTag("messaging.system", "mongodb");
+        activity?.SetTag("messaging.destination.name", "destiny_reports");
+
+        const int maxAttempts = 2;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                await crawlerService.CrawlAsync(job.PlatformId, job.PlayerMembershipId, stoppingToken).ConfigureAwait(false);
+                activity?.SetStatus(ActivityStatusCode.Ok);
+
+                _logger.LogInformation(
+                    "Completed background crawler job for membership {MembershipType}/{MembershipId}.",
+                    job.PlatformId,
+                    job.PlayerMembershipId);
+                return;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && attempt < maxAttempts)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Background crawler job for membership {MembershipType}/{MembershipId} failed on attempt {Attempt}; retrying once immediately.",
+                    job.PlatformId,
+                    job.PlayerMembershipId,
+                    attempt);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                await UpdateReportCrawlStateAsync(job.PlatformId, job.PlayerMembershipId, DestinyReport.CrawlStateFailed, queuedInRedis: false, ex.Message, stoppingToken)
+                    .ConfigureAwait(false);
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+
+                _logger.LogError(
+                    ex,
+                    "Background crawler job for membership {MembershipType}/{MembershipId} failed after {AttemptCount} attempts.",
+                    job.PlatformId,
+                    job.PlayerMembershipId,
+                    maxAttempts);
+                return;
+            }
+        }
+    }
+
+    private async Task UpdateReportCrawlStateAsync(
+        int membershipTypeId,
+        long membershipId,
+        string crawlState,
+        bool queuedInRedis,
+        string? error,
+        CancellationToken cancellationToken)
+    {
+        var reports = _mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var filter = Builders<DestinyReport>.Filter.Eq(report => report.PlatformId, membershipTypeId)
+            & Builders<DestinyReport>.Filter.Eq(report => report.PlayerMembershipId, membershipId);
+        var update = Builders<DestinyReport>.Update
+            .Set(report => report.CrawlState, crawlState)
+            .Set(report => report.QueuedInRedis, queuedInRedis)
+            .Set(report => report.CrawlError, error ?? "");
+
+        if (crawlState == DestinyReport.CrawlStateRunning)
+        {
+            update = update.Set(report => report.StartedAtUtc, DateTimeOffset.UtcNow);
+        }
+
+        await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task UpdateJobStatusAsync(

@@ -214,10 +214,17 @@ public partial class CrawlerService(
                 cancellationToken);
             var characterClassById = BuildCharacterClassMap(historicalCharacters, [], playerMembershipId, characterIds);
 
+            var now = DateTimeOffset.UtcNow;
             var report = new DestinyReport
             {
                 PlatformId = platformId,
                 PlayerMembershipId = playerMembershipId,
+                CrawlState = DestinyReport.CrawlStateCompleted,
+                QueuedInRedis = false,
+                QueuedAtUtc = existingReport?.QueuedAtUtc,
+                StartedAtUtc = existingReport?.StartedAtUtc,
+                LastCrawledAtUtc = now,
+                CrawlError = "",
                 NeedsFullRecrawl = false,
                 FullRecrawlReason = ""
             };

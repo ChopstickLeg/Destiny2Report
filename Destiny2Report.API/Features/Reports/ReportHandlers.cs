@@ -133,6 +133,7 @@ public static class ReportHandlers
     public static async Task<Results<Accepted<ReportQueueResponse>, BadRequest<ProblemDetails>>> QueueCrawl(
         ReportQueueRequest request,
         IConnectionMultiplexer redis,
+        IMongoDatabase mongoDatabase,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(request.MembershipTypeId, request.MembershipId, out var problemDetails))
@@ -149,7 +150,7 @@ public static class ReportHandlers
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (existingStatus is not null && existingStatus.Status is "queued" or "running")
+        if (existingStatus is not null && existingStatus.Status is DestinyReport.CrawlStateQueued or DestinyReport.CrawlStateRunning)
         {
             var existingResponse = new ReportQueueResponse(
                 JobId: existingStatus.StreamEntryId ?? "",
@@ -159,6 +160,20 @@ public static class ReportHandlers
                 QueuedAtUtc: existingStatus.UpdatedAtUtc);
 
             return TypedResults.Accepted($"/api/reports/jobs/{existingResponse.JobId}", existingResponse);
+        }
+
+        var existingReport = await FindReportAsync(mongoDatabase, request.MembershipTypeId, request.MembershipId, cancellationToken)
+            .ConfigureAwait(false);
+        if (existingReport?.CrawlState == DestinyReport.CrawlStateRunning)
+        {
+            var existingResponse = new ReportQueueResponse(
+                JobId: "",
+                MembershipTypeId: request.MembershipTypeId,
+                MembershipId: request.MembershipId,
+                Status: DestinyReport.CrawlStateRunning,
+                QueuedAtUtc: existingReport.StartedAtUtc ?? queuedAtUtc);
+
+            return TypedResults.Accepted("/api/reports/jobs/background", existingResponse);
         }
 
         var jobId = await redisDatabase.StreamAddAsync(
@@ -177,18 +192,21 @@ public static class ReportHandlers
                     new HashEntry("membershipTypeId", request.MembershipTypeId),
                     new HashEntry("membershipId", request.MembershipId),
                     new HashEntry("streamEntryId", jobId),
-                    new HashEntry("status", "queued"),
+                    new HashEntry("status", DestinyReport.CrawlStateQueued),
                     new HashEntry("queuedAtUtc", queuedAtUtc.ToString("O")),
                     new HashEntry("updatedAtUtc", queuedAtUtc.ToString("O")),
                     new HashEntry("error", "")
                 ])
             .ConfigureAwait(false);
 
+        await UpsertForegroundQueuedReportAsync(mongoDatabase, request.MembershipTypeId, request.MembershipId, queuedAtUtc, cancellationToken)
+            .ConfigureAwait(false);
+
         var response = new ReportQueueResponse(
             JobId: jobId.ToString(),
             MembershipTypeId: request.MembershipTypeId,
             MembershipId: request.MembershipId,
-            Status: "queued",
+            Status: DestinyReport.CrawlStateQueued,
             QueuedAtUtc: queuedAtUtc);
 
         return TypedResults.Accepted($"/api/reports/jobs/{jobId}", response);
@@ -225,7 +243,7 @@ public static class ReportHandlers
                 return TypedResults.NotFound();
             }
 
-            initialStatus = BuildQueueStatus(membershipTypeId, membershipId, "completed", null, 0);
+            initialStatus = BuildQueueStatusFromReport(report);
         }
 
         var events = StreamQueuePositionEvents(
@@ -249,7 +267,7 @@ public static class ReportHandlers
         ReportQueueStatusResponse initialStatus,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        if (initialStatus.Status == "completed")
+        if (initialStatus.Status == DestinyReport.CrawlStateCompleted)
         {
             yield return new SseItem<ReportQueueStatusResponse>(initialStatus, "completed");
             yield break;
@@ -285,7 +303,7 @@ public static class ReportHandlers
 
                         yield return new SseItem<ReportQueueStatusResponse>(eventStatus, jobEvent.Status);
 
-                        if (jobEvent.Status is "completed" or "failed")
+                        if (jobEvent.Status is DestinyReport.CrawlStateCompleted or DestinyReport.CrawlStateFailed)
                         {
                             yield break;
                         }
@@ -313,7 +331,7 @@ public static class ReportHandlers
                 {
                     yield return new SseItem<ReportQueueStatusResponse>(status, status.Status);
 
-                    if (status.Status is "completed" or "failed")
+                    if (status.Status is DestinyReport.CrawlStateCompleted or DestinyReport.CrawlStateFailed)
                     {
                         yield break;
                     }
@@ -332,16 +350,64 @@ public static class ReportHandlers
                     yield break;
                 }
 
-                yield return new SseItem<ReportQueueStatusResponse>(
-                    BuildQueueStatus(membershipTypeId, membershipId, "completed", null, 0),
-                    "completed");
-                yield break;
+                var reportStatus = BuildQueueStatusFromReport(report);
+                yield return new SseItem<ReportQueueStatusResponse>(reportStatus, reportStatus.Status);
+                if (reportStatus.Status is DestinyReport.CrawlStateCompleted or DestinyReport.CrawlStateFailed)
+                {
+                    yield break;
+                }
             }
         }
         finally
         {
             await eventQueue.UnsubscribeAsync().ConfigureAwait(false);
         }
+    }
+
+    private static async Task UpsertForegroundQueuedReportAsync(
+        IMongoDatabase mongoDatabase,
+        int membershipTypeId,
+        long membershipId,
+        DateTimeOffset queuedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, membershipTypeId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, membershipId);
+        var update = Builders<DestinyReport>.Update
+            .SetOnInsert(report => report.PlatformId, membershipTypeId)
+            .SetOnInsert(report => report.PlayerMembershipId, membershipId)
+            .Set(report => report.CrawlState, DestinyReport.CrawlStateQueued)
+            .Set(report => report.QueuedInRedis, true)
+            .Set(report => report.QueuedAtUtc, queuedAtUtc)
+            .Set(report => report.CrawlError, "");
+
+        await reports.UpdateOneAsync(filter, update, new UpdateOptions { IsUpsert = true }, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static ReportQueueStatusResponse BuildQueueStatusFromReport(DestinyReport report)
+    {
+        var status = string.IsNullOrWhiteSpace(report.CrawlState)
+            ? DestinyReport.CrawlStateCompleted
+            : report.CrawlState;
+        var updatedAtUtc = status switch
+        {
+            DestinyReport.CrawlStateQueued => report.QueuedAtUtc ?? report.CrawledAt,
+            DestinyReport.CrawlStateRunning => report.StartedAtUtc ?? report.QueuedAtUtc ?? report.CrawledAt,
+            DestinyReport.CrawlStateFailed => report.StartedAtUtc ?? report.QueuedAtUtc ?? report.CrawledAt,
+            _ => report.LastCrawledAtUtc ?? report.CrawledAt
+        };
+
+        return BuildQueueStatus(
+            report.PlatformId,
+            report.PlayerMembershipId,
+            status,
+            null,
+            string.IsNullOrWhiteSpace(report.CrawlError) ? null : report.CrawlError,
+            null,
+            0,
+            updatedAtUtc);
     }
 
     private static async Task<DestinyReport?> FindReportAsync(

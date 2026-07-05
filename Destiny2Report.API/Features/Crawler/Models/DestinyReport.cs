@@ -7,6 +7,10 @@ public record DestinyReport
 {
     public const int MostPlayedWithLimit = 10;
     public const int MostUsedEmblemsLimit = 10;
+    public const string CrawlStateQueued = "queued";
+    public const string CrawlStateRunning = "running";
+    public const string CrawlStateCompleted = "completed";
+    public const string CrawlStateFailed = "failed";
 
     private List<PlayerEncounterReport> _mostPlayedWith = new();
     private List<EmblemReport> _mostUsedEmblems = new();
@@ -15,6 +19,12 @@ public record DestinyReport
     public int PlatformId { get; init; }
     public long PlayerMembershipId { get; init; }
     public DateTimeOffset CrawledAt { get; init; } = DateTimeOffset.UtcNow;
+    public string CrawlState { get; set; } = CrawlStateCompleted;
+    public bool QueuedInRedis { get; set; }
+    public DateTimeOffset? QueuedAtUtc { get; set; }
+    public DateTimeOffset? StartedAtUtc { get; set; }
+    public DateTimeOffset? LastCrawledAtUtc { get; set; }
+    public string CrawlError { get; set; } = "";
     public bool NeedsFullRecrawl { get; set; }
     public string FullRecrawlReason { get; set; } = "";
     public TimeSpan TotalPlaytime { get; set; }

@@ -37,6 +37,10 @@ public static class MongoExtensions
         var reportIndexKeys = Builders<DestinyReport>.IndexKeys
             .Ascending(report => report.PlatformId)
             .Ascending(report => report.PlayerMembershipId);
+        var backgroundQueueIndexKeys = Builders<DestinyReport>.IndexKeys
+            .Ascending(report => report.CrawlState)
+            .Ascending(report => report.QueuedInRedis)
+            .Ascending(report => report.QueuedAtUtc);
 
         await reports.EnsureIndexesAsync(
             [
@@ -46,6 +50,12 @@ public static class MongoExtensions
                     {
                         Name = "ux_destiny_reports_platform_player",
                         Unique = true
+                    }),
+                new CreateIndexModel<DestinyReport>(
+                    backgroundQueueIndexKeys,
+                    new CreateIndexOptions
+                    {
+                        Name = "ix_destiny_reports_background_queue"
                     })
             ],
             cancellationToken);
