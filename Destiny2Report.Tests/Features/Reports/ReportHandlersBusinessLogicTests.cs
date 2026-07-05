@@ -91,6 +91,17 @@ public sealed class ReportHandlersBusinessLogicTests
     }
 
     [Fact]
+    public void QueueStatusLocation_points_to_mapped_membership_queue_endpoint()
+    {
+        var result = (string)Invoke(
+            "QueueStatusLocation",
+            1,
+            4611686018463095984L)!;
+
+        Assert.Equal("/api/reports/1/4611686018463095984/queue", result);
+    }
+
+    [Fact]
     public void BuildQueueStatus_preserves_position_error_and_updated_timestamp()
     {
         var updatedAt = DateTimeOffset.Parse("2026-06-19T13:00:00Z");

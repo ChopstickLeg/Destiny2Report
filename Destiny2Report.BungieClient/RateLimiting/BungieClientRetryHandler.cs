@@ -7,6 +7,7 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
     private const int DestinyThrottledByGameServerErrorCode = 1672;
     private const int BungieTimeoutErrorCode = 1688;
     private const int MaxRetryAttempts = 5;
+    private const int MaxGetProfileNotFoundRetryAttempts = 2;
     private const long MaxInspectableErrorPayloadBytes = 64 * 1024;
 
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
@@ -24,7 +25,7 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
             var response = await base.SendAsync(retryRequest, cancellationToken).ConfigureAwait(false);
             var errorCode = await TryReadBungieErrorCodeAsync(response, cancellationToken).ConfigureAwait(false);
 
-            if (!IsRetryableBungieErrorCode(errorCode) || attempt >= MaxRetryAttempts)
+            if (!ShouldRetry(request, response, errorCode, attempt))
             {
                 return response;
             }
@@ -112,5 +113,47 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
     {
         return errorCode is DestinyThrottledByGameServerErrorCode
             or BungieTimeoutErrorCode;
+    }
+
+    private static bool ShouldRetry(
+        HttpRequestMessage request,
+        HttpResponseMessage response,
+        int? errorCode,
+        int attempt)
+    {
+        if (IsRetryableBungieErrorCode(errorCode))
+        {
+            return attempt < MaxRetryAttempts;
+        }
+
+        return response.StatusCode == System.Net.HttpStatusCode.NotFound
+            && attempt < MaxGetProfileNotFoundRetryAttempts
+            && IsGetProfileRequest(request.RequestUri);
+    }
+
+    private static bool IsGetProfileRequest(Uri? requestUri)
+    {
+        if (requestUri is null)
+        {
+            return false;
+        }
+
+        var path = requestUri.IsAbsoluteUri
+            ? requestUri.AbsolutePath
+            : requestUri.OriginalString.Split('?', 2)[0];
+        var segments = path
+            .Trim('/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        for (var index = 0; index <= segments.Length - 4; index++)
+        {
+            if (segments[index].Equals("Destiny2", StringComparison.OrdinalIgnoreCase)
+                && segments[index + 2].Equals("Profile", StringComparison.OrdinalIgnoreCase))
+            {
+                return index + 4 == segments.Length;
+            }
+        }
+
+        return false;
     }
 }

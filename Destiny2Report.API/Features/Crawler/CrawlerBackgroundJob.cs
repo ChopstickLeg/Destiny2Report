@@ -11,6 +11,8 @@ public class CrawlerBackgroundJob : BackgroundService
 {
     private const int ReadBatchSize = 1;
     private static readonly TimeSpan PendingMessageIdleTimeout = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan BackgroundJobLeaseDuration = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan BackgroundJobLeaseRenewalInterval = TimeSpan.FromMinutes(1);
 
     private readonly ILogger<CrawlerBackgroundJob> _logger;
     private readonly IServiceProvider _serviceProvider;
@@ -205,11 +207,17 @@ public class CrawlerBackgroundJob : BackgroundService
     {
         var now = DateTimeOffset.UtcNow;
         var reports = _mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
-        var filter = Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateQueued)
+        var queuedFilter = Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateQueued)
             & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false);
+        var expiredLeaseFilter = Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateRunning)
+            & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false)
+            & Builders<DestinyReport>.Filter.Lt(report => report.LeaseExpiresAtUtc, now);
+        var filter = queuedFilter | expiredLeaseFilter;
         var update = Builders<DestinyReport>.Update
             .Set(report => report.CrawlState, DestinyReport.CrawlStateRunning)
             .Set(report => report.StartedAtUtc, now)
+            .Set(report => report.LeaseExpiresAtUtc, now.Add(BackgroundJobLeaseDuration))
+            .Set(report => report.LeaseOwner, _consumerName)
             .Set(report => report.CrawlError, "");
         var options = new FindOneAndUpdateOptions<DestinyReport>
         {
@@ -226,50 +234,117 @@ public class CrawlerBackgroundJob : BackgroundService
         using var scope = _serviceProvider.CreateScope();
         var crawlerService = scope.ServiceProvider.GetRequiredService<ICrawlerService>();
         using var activity = AppTelemetry.ActivitySource.StartActivity("crawler.player.background_process", ActivityKind.Consumer);
+        using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var leaseRenewalTask = RenewBackgroundJobLeaseAsync(job, leaseRenewalCancellation.Token);
 
         activity?.SetTag("destiny.membership_type_id", job.PlatformId);
         activity?.SetTag("destiny.membership_id", job.PlayerMembershipId);
         activity?.SetTag("messaging.system", "mongodb");
         activity?.SetTag("messaging.destination.name", "destiny_reports");
 
-        const int maxAttempts = 2;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        try
+        {
+            const int maxAttempts = 2;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    await crawlerService.CrawlAsync(job.PlatformId, job.PlayerMembershipId, stoppingToken).ConfigureAwait(false);
+                    activity?.SetStatus(ActivityStatusCode.Ok);
+
+                    _logger.LogInformation(
+                        "Completed background crawler job for membership {MembershipType}/{MembershipId}.",
+                        job.PlatformId,
+                        job.PlayerMembershipId);
+                    return;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException && attempt < maxAttempts)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Background crawler job for membership {MembershipType}/{MembershipId} failed on attempt {Attempt}; retrying once immediately.",
+                        job.PlatformId,
+                        job.PlayerMembershipId,
+                        attempt);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    await UpdateReportCrawlStateAsync(job.PlatformId, job.PlayerMembershipId, DestinyReport.CrawlStateFailed, queuedInRedis: false, ex.Message, stoppingToken)
+                        .ConfigureAwait(false);
+                    activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+
+                    _logger.LogError(
+                        ex,
+                        "Background crawler job for membership {MembershipType}/{MembershipId} failed after {AttemptCount} attempts.",
+                        job.PlatformId,
+                        job.PlayerMembershipId,
+                        maxAttempts);
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            leaseRenewalCancellation.Cancel();
+            try
+            {
+                await leaseRenewalTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
+            {
+            }
+        }
+    }
+
+    private async Task RenewBackgroundJobLeaseAsync(DestinyReport job, CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(BackgroundJobLeaseRenewalInterval);
+        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
-                await crawlerService.CrawlAsync(job.PlatformId, job.PlayerMembershipId, stoppingToken).ConfigureAwait(false);
-                activity?.SetStatus(ActivityStatusCode.Ok);
-
-                _logger.LogInformation(
-                    "Completed background crawler job for membership {MembershipType}/{MembershipId}.",
-                    job.PlatformId,
-                    job.PlayerMembershipId);
-                return;
+                var renewed = await TryRenewBackgroundJobLeaseAsync(job.PlatformId, job.PlayerMembershipId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!renewed)
+                {
+                    _logger.LogWarning(
+                        "Could not renew background crawler lease for membership {MembershipType}/{MembershipId}; another worker may reclaim it after expiry.",
+                        job.PlatformId,
+                        job.PlayerMembershipId);
+                }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException && attempt < maxAttempts)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
             {
                 _logger.LogWarning(
                     ex,
-                    "Background crawler job for membership {MembershipType}/{MembershipId} failed on attempt {Attempt}; retrying once immediately.",
+                    "Could not renew background crawler lease for membership {MembershipType}/{MembershipId}; retrying on the next interval.",
                     job.PlatformId,
-                    job.PlayerMembershipId,
-                    attempt);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                await UpdateReportCrawlStateAsync(job.PlatformId, job.PlayerMembershipId, DestinyReport.CrawlStateFailed, queuedInRedis: false, ex.Message, stoppingToken)
-                    .ConfigureAwait(false);
-                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-
-                _logger.LogError(
-                    ex,
-                    "Background crawler job for membership {MembershipType}/{MembershipId} failed after {AttemptCount} attempts.",
-                    job.PlatformId,
-                    job.PlayerMembershipId,
-                    maxAttempts);
-                return;
+                    job.PlayerMembershipId);
             }
         }
+    }
+
+    private async Task<bool> TryRenewBackgroundJobLeaseAsync(
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var reports = _mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var filter = Builders<DestinyReport>.Filter.Eq(report => report.PlatformId, membershipTypeId)
+            & Builders<DestinyReport>.Filter.Eq(report => report.PlayerMembershipId, membershipId)
+            & Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateRunning)
+            & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false)
+            & Builders<DestinyReport>.Filter.Eq(report => report.LeaseOwner, _consumerName);
+        var update = Builders<DestinyReport>.Update.Set(report => report.LeaseExpiresAtUtc, now.Add(BackgroundJobLeaseDuration));
+        var result = await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return result.ModifiedCount > 0;
     }
 
     private async Task UpdateReportCrawlStateAsync(
@@ -291,6 +366,12 @@ public class CrawlerBackgroundJob : BackgroundService
         if (crawlState == DestinyReport.CrawlStateRunning)
         {
             update = update.Set(report => report.StartedAtUtc, DateTimeOffset.UtcNow);
+        }
+        else
+        {
+            update = update
+                .Set(report => report.LeaseExpiresAtUtc, null)
+                .Set(report => report.LeaseOwner, "");
         }
 
         await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);

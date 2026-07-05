@@ -159,7 +159,7 @@ public static class ReportHandlers
                 Status: existingStatus.Status,
                 QueuedAtUtc: existingStatus.UpdatedAtUtc);
 
-            return TypedResults.Accepted($"/api/reports/jobs/{existingResponse.JobId}", existingResponse);
+            return TypedResults.Accepted(QueueStatusLocation(request.MembershipTypeId, request.MembershipId), existingResponse);
         }
 
         var existingReport = await FindReportAsync(mongoDatabase, request.MembershipTypeId, request.MembershipId, cancellationToken)
@@ -173,7 +173,7 @@ public static class ReportHandlers
                 Status: DestinyReport.CrawlStateRunning,
                 QueuedAtUtc: existingReport.StartedAtUtc ?? queuedAtUtc);
 
-            return TypedResults.Accepted("/api/reports/jobs/background", existingResponse);
+            return TypedResults.Accepted(QueueStatusLocation(request.MembershipTypeId, request.MembershipId), existingResponse);
         }
 
         var jobId = await redisDatabase.StreamAddAsync(
@@ -209,7 +209,7 @@ public static class ReportHandlers
             Status: DestinyReport.CrawlStateQueued,
             QueuedAtUtc: queuedAtUtc);
 
-        return TypedResults.Accepted($"/api/reports/jobs/{jobId}", response);
+        return TypedResults.Accepted(QueueStatusLocation(request.MembershipTypeId, request.MembershipId), response);
     }
 
     public static async Task<IResult> StreamQueuePosition(
@@ -380,6 +380,8 @@ public static class ReportHandlers
             .Set(report => report.CrawlState, DestinyReport.CrawlStateQueued)
             .Set(report => report.QueuedInRedis, true)
             .Set(report => report.QueuedAtUtc, queuedAtUtc)
+            .Set(report => report.LeaseExpiresAtUtc, null)
+            .Set(report => report.LeaseOwner, "")
             .Set(report => report.CrawlError, "");
 
         await reports.UpdateOneAsync(filter, update, new UpdateOptions { IsUpsert = true }, cancellationToken)
@@ -531,6 +533,11 @@ public static class ReportHandlers
             Position: position,
             QueueLength: queueLength,
             UpdatedAtUtc: updatedAtUtc);
+    }
+
+    private static string QueueStatusLocation(int membershipTypeId, long membershipId)
+    {
+        return $"/api/reports/{membershipTypeId}/{membershipId}/queue";
     }
 
     private static bool TryReadMatchingJobEvent(

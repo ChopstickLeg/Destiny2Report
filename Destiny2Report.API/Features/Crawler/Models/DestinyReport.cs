@@ -24,6 +24,8 @@ public record DestinyReport
     public DateTimeOffset? QueuedAtUtc { get; set; }
     public DateTimeOffset? StartedAtUtc { get; set; }
     public DateTimeOffset? LastCrawledAtUtc { get; set; }
+    public DateTimeOffset? LeaseExpiresAtUtc { get; set; }
+    public string LeaseOwner { get; set; } = "";
     public string CrawlError { get; set; } = "";
     public bool NeedsFullRecrawl { get; set; }
     public string FullRecrawlReason { get; set; } = "";

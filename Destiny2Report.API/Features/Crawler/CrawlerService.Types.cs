@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
@@ -14,6 +15,7 @@ namespace Destiny2Report.API.Features.Crawler;
 public partial class CrawlerService
 {
     private const int MinPersistedPlayerEncounterCount = 2;
+    private const int EncounteredPlayerKeySize = 9;
 
     private sealed record ActivityCompletionAggregate(string ActivityName)
     {
@@ -165,6 +167,46 @@ public partial class CrawlerService
         return $"{membershipType}:{membershipId}";
     }
 
+    private static HashSet<(int MembershipType, long MembershipId)> ReadEncounteredPlayerKeys(CrawlAccumulator accumulator)
+    {
+        var keys = new HashSet<(int MembershipType, long MembershipId)>();
+        var encoded = accumulator.EncounteredPlayerKeys;
+        for (var offset = 0; offset + EncounteredPlayerKeySize <= encoded.Length; offset += EncounteredPlayerKeySize)
+        {
+            var membershipType = encoded[offset];
+            var membershipId = BinaryPrimitives.ReadInt64LittleEndian(encoded.AsSpan(offset + 1, sizeof(long)));
+            if (IsCountablePlayerEncounter(membershipType, membershipId, 1))
+            {
+                keys.Add((membershipType, membershipId));
+            }
+        }
+
+        return keys;
+    }
+
+    private static void SaveEncounteredPlayerKeys(
+        CrawlAccumulator accumulator,
+        IEnumerable<(int MembershipType, long MembershipId)> encounteredPlayers)
+    {
+        var keys = encounteredPlayers
+            .Where(player => IsCountablePlayerEncounter(player.MembershipType, player.MembershipId, 1))
+            .Distinct()
+            .OrderBy(player => player.MembershipType)
+            .ThenBy(player => player.MembershipId)
+            .ToArray();
+        var encoded = new byte[keys.Length * EncounteredPlayerKeySize];
+
+        for (var index = 0; index < keys.Length; index++)
+        {
+            var offset = index * EncounteredPlayerKeySize;
+            encoded[offset] = checked((byte)keys[index].MembershipType);
+            BinaryPrimitives.WriteInt64LittleEndian(encoded.AsSpan(offset + 1, sizeof(long)), keys[index].MembershipId);
+        }
+
+        accumulator.EncounteredPlayerKeys = encoded;
+        accumulator.UniquePlayersPlayedWith = keys.Length;
+    }
+
     private static bool IsPersistablePlayerEncounter(int membershipType, long membershipId, int count)
     {
         return membershipType > 0
@@ -174,7 +216,7 @@ public partial class CrawlerService
 
     private static bool IsCountablePlayerEncounter(int membershipType, long membershipId, int count)
     {
-        return membershipType > 0
+        return membershipType is > 0 and <= byte.MaxValue
             && membershipId > 0
             && count > 0;
     }

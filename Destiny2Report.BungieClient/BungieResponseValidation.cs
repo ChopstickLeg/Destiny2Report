@@ -27,6 +27,11 @@ public static class BungieResponseValidation
             || ContainsPrivacyMarker(response.Message);
     }
 
+    public static bool IsNotFound(this ApiException exception)
+    {
+        return exception.StatusCode == 404;
+    }
+
     public static bool IsPrivacyRestriction(this ApiException exception)
     {
         if (ContainsPrivacyMarker(exception.Response) || ContainsPrivacyMarker(exception.Message))

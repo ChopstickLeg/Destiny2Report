@@ -157,15 +157,31 @@ public partial class CrawlerService
 
     private async Task<ReportPlayer> GetPlayerInfoAsync(PlayerEncounterAggregate player, CancellationToken cancellationToken)
     {
-        var response = await bungieClient.Destiny2_GetProfileAsync(ProfileCharactersComponents, player.EncounteredMembershipId, player.EncounteredMembershipType, cancellationToken).ConfigureAwait(false);
-        var characterResponse = EnsureSuccess(response, profile => profile.Response, $"Destiny2_GetProfileAsync:Characters:{player.EncounteredMembershipType}:{player.EncounteredMembershipId}");
-        var lastPlayedCharacter = characterResponse?.Characters?.Data?.Values.OrderByDescending(c => c.DateLastPlayed).FirstOrDefault();
-        return new ReportPlayer
+        try
         {
-            MembershipId = player.EncounteredMembershipId,
-            MembershipType = player.EncounteredMembershipType,
-            DisplayName = characterResponse?.Profile?.Data?.UserInfo?.DisplayName ?? "",
-            EmblemUrl = BungieUrl(lastPlayedCharacter?.EmblemPath)
-        };
+            var response = await bungieClient.Destiny2_GetProfileAsync(ProfileCharactersComponents, player.EncounteredMembershipId, player.EncounteredMembershipType, cancellationToken).ConfigureAwait(false);
+            var characterResponse = EnsureSuccess(response, profile => profile.Response, $"Destiny2_GetProfileAsync:Characters:{player.EncounteredMembershipType}:{player.EncounteredMembershipId}");
+            var lastPlayedCharacter = characterResponse?.Characters?.Data?.Values.OrderByDescending(c => c.DateLastPlayed).FirstOrDefault();
+            return new ReportPlayer
+            {
+                MembershipId = player.EncounteredMembershipId,
+                MembershipType = player.EncounteredMembershipType,
+                DisplayName = characterResponse?.Profile?.Data?.UserInfo?.DisplayName ?? "",
+                EmblemUrl = BungieUrl(lastPlayedCharacter?.EmblemPath)
+            };
+        }
+        catch (ApiException ex) when (ex.IsNotFound())
+        {
+            logger.LogDebug(
+                "Skipping profile details for missing encountered player {MembershipType}/{MembershipId}.",
+                player.EncounteredMembershipType,
+                player.EncounteredMembershipId);
+
+            return new ReportPlayer
+            {
+                MembershipId = player.EncounteredMembershipId,
+                MembershipType = player.EncounteredMembershipType
+            };
+        }
     }
 }

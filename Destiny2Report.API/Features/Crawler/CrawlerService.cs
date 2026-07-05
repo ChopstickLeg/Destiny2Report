@@ -224,6 +224,8 @@ public partial class CrawlerService(
                 QueuedAtUtc = existingReport?.QueuedAtUtc,
                 StartedAtUtc = existingReport?.StartedAtUtc,
                 LastCrawledAtUtc = now,
+                LeaseExpiresAtUtc = null,
+                LeaseOwner = "",
                 CrawlError = "",
                 NeedsFullRecrawl = false,
                 FullRecrawlReason = ""

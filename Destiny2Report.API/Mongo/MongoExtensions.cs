@@ -40,7 +40,8 @@ public static class MongoExtensions
         var backgroundQueueIndexKeys = Builders<DestinyReport>.IndexKeys
             .Ascending(report => report.CrawlState)
             .Ascending(report => report.QueuedInRedis)
-            .Ascending(report => report.QueuedAtUtc);
+            .Ascending(report => report.QueuedAtUtc)
+            .Ascending(report => report.LeaseExpiresAtUtc);
 
         await reports.EnsureIndexesAsync(
             [

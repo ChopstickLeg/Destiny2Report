@@ -111,10 +111,57 @@ public sealed class CrawlerAccumulatorTests
         Assert.Equal(expected, actual);
     }
 
+    [Fact]
+    public void SaveEncounteredPlayerKeys_deduplicates_players_and_updates_unique_count()
+    {
+        var accumulator = new CrawlAccumulator();
+
+        CrawlerReflection.Invoke(
+            "SaveEncounteredPlayerKeys",
+            accumulator,
+            new[]
+            {
+                (MembershipType: 1, MembershipId: 100L),
+                (MembershipType: 1, MembershipId: 100L),
+                (MembershipType: 2, MembershipId: 200L)
+            });
+
+        var keys = (HashSet<(int MembershipType, long MembershipId)>)CrawlerReflection.Invoke(
+            "ReadEncounteredPlayerKeys",
+            accumulator)!;
+
+        Assert.Equal(2, accumulator.UniquePlayersPlayedWith);
+        Assert.Equal(18, accumulator.EncounteredPlayerKeys.Length);
+        Assert.Contains((1, 100L), keys);
+        Assert.Contains((2, 200L), keys);
+    }
+
+    [Fact]
+    public void EncounteredPlayerKeys_round_trip_large_destiny_membership_ids()
+    {
+        var accumulator = new CrawlAccumulator();
+        const long membershipId = 4611686018463095984L;
+
+        CrawlerReflection.Invoke(
+            "SaveEncounteredPlayerKeys",
+            accumulator,
+            new[] { (MembershipType: 3, MembershipId: membershipId) });
+
+        var keys = (HashSet<(int MembershipType, long MembershipId)>)CrawlerReflection.Invoke(
+            "ReadEncounteredPlayerKeys",
+            accumulator)!;
+
+        var key = Assert.Single(keys);
+        Assert.Equal(3, key.MembershipType);
+        Assert.Equal(membershipId, key.MembershipId);
+        Assert.Equal(1, accumulator.UniquePlayersPlayedWith);
+    }
+
     [Theory]
     [InlineData(1, 100, 1, true)]
     [InlineData(1, 100, 2, true)]
     [InlineData(0, 100, 1, false)]
+    [InlineData(256, 100, 1, false)]
     [InlineData(1, 0, 1, false)]
     [InlineData(1, 100, 0, false)]
     public void IsCountablePlayerEncounter_includes_valid_one_time_encounters(

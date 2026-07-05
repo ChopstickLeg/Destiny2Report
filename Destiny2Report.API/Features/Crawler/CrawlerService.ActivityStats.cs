@@ -102,7 +102,7 @@ public partial class CrawlerService
         var pendingSherpaChecks = new List<SherpaCheck>();
         var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>>();
         var membershipTypeByPlayer = new ConcurrentDictionary<long, Lazy<Task<int?>>>();
-        var currentCrawlEncounteredPlayers = new HashSet<(int MembershipType, long MembershipId)>();
+        var encounteredPlayerKeys = ReadEncounteredPlayerKeys(accumulator);
         var completedRaidActivities = new List<CompletedRaidActivity>();
         var crawlState = new ActivityCrawlState();
 
@@ -188,7 +188,7 @@ public partial class CrawlerService
                     playerEncounterCounts[key] = playerEncounterCounts.GetValueOrDefault(key) + 1;
                     if (IsCountablePlayerEncounter(key.MembershipType, key.MembershipId, 1))
                     {
-                        currentCrawlEncounteredPlayers.Add(key);
+                        encounteredPlayerKeys.Add(key);
                     }
                 }
 
@@ -240,7 +240,7 @@ public partial class CrawlerService
                 MembershipId = item.Key.MembershipId,
                 Count = item.Value
             });
-        accumulator.UniquePlayersPlayedWith += currentCrawlEncounteredPlayers.Count;
+        SaveEncounteredPlayerKeys(accumulator, encounteredPlayerKeys);
 
         report.PatrolTimeByPlanet = accumulator.PatrolSecondsByPlanet.ToDictionary(
             item => item.Key,
