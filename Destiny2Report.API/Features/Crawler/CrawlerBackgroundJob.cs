@@ -143,22 +143,46 @@ public class CrawlerBackgroundJob : BackgroundService
         await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "running", null)
             .ConfigureAwait(false);
 
-        try
+        const int maxAttempts = 2;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            await crawlerService.CrawlAsync(membershipTypeId, membershipId, stoppingToken).ConfigureAwait(false);
-            await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
-                .ConfigureAwait(false);
-            await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "completed", null)
-                .ConfigureAwait(false);
-            activity?.SetStatus(ActivityStatusCode.Ok);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            throw;
+            try
+            {
+                await crawlerService.CrawlAsync(membershipTypeId, membershipId, stoppingToken).ConfigureAwait(false);
+                await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
+                    .ConfigureAwait(false);
+                await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "completed", null)
+                    .ConfigureAwait(false);
+                activity?.SetStatus(ActivityStatusCode.Ok);
+
+                _logger.LogInformation("Completed crawler stream entry {EntryId}.", entry.Id);
+                return;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && attempt < maxAttempts)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Crawler stream entry {EntryId} failed on attempt {Attempt}; retrying once immediately.",
+                    entry.Id,
+                    attempt);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, "failed", ex.Message)
+                    .ConfigureAwait(false);
+                await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
+                    .ConfigureAwait(false);
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+
+                _logger.LogError(
+                    ex,
+                    "Crawler stream entry {EntryId} failed after {AttemptCount} attempts.",
+                    entry.Id,
+                    maxAttempts);
+                return;
+            }
         }
 
-        _logger.LogInformation("Completed crawler stream entry {EntryId}.", entry.Id);
     }
 
     private static async Task UpdateJobStatusAsync(

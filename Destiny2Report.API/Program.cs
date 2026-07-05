@@ -1,19 +1,17 @@
 using Destiny2Report.API.Bungie;
 using Destiny2Report.API.Features.Auth;
+using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.Reports;
 using Destiny2Report.API.Features.Status;
-using Destiny2Report.API.RateLimiting;
-using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Mongo;
 using Destiny2Report.API.Observability;
-using Microsoft.AspNetCore.RateLimiting;
+using Destiny2Report.API.RateLimiting;
 using StackExchange.Redis;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddAppOpenTelemetry();
-builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddBungieClient(builder.Configuration);
@@ -78,7 +76,6 @@ var app = builder.Build();
 
 if (!app.Environment.IsProduction())
 {
-    app.MapOpenApi();
     app.UseSwagger();
     app.UseSwaggerUI();
 }
