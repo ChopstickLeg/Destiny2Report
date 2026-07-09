@@ -138,9 +138,9 @@ public partial class CrawlerService
         DestinyReport report,
         int ownerMembershipType,
         long ownerMembershipId,
-        IReadOnlyDictionary<long, WeaponKillDelta> pveWeaponDeltas,
-        IReadOnlyDictionary<long, WeaponKillDelta> crucibleWeaponDeltas,
-        IReadOnlyDictionary<long, WeaponKillDelta> gambitWeaponDeltas,
+        IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> pveWeaponDeltas,
+        IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> crucibleWeaponDeltas,
+        IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> gambitWeaponDeltas,
         DestinyManifest manifest,
         bool resetWeaponAggregates,
         ICrawlProgress? progress,
@@ -159,9 +159,10 @@ public partial class CrawlerService
             await weaponCategories.DeleteManyAsync(categoryOwnerFilter, cancellationToken).ConfigureAwait(false);
         }
 
-        var allHashes = pveWeaponDeltas.Keys
-            .Concat(crucibleWeaponDeltas.Keys)
-            .Concat(gambitWeaponDeltas.Keys)
+        var allHashes = pveWeaponDeltas.Values
+            .Concat(crucibleWeaponDeltas.Values)
+            .Concat(gambitWeaponDeltas.Values)
+            .SelectMany(weaponDeltas => weaponDeltas.Keys)
             .Where(hash => hash > 0)
             .Distinct()
             .ToArray();
@@ -197,42 +198,48 @@ public partial class CrawlerService
         int ownerMembershipType,
         long ownerMembershipId,
         string activityMode,
-        IReadOnlyDictionary<long, WeaponKillDelta> weaponDeltas,
+        IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> weaponDeltasByClassAndMode,
         IReadOnlyDictionary<long, WeaponDefinitionSummary> weaponDefinitions)
     {
-        return weaponDeltas
-            .Where(item => item.Value.TotalKills > 0)
+        return weaponDeltasByClassAndMode.SelectMany(mode => mode.Value.Select(weapon => (mode.Key.ClassName, mode.Key.SpecificActivityMode, Weapon: weapon)))
+            .Where(item => item.Weapon.Value.TotalKills > 0)
             .Select(item =>
             {
-                weaponDefinitions.TryGetValue(item.Key, out var definition);
-                var weaponName = definition?.Name ?? SyntheticWeaponName(item.Key);
+                weaponDefinitions.TryGetValue(item.Weapon.Key, out var definition);
+                var weaponName = definition?.Name ?? SyntheticWeaponName(item.Weapon.Key);
                 var weaponKey = NormalizeWeaponKey(weaponName);
-                var (categoryName, categoryKey) = WeaponCategory(item.Key, definition);
+                var (categoryName, categoryKey) = WeaponCategory(item.Weapon.Key, definition);
                 return new
                 {
-                    ReferenceId = item.Key,
+                    item.SpecificActivityMode,
+                    item.ClassName,
+                    ReferenceId = item.Weapon.Key,
                     WeaponName = weaponName,
                     WeaponKey = weaponKey,
                     IconUrl = definition?.IconUrl ?? "",
                     CategoryName = categoryName,
                     CategoryKey = categoryKey,
-                    Delta = item.Value
+                    Delta = item.Weapon.Value
                 };
             })
             .Where(item => !string.IsNullOrWhiteSpace(item.WeaponKey))
-            .GroupBy(item => item.WeaponKey, StringComparer.Ordinal)
+            .GroupBy(item => (item.ClassName, item.SpecificActivityMode, item.WeaponKey))
             .Select(group =>
             {
                 var first = group.First();
                 var filter = Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipType, ownerMembershipType)
                     & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipId, ownerMembershipId)
                     & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, activityMode)
-                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.WeaponKey, group.Key);
+                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ClassName, first.ClassName)
+                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.SpecificActivityMode, first.SpecificActivityMode)
+                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.WeaponKey, first.WeaponKey);
                 var update = Builders<WeaponAggregate>.Update
                     .SetOnInsert(weapon => weapon.OwnerMembershipType, ownerMembershipType)
                     .SetOnInsert(weapon => weapon.OwnerMembershipId, ownerMembershipId)
                     .SetOnInsert(weapon => weapon.ActivityMode, activityMode)
-                    .SetOnInsert(weapon => weapon.WeaponKey, group.Key)
+                    .SetOnInsert(weapon => weapon.ClassName, first.ClassName)
+                    .SetOnInsert(weapon => weapon.SpecificActivityMode, first.SpecificActivityMode)
+                    .SetOnInsert(weapon => weapon.WeaponKey, first.WeaponKey)
                     .Set(weapon => weapon.WeaponName, first.WeaponName)
                     .Set(weapon => weapon.ReferenceId, first.ReferenceId)
                     .Set(weapon => weapon.IconUrl, first.IconUrl)
@@ -240,10 +247,7 @@ public partial class CrawlerService
                     .Set(weapon => weapon.CategoryName, first.CategoryName)
                     .Inc(weapon => weapon.Kills, group.Sum(item => item.Delta.TotalKills));
 
-                return new UpdateOneModel<WeaponAggregate>(filter, update)
-                {
-                    IsUpsert = true
-                };
+                return new UpdateOneModel<WeaponAggregate>(filter, update) { IsUpsert = true };
             });
     }
 
@@ -251,35 +255,41 @@ public partial class CrawlerService
         int ownerMembershipType,
         long ownerMembershipId,
         string activityMode,
-        IReadOnlyDictionary<long, WeaponKillDelta> weaponDeltas,
+        IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> weaponDeltasByClassAndMode,
         IReadOnlyDictionary<long, WeaponDefinitionSummary> weaponDefinitions)
     {
-        return weaponDeltas
-            .Where(item => item.Value.TotalKills > 0)
+        return weaponDeltasByClassAndMode.SelectMany(mode => mode.Value.Select(weapon => (mode.Key.ClassName, mode.Key.SpecificActivityMode, Weapon: weapon)))
+            .Where(item => item.Weapon.Value.TotalKills > 0)
             .Select(item =>
             {
-                weaponDefinitions.TryGetValue(item.Key, out var definition);
-                var (categoryName, categoryKey) = WeaponCategory(item.Key, definition);
+                weaponDefinitions.TryGetValue(item.Weapon.Key, out var definition);
+                var (categoryName, categoryKey) = WeaponCategory(item.Weapon.Key, definition);
                 return new
                 {
+                    item.SpecificActivityMode,
+                    item.ClassName,
                     CategoryName = categoryName,
                     CategoryKey = categoryKey,
-                    Delta = item.Value
+                    Delta = item.Weapon.Value
                 };
             })
-            .GroupBy(item => item.CategoryKey, StringComparer.Ordinal)
+            .GroupBy(item => (item.ClassName, item.SpecificActivityMode, item.CategoryKey))
             .Select(group =>
             {
                 var first = group.First();
                 var filter = Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipType, ownerMembershipType)
                     & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipId, ownerMembershipId)
                     & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.ActivityMode, activityMode)
-                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.CategoryKey, group.Key);
+                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.ClassName, first.ClassName)
+                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.SpecificActivityMode, first.SpecificActivityMode)
+                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.CategoryKey, first.CategoryKey);
                 var update = Builders<WeaponCategoryAggregate>.Update
                     .SetOnInsert(category => category.OwnerMembershipType, ownerMembershipType)
                     .SetOnInsert(category => category.OwnerMembershipId, ownerMembershipId)
                     .SetOnInsert(category => category.ActivityMode, activityMode)
-                    .SetOnInsert(category => category.CategoryKey, group.Key)
+                    .SetOnInsert(category => category.ClassName, first.ClassName)
+                    .SetOnInsert(category => category.SpecificActivityMode, first.SpecificActivityMode)
+                    .SetOnInsert(category => category.CategoryKey, first.CategoryKey)
                     .Set(category => category.CategoryName, first.CategoryName)
                     .Inc(category => category.Kills, group.Sum(item => item.Delta.TotalKills));
 
@@ -297,20 +307,22 @@ public partial class CrawlerService
         CancellationToken cancellationToken)
     {
         var modeFilter = ownerFilter & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, activityMode);
-        var topWeapons = await weapons
+        var weaponAggregates = await weapons
             .Find(modeFilter)
-            .SortByDescending(weapon => weapon.Kills)
-            .Limit(10)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return topWeapons
-            .Select(weapon => new WeaponReport
+        return weaponAggregates
+            .GroupBy(weapon => weapon.WeaponKey, StringComparer.Ordinal)
+            .Select(group => new WeaponReport
             {
-                Name = weapon.WeaponName,
-                IconUrl = weapon.IconUrl,
-                TotalKills = weapon.Kills
+                Name = group.First().WeaponName,
+                IconUrl = group.First().IconUrl,
+                TotalKills = group.Sum(weapon => weapon.Kills)
             })
+            .OrderByDescending(weapon => weapon.TotalKills)
+            .ThenBy(weapon => weapon.Name, StringComparer.Ordinal)
+            .Take(10)
             .ToList();
     }
 

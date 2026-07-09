@@ -72,7 +72,7 @@ public static class ReportHandlers
             : TypedResults.Ok(report);
     }
 
-    public static async Task<Results<Ok<IReadOnlyCollection<WeaponCategoryAggregateReport>>, NotFound, BadRequest<ProblemDetails>>> GetWeapons(
+    public static async Task<Results<Ok<WeaponActivityModeAggregateReport>, NotFound, BadRequest<ProblemDetails>>> GetWeapons(
         int membershipTypeId,
         long membershipId,
         WeaponActivityMode activityMode,
@@ -111,23 +111,46 @@ public static class ReportHandlers
             .ThenByDescending(weapon => weapon.Kills)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
-        var weaponsByCategory = weaponAggregates
-            .GroupBy(weapon => weapon.CategoryKey)
+        var weaponsByClassModeAndCategory = weaponAggregates
+            .GroupBy(weapon => (weapon.ClassName, weapon.SpecificActivityMode, weapon.CategoryKey))
             .ToDictionary(group => group.Key, group => (IReadOnlyCollection<WeaponAggregate>)group.ToList());
-        var response = categoryAggregates
-            .Select(category => new WeaponCategoryAggregateReport
-            {
-                OwnerMembershipType = category.OwnerMembershipType,
-                OwnerMembershipId = category.OwnerMembershipId,
-                ActivityMode = category.ActivityMode,
-                CategoryKey = category.CategoryKey,
-                CategoryName = category.CategoryName,
-                Kills = category.Kills,
-                Weapons = weaponsByCategory.GetValueOrDefault(category.CategoryKey) ?? []
-            })
-            .ToList();
+        var response = new WeaponActivityModeAggregateReport
+        {
+            ActivityMode = storedActivityMode,
+            Classes = categoryAggregates
+                .GroupBy(category => string.IsNullOrWhiteSpace(category.ClassName) ? "Unknown" : category.ClassName)
+                .OrderByDescending(group => group.Sum(category => category.Kills))
+                .Select(classGroup => new WeaponClassAggregateReport
+                {
+                    ClassName = classGroup.Key,
+                    Modes = classGroup
+                        .GroupBy(category => category.SpecificActivityMode)
+                        .OrderByDescending(group => group.Sum(category => category.Kills))
+                        .Select(modeGroup => new WeaponModeAggregateReport
+                        {
+                            SpecificActivityMode = CrawlerService.GetSpecificActivityModeName(modeGroup.Key),
+                            Categories = modeGroup
+                                .OrderByDescending(category => category.Kills)
+                                .Select(category => new WeaponCategoryAggregateReport
+                                {
+                                    OwnerMembershipType = category.OwnerMembershipType,
+                                    OwnerMembershipId = category.OwnerMembershipId,
+                                    ActivityMode = category.ActivityMode,
+                                    ClassName = classGroup.Key,
+                                    SpecificActivityMode = CrawlerService.GetSpecificActivityModeName(category.SpecificActivityMode),
+                                    CategoryKey = category.CategoryKey,
+                                    CategoryName = category.CategoryName,
+                                    Kills = category.Kills,
+                                    Weapons = weaponsByClassModeAndCategory.GetValueOrDefault((category.ClassName, category.SpecificActivityMode, category.CategoryKey)) ?? []
+                                })
+                                .ToList()
+                        })
+                        .ToList()
+                })
+                .ToList()
+        };
 
-        return TypedResults.Ok<IReadOnlyCollection<WeaponCategoryAggregateReport>>(response);
+        return TypedResults.Ok(response);
     }
 
     public static async Task<Results<Accepted<ReportQueueResponse>, BadRequest<ProblemDetails>>> QueueCrawl(

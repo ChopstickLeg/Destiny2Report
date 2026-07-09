@@ -95,9 +95,9 @@ public partial class CrawlerService
     {
         var playerEncounterCounts = accumulator.EncounterCounts.Values
             .ToDictionary(item => (item.MembershipType, item.MembershipId), item => item.Count);
-        var pveWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
-        var pvpWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
-        var gambitWeaponDeltas = new Dictionary<long, WeaponKillDelta>();
+        var pveWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
+        var pvpWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
+        var gambitWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
         var emblemSecondsDeltas = new Dictionary<long, long>();
         var raidCompletions = ToCompletionAggregates(accumulator.RaidCompletions);
         var dungeonCompletions = ToCompletionAggregates(accumulator.DungeonCompletions);
@@ -233,19 +233,19 @@ public partial class CrawlerService
                 AddCrucibleKills(accumulator, pgcr, (long)playerKills);
                 if (!isPrivateCrucible)
                 {
-                    AddWeapons(pvpWeaponDeltas, playerEntries);
+                    AddWeaponsByClassAndMode(pvpWeaponDeltas, pgcr, playerEntries, characterClassById);
                 }
             }
             else if (isGambit)
             {
                 if (!isPrivateGambit)
                 {
-                    AddWeapons(gambitWeaponDeltas, playerEntries);
+                    AddWeaponsByClassAndMode(gambitWeaponDeltas, pgcr, playerEntries, characterClassById);
                 }
             }
             else
             {
-                AddWeapons(pveWeaponDeltas, playerEntries);
+                AddWeaponsByClassAndMode(pveWeaponDeltas, pgcr, playerEntries, characterClassById);
             }
         }
 
@@ -645,6 +645,36 @@ public partial class CrawlerService
         var modeKey = pgcr.ActivityDetails.Mode.ToString();
         accumulator.CrucibleKills += kills;
         accumulator.CrucibleKillsByMode[modeKey] = accumulator.CrucibleKillsByMode.GetValueOrDefault(modeKey) + kills;
+    }
+
+    private static void AddWeaponsByClassAndMode(
+        IDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> weaponDeltasByClassAndMode,
+        DestinyPostGameCarnageReportData pgcr,
+        IEnumerable<DestinyPostGameCarnageReportEntry> entries,
+        IDictionary<long, string> characterClassById)
+    {
+        foreach (var entry in entries)
+        {
+            var className = characterClassById.TryGetValue(entry.CharacterId, out var knownClass)
+                ? ClassName(knownClass)
+                : ClassName(entry.Player?.CharacterClass ?? "Unknown");
+            AddWeapons(GetWeaponDeltasForClassAndMode(weaponDeltasByClassAndMode, pgcr, className), [entry]);
+        }
+    }
+
+    private static IDictionary<long, WeaponKillDelta> GetWeaponDeltasForClassAndMode(
+        IDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> weaponDeltasByClassAndMode,
+        DestinyPostGameCarnageReportData pgcr,
+        string className)
+    {
+        var key = (className, pgcr.ActivityDetails.Mode);
+        if (!weaponDeltasByClassAndMode.TryGetValue(key, out var weaponDeltas))
+        {
+            weaponDeltas = new Dictionary<long, WeaponKillDelta>();
+            weaponDeltasByClassAndMode[key] = weaponDeltas;
+        }
+
+        return weaponDeltas;
     }
 
     private static double SumStats(

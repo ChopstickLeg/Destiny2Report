@@ -79,20 +79,36 @@ public static class MongoExtensions
             cancellationToken);
 
         var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
+        await weapons.DropIndexesIfPresentAsync(
+            [
+                "ux_weapon_aggregates_owner_mode_key",
+                "ix_weapon_aggregates_owner_mode_kills",
+                "ix_weapon_aggregates_owner_mode_category_kills",
+                "ux_weapon_aggregates_owner_mode_specific_mode_key",
+                "ix_weapon_aggregates_owner_mode_specific_mode_kills",
+                "ix_weapon_aggregates_owner_mode_specific_mode_category_kills"
+            ],
+            cancellationToken);
         var weaponUniqueIndexKeys = Builders<WeaponAggregate>.IndexKeys
             .Ascending(weapon => weapon.OwnerMembershipType)
             .Ascending(weapon => weapon.OwnerMembershipId)
             .Ascending(weapon => weapon.ActivityMode)
+            .Ascending(weapon => weapon.ClassName)
+            .Ascending(weapon => weapon.SpecificActivityMode)
             .Ascending(weapon => weapon.WeaponKey);
         var weaponTopIndexKeys = Builders<WeaponAggregate>.IndexKeys
             .Ascending(weapon => weapon.OwnerMembershipType)
             .Ascending(weapon => weapon.OwnerMembershipId)
             .Ascending(weapon => weapon.ActivityMode)
+            .Ascending(weapon => weapon.ClassName)
+            .Ascending(weapon => weapon.SpecificActivityMode)
             .Descending(weapon => weapon.Kills);
         var weaponCategoryIndexKeys = Builders<WeaponAggregate>.IndexKeys
             .Ascending(weapon => weapon.OwnerMembershipType)
             .Ascending(weapon => weapon.OwnerMembershipId)
             .Ascending(weapon => weapon.ActivityMode)
+            .Ascending(weapon => weapon.ClassName)
+            .Ascending(weapon => weapon.SpecificActivityMode)
             .Ascending(weapon => weapon.CategoryKey)
             .Descending(weapon => weapon.Kills);
 
@@ -102,34 +118,46 @@ public static class MongoExtensions
                     weaponUniqueIndexKeys,
                     new CreateIndexOptions
                     {
-                        Name = "ux_weapon_aggregates_owner_mode_key",
+                        Name = "ux_weapon_aggregates_owner_mode_class_specific_mode_key",
                         Unique = true
                     }),
                 new CreateIndexModel<WeaponAggregate>(
                     weaponTopIndexKeys,
                     new CreateIndexOptions
                     {
-                        Name = "ix_weapon_aggregates_owner_mode_kills"
+                        Name = "ix_weapon_aggregates_owner_mode_class_specific_mode_kills"
                     }),
                 new CreateIndexModel<WeaponAggregate>(
                     weaponCategoryIndexKeys,
                     new CreateIndexOptions
                     {
-                        Name = "ix_weapon_aggregates_owner_mode_category_kills"
+                        Name = "ix_weapon_aggregates_owner_mode_class_specific_mode_category_kills"
                     })
             ],
             cancellationToken);
 
         var weaponCategories = mongoDatabase.GetCollection<WeaponCategoryAggregate>("weapon_category_aggregates");
+        await weaponCategories.DropIndexesIfPresentAsync(
+            [
+                "ux_weapon_category_aggregates_owner_mode_category",
+                "ix_weapon_category_aggregates_owner_mode_kills",
+                "ux_weapon_category_aggregates_owner_mode_specific_mode_category",
+                "ix_weapon_category_aggregates_owner_mode_specific_mode_kills"
+            ],
+            cancellationToken);
         var weaponCategoryUniqueIndexKeys = Builders<WeaponCategoryAggregate>.IndexKeys
             .Ascending(category => category.OwnerMembershipType)
             .Ascending(category => category.OwnerMembershipId)
             .Ascending(category => category.ActivityMode)
+            .Ascending(category => category.ClassName)
+            .Ascending(category => category.SpecificActivityMode)
             .Ascending(category => category.CategoryKey);
         var weaponCategoryTopIndexKeys = Builders<WeaponCategoryAggregate>.IndexKeys
             .Ascending(category => category.OwnerMembershipType)
             .Ascending(category => category.OwnerMembershipId)
             .Ascending(category => category.ActivityMode)
+            .Ascending(category => category.ClassName)
+            .Ascending(category => category.SpecificActivityMode)
             .Descending(category => category.Kills);
 
         await weaponCategories.EnsureIndexesAsync(
@@ -138,14 +166,14 @@ public static class MongoExtensions
                     weaponCategoryUniqueIndexKeys,
                     new CreateIndexOptions
                     {
-                        Name = "ux_weapon_category_aggregates_owner_mode_category",
+                        Name = "ux_weapon_category_aggregates_owner_mode_class_specific_mode_category",
                         Unique = true
                     }),
                 new CreateIndexModel<WeaponCategoryAggregate>(
                     weaponCategoryTopIndexKeys,
                     new CreateIndexOptions
                     {
-                        Name = "ix_weapon_category_aggregates_owner_mode_kills"
+                        Name = "ix_weapon_category_aggregates_owner_mode_class_specific_mode_kills"
                     })
             ],
             cancellationToken);
@@ -198,6 +226,24 @@ public static class MongoExtensions
         if (missingIndexModels.Length > 0)
         {
             await collection.Indexes.CreateManyAsync(missingIndexModels, cancellationToken);
+        }
+    }
+
+    private static async Task DropIndexesIfPresentAsync<TDocument>(
+        this IMongoCollection<TDocument> collection,
+        IReadOnlyCollection<string> indexNames,
+        CancellationToken cancellationToken)
+    {
+        using var indexCursor = await collection.Indexes.ListAsync(cancellationToken);
+        var existingIndexes = await indexCursor.ToListAsync(cancellationToken);
+        var existingIndexNames = existingIndexes
+            .Select(index => index.TryGetValue("name", out var name) ? name.AsString : null)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var indexName in indexNames.Where(existingIndexNames.Contains))
+        {
+            await collection.Indexes.DropOneAsync(indexName, cancellationToken).ConfigureAwait(false);
         }
     }
 }

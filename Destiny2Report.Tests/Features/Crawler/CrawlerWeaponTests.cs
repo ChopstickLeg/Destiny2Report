@@ -73,6 +73,26 @@ public sealed class CrawlerWeaponTests
     }
 
     [Fact]
+    public void GetWeaponDeltasForClassAndMode_keeps_weapon_kills_in_their_class_and_specific_activity_mode()
+    {
+        var deltaType = CrawlerReflection.NestedType("WeaponKillDelta");
+        var classAndModeType = typeof(ValueTuple<,>).MakeGenericType(typeof(string), typeof(int));
+        var weaponsByClassAndModeType = typeof(Dictionary<,>).MakeGenericType(
+            classAndModeType,
+            typeof(Dictionary<,>).MakeGenericType(typeof(long), deltaType));
+        var weaponsByClassAndMode = (IDictionary)Activator.CreateInstance(weaponsByClassAndModeType)!;
+        var control = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 10, 1);
+        var clash = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 12, 2);
+
+        var controlDeltas = CrawlerReflection.Invoke("GetWeaponDeltasForClassAndMode", weaponsByClassAndMode, control, "Titan")!;
+        var clashDeltas = CrawlerReflection.Invoke("GetWeaponDeltasForClassAndMode", weaponsByClassAndMode, clash, "Hunter")!;
+
+        Assert.NotSame(controlDeltas, clashDeltas);
+        Assert.Same(controlDeltas, CrawlerReflection.Invoke("GetWeaponDeltasForClassAndMode", weaponsByClassAndMode, control, "Titan"));
+        Assert.Equal(2, weaponsByClassAndMode.Count);
+    }
+
+    [Fact]
     public void GetMoteStat_returns_exact_stat_and_ignores_other_mote_like_values()
     {
         var entry = BungieFixture.Entry(

@@ -15,7 +15,7 @@ public static class ReportEndpoints
 
         reports.MapGet("/{membershipTypeId:int}/{membershipId:long}/weapons/{activityMode}", ReportHandlers.GetWeapons)
             .WithName("GetReportWeapons")
-            .WithSummary("Returns weapon category aggregates with all weapon aggregates for a crawled Destiny player and activity mode.");
+            .WithSummary("Returns weapon and ability kill aggregates grouped by the requested activity bucket and its specific Destiny activity modes.");
 
         reports.MapPost("/queue", ReportHandlers.QueueCrawl)
             .WithName("QueueReportCrawl")

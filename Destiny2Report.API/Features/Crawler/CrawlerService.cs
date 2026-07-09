@@ -138,6 +138,12 @@ public partial class CrawlerService(
         [91] = "IronBannerZoneControl",
         [92] = "Relic"
     };
+
+    public static string GetSpecificActivityModeName(int mode)
+    {
+        return ActivityModeTypeNames.GetValueOrDefault(mode) ?? $"Mode {mode}";
+    }
+
     private static readonly TimeSpan IncrementalCrawlOverlap = TimeSpan.FromHours(48);
     private static readonly DateTimeOffset BeyondLightRelease = new(2020, 11, 10, 17, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset WitchQueenRelease = new(2022, 2, 22, 17, 0, 0, TimeSpan.Zero);
