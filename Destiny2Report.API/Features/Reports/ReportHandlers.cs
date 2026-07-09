@@ -15,6 +15,38 @@ public static class ReportHandlers
 {
     private const int AllMembershipTypes = 254;
     private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromSeconds(5);
+    private sealed record QueueAdmission(string StreamEntryId, string Status, DateTimeOffset UpdatedAtUtc);
+    private const string QueueCrawlScript = """
+        local currentStatus = redis.call('HGET', KEYS[2], 'status')
+        if currentStatus == 'queued' or currentStatus == 'running' then
+            return {
+                redis.call('HGET', KEYS[2], 'streamEntryId'),
+                currentStatus,
+                redis.call('HGET', KEYS[2], 'updatedAtUtc')
+            }
+        end
+
+        local jobId = redis.call('XADD', KEYS[1], '*',
+            'membershipTypeId', ARGV[1],
+            'membershipId', ARGV[2],
+            'queuedAtUtc', ARGV[3])
+        redis.call('HSET', KEYS[2],
+            'membershipTypeId', ARGV[1],
+            'membershipId', ARGV[2],
+            'streamEntryId', jobId,
+            'status', 'queued',
+            'queuedAtUtc', ARGV[3],
+            'updatedAtUtc', ARGV[3],
+            'error', '',
+            'progressPhase', '',
+            'progressLabel', '',
+            'progressCurrent', '',
+            'progressTotal', '',
+            'progressStartedAtUtc', '',
+            'progressUpdatedAtUtc', '')
+        redis.call('EXPIRE', KEYS[2], ARGV[4])
+        return { jobId, 'queued', ARGV[3] }
+        """;
 
     public static async Task<Results<Ok<ReportSummaryResponse>, BadRequest<ProblemDetails>>> GetSummary(
         long membershipId,
@@ -199,46 +231,23 @@ public static class ReportHandlers
             return TypedResults.Accepted(QueueStatusLocation(request.MembershipTypeId, request.MembershipId), existingResponse);
         }
 
-        var jobId = await redisDatabase.StreamAddAsync(
-                CrawlerQueue.StreamName,
-                [
-                    new NameValueEntry("membershipTypeId", request.MembershipTypeId),
-                    new NameValueEntry("membershipId", request.MembershipId),
-                    new NameValueEntry("queuedAtUtc", queuedAtUtc.ToString("O"))
-                ])
-            .WaitAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        var statusKey = CrawlerQueue.JobStatusKey(request.MembershipTypeId, request.MembershipId);
-        await redisDatabase.HashSetAsync(
-                statusKey,
-                [
-                    new HashEntry("membershipTypeId", request.MembershipTypeId),
-                    new HashEntry("membershipId", request.MembershipId),
-                    new HashEntry("streamEntryId", jobId),
-                    new HashEntry("status", DestinyReport.CrawlStateQueued),
-                    new HashEntry("queuedAtUtc", queuedAtUtc.ToString("O")),
-                    new HashEntry("updatedAtUtc", queuedAtUtc.ToString("O")),
-                    new HashEntry("error", ""),
-                    new HashEntry("progressPhase", ""),
-                    new HashEntry("progressLabel", ""),
-                    new HashEntry("progressCurrent", ""),
-                    new HashEntry("progressTotal", ""),
-                    new HashEntry("progressStartedAtUtc", ""),
-                    new HashEntry("progressUpdatedAtUtc", "")
-                ])
-            .ConfigureAwait(false);
-        await redisDatabase.KeyExpireAsync(statusKey, CrawlerQueue.ActiveJobStatusTtl).ConfigureAwait(false);
-
         await UpsertForegroundQueuedReportAsync(mongoDatabase, request.MembershipTypeId, request.MembershipId, queuedAtUtc, cancellationToken)
             .ConfigureAwait(false);
 
+        var admission = await EnqueueCrawlAtomicallyAsync(
+                redisDatabase,
+                request.MembershipTypeId,
+                request.MembershipId,
+                queuedAtUtc,
+                cancellationToken)
+            .ConfigureAwait(false);
+
         var response = new ReportQueueResponse(
-            JobId: jobId.ToString(),
+            JobId: admission.StreamEntryId,
             MembershipTypeId: request.MembershipTypeId,
             MembershipId: request.MembershipId,
-            Status: DestinyReport.CrawlStateQueued,
-            QueuedAtUtc: queuedAtUtc);
+            Status: admission.Status,
+            QueuedAtUtc: admission.UpdatedAtUtc);
 
         return TypedResults.Accepted(QueueStatusLocation(request.MembershipTypeId, request.MembershipId), response);
     }
@@ -307,19 +316,21 @@ public static class ReportHandlers
         yield return new SseItem<ReportQueueStatusResponse>(initialStatus, "position");
         var subscriber = redis.GetSubscriber();
         var eventQueue = await subscriber.SubscribeAsync(RedisChannel.Literal(CrawlerQueue.EventsChannelName)).ConfigureAwait(false);
+        using var subscriptionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var readEventTask = eventQueue.ReadAsync(subscriptionCancellation.Token).AsTask();
         var nextFallbackScanAt = DateTimeOffset.UtcNow.Add(QueueScanFallbackInterval);
 
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var readEventTask = eventQueue.ReadAsync(cancellationToken).AsTask();
                 var fallbackDelayTask = Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
                 var completedTask = await Task.WhenAny(readEventTask, fallbackDelayTask).ConfigureAwait(false);
 
                 if (completedTask == readEventTask)
                 {
                     var channelMessage = await readEventTask.ConfigureAwait(false);
+                    readEventTask = eventQueue.ReadAsync(subscriptionCancellation.Token).AsTask();
                     if (TryReadMatchingJobEvent(channelMessage.Message, membershipTypeId, membershipId, out var jobEvent))
                     {
                         var eventStatus = BuildQueueStatus(
@@ -392,8 +403,41 @@ public static class ReportHandlers
         }
         finally
         {
+            await subscriptionCancellation.CancelAsync().ConfigureAwait(false);
             await eventQueue.UnsubscribeAsync().ConfigureAwait(false);
         }
+    }
+
+    private static async Task<QueueAdmission> EnqueueCrawlAtomicallyAsync(
+        IDatabase redisDatabase,
+        int membershipTypeId,
+        long membershipId,
+        DateTimeOffset queuedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        var queuedAtUtcValue = queuedAtUtc.ToString("O");
+        var scriptResult = await redisDatabase.ScriptEvaluateAsync(
+                QueueCrawlScript,
+                [CrawlerQueue.StreamName, CrawlerQueue.JobStatusKey(membershipTypeId, membershipId)],
+                [
+                    membershipTypeId,
+                    membershipId,
+                    queuedAtUtcValue,
+                    (long)CrawlerQueue.ActiveJobStatusTtl.TotalSeconds
+                ])
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var result = (RedisResult[]?)scriptResult;
+        if (result is null || result.Length != 3)
+        {
+            throw new InvalidOperationException("Redis returned an invalid crawler queue admission response.");
+        }
+
+        var updatedAtUtc = DateTimeOffset.TryParse(result[2].ToString(), out var parsedUpdatedAtUtc)
+            ? parsedUpdatedAtUtc
+            : queuedAtUtc;
+        return new QueueAdmission(result[0].ToString(), result[1].ToString(), updatedAtUtc);
     }
 
     private static async Task UpsertForegroundQueuedReportAsync(

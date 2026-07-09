@@ -10,7 +10,8 @@ namespace Destiny2Report.API.Features.Crawler;
 public class CrawlerBackgroundJob : BackgroundService
 {
     private const int ReadBatchSize = 1;
-    private static readonly TimeSpan PendingMessageIdleTimeout = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan PendingMessageIdleTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan PendingEntryHeartbeatInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan BackgroundJobLeaseDuration = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan BackgroundJobLeaseRenewalInterval = TimeSpan.FromMinutes(1);
 
@@ -160,55 +161,97 @@ public class CrawlerBackgroundJob : BackgroundService
             .ConfigureAwait(false);
 
         var progress = new RedisCrawlProgressReporter(redisDatabase, membershipTypeId, membershipId, entry.Id, TimeSpan.FromSeconds(1));
+        using var heartbeatCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var heartbeatTask = RefreshPendingEntryAsync(redisDatabase, entry.Id, heartbeatCancellation.Token);
 
-        const int maxAttempts = 2;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        try
+        {
+            const int maxAttempts = 2;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    await crawlerService.CrawlAsync(membershipTypeId, membershipId, progress, stoppingToken).ConfigureAwait(false);
+                    var finalReportState = await GetReportCrawlStateAsync(membershipTypeId, membershipId, stoppingToken).ConfigureAwait(false);
+                    var finalStatus = finalReportState?.CrawlState ?? DestinyReport.CrawlStateCompleted;
+                    await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
+                        .ConfigureAwait(false);
+                    await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, finalStatus, finalReportState?.CrawlError, progress.Snapshot)
+                        .ConfigureAwait(false);
+                    activity?.SetStatus(ActivityStatusCode.Ok);
+
+                    _logger.LogInformation("Completed crawler stream entry {EntryId} with status {CrawlState}.", entry.Id, finalStatus);
+                    return;
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (attempt < maxAttempts)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Crawler stream entry {EntryId} failed on attempt {Attempt}; retrying once immediately.",
+                        entry.Id,
+                        attempt);
+                }
+                catch (Exception ex)
+                {
+                    await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, DestinyReport.CrawlStateFailed, ex.Message, progress.Snapshot)
+                        .ConfigureAwait(false);
+                    await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
+                        .ConfigureAwait(false);
+                    await UpdateReportCrawlStateAsync(membershipTypeId, membershipId, DestinyReport.CrawlStateFailed, queuedInRedis: false, ex.Message, stoppingToken)
+                        .ConfigureAwait(false);
+                    activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+
+                    _logger.LogError(
+                        ex,
+                        "Crawler stream entry {EntryId} failed after {AttemptCount} attempts.",
+                        entry.Id,
+                        maxAttempts);
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            await heartbeatCancellation.CancelAsync().ConfigureAwait(false);
+            try
+            {
+                await heartbeatTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (heartbeatCancellation.IsCancellationRequested)
+            {
+            }
+        }
+    }
+
+    private async Task RefreshPendingEntryAsync(IDatabase redisDatabase, RedisValue entryId, CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(PendingEntryHeartbeatInterval);
+        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
-                await crawlerService.CrawlAsync(membershipTypeId, membershipId, progress, stoppingToken).ConfigureAwait(false);
-                var finalReportState = await GetReportCrawlStateAsync(membershipTypeId, membershipId, stoppingToken).ConfigureAwait(false);
-                var finalStatus = finalReportState?.CrawlState ?? DestinyReport.CrawlStateCompleted;
-                await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
+                await redisDatabase.StreamClaimAsync(
+                        CrawlerQueue.StreamName,
+                        CrawlerQueue.ConsumerGroupName,
+                        _consumerName,
+                        minIdleTimeInMs: 0,
+                        messageIds: [entryId])
+                    .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
-                await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, finalStatus, finalReportState?.CrawlError, progress.Snapshot)
-                    .ConfigureAwait(false);
-                activity?.SetStatus(ActivityStatusCode.Ok);
-
-                _logger.LogInformation("Completed crawler stream entry {EntryId} with status {CrawlState}.", entry.Id, finalStatus);
-                return;
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
-            catch (Exception ex) when (attempt < maxAttempts)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Crawler stream entry {EntryId} failed on attempt {Attempt}; retrying once immediately.",
-                    entry.Id,
-                    attempt);
-            }
             catch (Exception ex)
             {
-                await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, DestinyReport.CrawlStateFailed, ex.Message, progress.Snapshot)
-                    .ConfigureAwait(false);
-                await redisDatabase.StreamAcknowledgeAndDeleteAsync(CrawlerQueue.StreamName, CrawlerQueue.ConsumerGroupName, StreamTrimMode.DeleteReferences, entry.Id)
-                    .ConfigureAwait(false);
-                await UpdateReportCrawlStateAsync(membershipTypeId, membershipId, DestinyReport.CrawlStateFailed, queuedInRedis: false, ex.Message, stoppingToken)
-                    .ConfigureAwait(false);
-                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-
-                _logger.LogError(
-                    ex,
-                    "Crawler stream entry {EntryId} failed after {AttemptCount} attempts.",
-                    entry.Id,
-                    maxAttempts);
-                return;
+                _logger.LogWarning(ex, "Could not refresh Redis pending entry {EntryId}; retrying on the next heartbeat.", entryId);
             }
         }
-
     }
 
     private async Task<DestinyReport?> ClaimBackgroundJobAsync(CancellationToken stoppingToken)
