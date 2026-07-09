@@ -19,11 +19,13 @@ public partial class CrawlerService
         CrawlAccumulator accumulator,
         int platformId,
         long playerMembershipId,
-        IAsyncEnumerable<IReadOnlyList<DestinyHistoricalStatsPeriodGroup>> activityHistoryBatches,
+        IReadOnlyCollection<long> characterIds,
+        DateTimeOffset? crawlAfter,
         IReadOnlySet<long> recentActivityIds,
         IDictionary<long, string> characterClassById,
         ManifestContext manifest,
         bool resetDerivedAggregates,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         var activityDefinitions = await manifest.GetTableAsync("DestinyActivityDefinition", cancellationToken).ConfigureAwait(false);
@@ -35,7 +37,8 @@ public partial class CrawlerService
                 accumulator,
                 platformId,
                 playerMembershipId,
-                activityHistoryBatches,
+                characterIds,
+                crawlAfter,
                 recentActivityIds,
                 characterClassById,
                 activityDefinitions,
@@ -43,36 +46,34 @@ public partial class CrawlerService
                 destinationDefinitions,
                 manifest,
                 resetDerivedAggregates,
+                progress,
                 cancellationToken)
             .ConfigureAwait(false);
     }
 
     private static void ApplyPatrolTime(
         CrawlAccumulator accumulator,
-        IEnumerable<DestinyHistoricalStatsPeriodGroup> patrolActivities,
+        DestinyHistoricalStatsPeriodGroup activity,
         JObject activityDefinitions,
         JObject destinationDefinitions)
     {
-        foreach (var activity in patrolActivities)
+        var activityDefinition = GetDefinition(activityDefinitions, activity.ActivityDetails.ReferenceId)
+            ?? GetDefinition(activityDefinitions, activity.ActivityDetails.DirectorActivityHash);
+        var destinationHash = activityDefinition?["destinationHash"]?.Value<long>() ?? 0;
+        var destination = GetDefinition(destinationDefinitions, destinationHash);
+        var destinationName = destination?["displayProperties"]?["name"]?.Value<string>();
+        if (string.IsNullOrWhiteSpace(destinationName))
         {
-            var activityDefinition = GetDefinition(activityDefinitions, activity.ActivityDetails.ReferenceId)
-                ?? GetDefinition(activityDefinitions, activity.ActivityDetails.DirectorActivityHash);
-            var destinationHash = activityDefinition?["destinationHash"]?.Value<long>() ?? 0;
-            var destination = GetDefinition(destinationDefinitions, destinationHash);
-            var destinationName = destination?["displayProperties"]?["name"]?.Value<string>();
-            if (string.IsNullOrWhiteSpace(destinationName))
-            {
-                destinationName = destinationHash > 0 ? destinationHash.ToString() : "Unknown";
-            }
-
-            var seconds = GetStat(activity.Values, "timePlayedSeconds");
-            if (seconds <= 0)
-            {
-                seconds = GetStat(activity.Values, "activityDurationSeconds");
-            }
-
-            accumulator.PatrolSecondsByPlanet[destinationName] = accumulator.PatrolSecondsByPlanet.GetValueOrDefault(destinationName) + (long)seconds;
+            destinationName = destinationHash > 0 ? destinationHash.ToString() : "Unknown";
         }
+
+        var seconds = GetStat(activity.Values, "timePlayedSeconds");
+        if (seconds <= 0)
+        {
+            seconds = GetStat(activity.Values, "activityDurationSeconds");
+        }
+
+        accumulator.PatrolSecondsByPlanet[destinationName] = accumulator.PatrolSecondsByPlanet.GetValueOrDefault(destinationName) + (long)seconds;
     }
 
     private async Task ApplyPgcrAggregatesAsync(
@@ -80,7 +81,8 @@ public partial class CrawlerService
         CrawlAccumulator accumulator,
         int platformId,
         long playerMembershipId,
-        IAsyncEnumerable<IReadOnlyList<DestinyHistoricalStatsPeriodGroup>> activityHistoryBatches,
+        IReadOnlyCollection<long> characterIds,
+        DateTimeOffset? crawlAfter,
         IReadOnlySet<long> recentActivityIds,
         IDictionary<long, string> characterClassById,
         JObject activityDefinitions,
@@ -88,6 +90,7 @@ public partial class CrawlerService
         JObject destinationDefinitions,
         ManifestContext manifest,
         bool resetDerivedAggregates,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         var playerEncounterCounts = accumulator.EncounterCounts.Values
@@ -105,121 +108,150 @@ public partial class CrawlerService
         var encounteredPlayerKeys = ReadEncounteredPlayerKeys(accumulator);
         var completedRaidActivities = new List<CompletedRaidActivity>();
         var crawlState = new ActivityCrawlState();
+        var discoveredPgcrs = 0L;
+        var processedPgcrs = 0L;
 
-        await foreach (var fetchedActivityBatch in activityHistoryBatches.WithCancellation(cancellationToken).ConfigureAwait(false))
+        if (progress is not null)
         {
-            crawlState.AddFetched(fetchedActivityBatch);
+            await progress.StartPhaseAsync("pgcr", "Pulling PGCRs", total: 0, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
 
-            var activityBatch = fetchedActivityBatch
-                .Where(activity => !recentActivityIds.Contains(activity.ActivityDetails.InstanceId))
-                .ToArray();
-            if (activityBatch.Length == 0)
+        var activityInstanceIds = FetchActivityHistoryBatchesAsync(
+            platformId,
+            playerMembershipId,
+            characterIds,
+            crawlAfter,
+            recentActivityIds,
+            activity =>
+            {
+                crawlState.AddFetched(activity);
+                return ValueTask.CompletedTask;
+            },
+            async activity =>
+            {
+                if (IncludesMode(activity, ActivityModes.Patrol))
+                {
+                    ApplyPatrolTime(accumulator, activity, activityDefinitions, destinationDefinitions);
+                }
+
+                discoveredPgcrs++;
+                if (progress is not null)
+                {
+                    await progress.ReportAsync(processedPgcrs, discoveredPgcrs, cancellationToken).ConfigureAwait(false);
+                }
+            },
+            cancellationToken);
+
+        await foreach (var (instanceId, pgcr) in FetchPgcrBatchAsync(activityInstanceIds, cancellationToken).ConfigureAwait(false))
+        {
+            processedPgcrs++;
+            if (progress is not null)
+            {
+                await progress.ReportAsync(processedPgcrs, discoveredPgcrs, cancellationToken).ConfigureAwait(false);
+            }
+
+            TryFillCharacterClassFromPgcr(characterClassById, pgcr, playerMembershipId);
+
+            var playerEntries = FindPlayerEntries(pgcr, platformId, playerMembershipId);
+            if (playerEntries.Length == 0)
             {
                 continue;
             }
 
-            ApplyPatrolTime(accumulator, activityBatch.Where(activity => IncludesMode(activity, ActivityModes.Patrol)), activityDefinitions, destinationDefinitions);
-
-            await foreach (var (activity, pgcr) in FetchPgcrBatchAsync(activityBatch, MaxConcurrentPgcrRequests, cancellationToken).ConfigureAwait(false))
+            var completionReason = GetPgcrCompletionReason(pgcr);
+            var playerCompleted = playerEntries.Any(entry => IsNormallyCompleted(entry.Values, completionReason));
+            var playerKills = SumStats(playerEntries, "kills");
+            AddPgcrPlayerStats(accumulator, playerEntries);
+            if (playerKills <= 0)
             {
-                var instanceId = activity.ActivityDetails.InstanceId;
-                TryFillCharacterClassFromPgcr(characterClassById, pgcr, playerMembershipId);
+                accumulator.ZeroKillActivities++;
+            }
 
-                var playerEntries = FindPlayerEntries(pgcr, platformId, playerMembershipId);
-                if (playerEntries.Length == 0)
+            var activityName = ActivityName(activityDefinitions, pgcr.ActivityDetails.ReferenceId, pgcr.ActivityDetails.DirectorActivityHash);
+            var isRaid = IncludesMode(pgcr, ActivityModes.Raid);
+            var isDungeon = IncludesMode(pgcr, ActivityModes.Dungeon);
+            var isPvp = IncludesMode(pgcr, ActivityModes.AllPvP);
+            var isGambit = IncludesMode(pgcr, ActivityModes.Gambit) || IncludesMode(pgcr, ActivityModes.GambitPrime);
+            var hasGambitMoteStats = IncludesMode(pgcr, ActivityModes.AllPvECompetitive);
+            var isPrivateCrucible = isPvp && HasActivityTypeHash(pgcr, activityDefinitions, PrivateCrucibleActivityTypeHashes);
+            var isPrivateGambit = isGambit && HasActivityTypeHash(pgcr, activityDefinitions, PrivateGambitActivityTypeHashes);
+            var activityPlayerEntries = GetActivityPlayerEntries(pgcr);
+            var activityWasStartedFromBeginning = GetActivityWasStartedFromBeginning(pgcr, activityPlayerEntries);
+            var wasStartedFromBeginning = activityWasStartedFromBeginning == true;
+            var isFlawless = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && activityPlayerEntries.Length > 0 && activityPlayerEntries.All(entry => GetStat(entry.Values, "deaths") <= 0);
+            var isSolo = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && IsSoloActivity(activityPlayerEntries);
+            var activityCompletedAt = GetActivityCompletedAt(pgcr, playerEntries);
+            var isContest = IsContest(pgcr, activityCompletedAt, isRaid, isDungeon);
+            var isSoloFlawless = isSolo && isFlawless;
+            var playerActivitySeconds = SumPlayerActivitySeconds(playerEntries);
+
+            accumulator.TotalActivitySeconds += (long)playerActivitySeconds;
+            AddActivityModePlaytime(accumulator, pgcr, (long)playerActivitySeconds);
+            AddEmblemPlaytime(emblemSecondsDeltas, playerEntries);
+
+            if (playerCompleted && isRaid)
+            {
+                AddCompletion(raidCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
+                var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
+                AddFirstRaidCompletion(accumulator, normalizedRaidName, activityCompletedAt, instanceId);
+                SetFirstRaidCompletion(raidCompletions, normalizedRaidName, activityCompletedAt, instanceId);
+                completedRaidActivities.Add(new CompletedRaidActivity(normalizedRaidName, activityCompletedAt, instanceId));
+                pendingSherpaChecks.Add(new SherpaCheck(
+                    instanceId,
+                    normalizedRaidName,
+                    activityCompletedAt,
+                    GetCompletedFireteamMembers(pgcr, playerMembershipId).ToArray()));
+            }
+
+            if (playerCompleted && isDungeon)
+            {
+                AddCompletion(dungeonCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
+            }
+
+            var otherPlayers = GetDistinctOtherPlayers(pgcr, playerMembershipId);
+
+            foreach (var otherPlayer in otherPlayers)
+            {
+                var key = (otherPlayer.MembershipType, otherPlayer.MembershipId);
+                playerEncounterCounts[key] = playerEncounterCounts.GetValueOrDefault(key) + 1;
+                if (IsCountablePlayerEncounter(key.MembershipType, key.MembershipId, 1))
                 {
-                    continue;
-                }
-
-                var completionReason = GetPgcrCompletionReason(pgcr);
-                var playerCompleted = playerEntries.Any(entry => IsNormallyCompleted(entry.Values, completionReason));
-                var playerKills = SumStats(playerEntries, "kills");
-                AddPgcrPlayerStats(accumulator, playerEntries);
-                if (playerKills <= 0)
-                {
-                    accumulator.ZeroKillActivities++;
-                }
-
-                var activityName = ActivityName(activityDefinitions, pgcr.ActivityDetails.ReferenceId, pgcr.ActivityDetails.DirectorActivityHash);
-                var isRaid = IncludesMode(pgcr, ActivityModes.Raid);
-                var isDungeon = IncludesMode(pgcr, ActivityModes.Dungeon);
-                var isPvp = IncludesMode(pgcr, ActivityModes.AllPvP);
-                var isGambit = IncludesMode(pgcr, ActivityModes.Gambit) || IncludesMode(pgcr, ActivityModes.GambitPrime);
-                var hasGambitMoteStats = IncludesMode(pgcr, ActivityModes.AllPvECompetitive);
-                var isPrivateCrucible = isPvp && HasActivityTypeHash(pgcr, activityDefinitions, PrivateCrucibleActivityTypeHashes);
-                var isPrivateGambit = isGambit && HasActivityTypeHash(pgcr, activityDefinitions, PrivateGambitActivityTypeHashes);
-                var activityPlayerEntries = GetActivityPlayerEntries(pgcr);
-                var activityWasStartedFromBeginning = GetActivityWasStartedFromBeginning(pgcr, activityPlayerEntries);
-                var wasStartedFromBeginning = activityWasStartedFromBeginning == true;
-                var isFlawless = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && activityPlayerEntries.Length > 0 && activityPlayerEntries.All(entry => GetStat(entry.Values, "deaths") <= 0);
-                var isSolo = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && IsSoloActivity(activityPlayerEntries);
-                var activityCompletedAt = GetActivityCompletedAt(pgcr, playerEntries);
-                var isContest = IsContest(pgcr, activityCompletedAt, isRaid, isDungeon);
-                var isSoloFlawless = isSolo && isFlawless;
-                var playerActivitySeconds = SumPlayerActivitySeconds(playerEntries);
-
-                accumulator.TotalActivitySeconds += (long)playerActivitySeconds;
-                AddActivityModePlaytime(accumulator, pgcr, (long)playerActivitySeconds);
-                AddEmblemPlaytime(emblemSecondsDeltas, playerEntries);
-
-                if (playerCompleted && isRaid)
-                {
-                    AddCompletion(raidCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
-                    var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
-                    AddFirstRaidCompletion(accumulator, normalizedRaidName, activityCompletedAt, instanceId);
-                    completedRaidActivities.Add(new CompletedRaidActivity(normalizedRaidName, activityCompletedAt, instanceId));
-                    pendingSherpaChecks.Add(new SherpaCheck(
-                        instanceId,
-                        normalizedRaidName,
-                        activityCompletedAt,
-                        GetCompletedFireteamMembers(pgcr, playerMembershipId).ToArray()));
-                }
-
-                if (playerCompleted && isDungeon)
-                {
-                    AddCompletion(dungeonCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
-                }
-
-                var otherPlayers = GetDistinctOtherPlayers(pgcr, playerMembershipId);
-
-                foreach (var otherPlayer in otherPlayers)
-                {
-                    var key = (otherPlayer.MembershipType, otherPlayer.MembershipId);
-                    playerEncounterCounts[key] = playerEncounterCounts.GetValueOrDefault(key) + 1;
-                    if (IsCountablePlayerEncounter(key.MembershipType, key.MembershipId, 1))
-                    {
-                        encounteredPlayerKeys.Add(key);
-                    }
-                }
-
-                if (hasGambitMoteStats)
-                {
-                    foreach (var playerEntry in playerEntries)
-                    {
-                        AddGambitMoteStats(accumulator, pgcr, playerEntry);
-                    }
-                }
-
-                if (isPvp)
-                {
-                    AddCrucibleKills(accumulator, pgcr, (long)playerKills);
-                    if (!isPrivateCrucible)
-                    {
-                        AddWeapons(pvpWeaponDeltas, playerEntries);
-                    }
-                }
-                else if (isGambit)
-                {
-                    if (!isPrivateGambit)
-                    {
-                        AddWeapons(gambitWeaponDeltas, playerEntries);
-                    }
-                }
-                else
-                {
-                    AddWeapons(pveWeaponDeltas, playerEntries);
+                    encounteredPlayerKeys.Add(key);
                 }
             }
+
+            if (hasGambitMoteStats)
+            {
+                foreach (var playerEntry in playerEntries)
+                {
+                    AddGambitMoteStats(accumulator, pgcr, playerEntry);
+                }
+            }
+
+            if (isPvp)
+            {
+                AddCrucibleKills(accumulator, pgcr, (long)playerKills);
+                if (!isPrivateCrucible)
+                {
+                    AddWeapons(pvpWeaponDeltas, playerEntries);
+                }
+            }
+            else if (isGambit)
+            {
+                if (!isPrivateGambit)
+                {
+                    AddWeapons(gambitWeaponDeltas, playerEntries);
+                }
+            }
+            else
+            {
+                AddWeapons(pveWeaponDeltas, playerEntries);
+            }
+        }
+
+        if (progress is not null)
+        {
+            await progress.CompletePhaseAsync(processedPgcrs, discoveredPgcrs, cancellationToken).ConfigureAwait(false);
         }
 
         await ApplySherpaChecksAsync(cancellationToken).ConfigureAwait(false);
@@ -259,9 +291,16 @@ public partial class CrawlerService
                 platformId,
                 playerMembershipId,
                 persistedPlayerEncounterCounts,
+                encounteredPlayerKeys,
                 accumulator.UniquePlayersPlayedWith,
+                progress,
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (progress is not null)
+        {
+            await progress.StartPhaseAsync("weapon-aggregates", "Saving weapon aggregates", cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
 
         await ApplyWeaponAggregateDeltasAsync(
                 report,
@@ -272,8 +311,14 @@ public partial class CrawlerService
                 gambitWeaponDeltas,
                 manifest.Manifest,
                 resetDerivedAggregates,
+                progress,
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (progress is not null)
+        {
+            await progress.StartPhaseAsync("emblem-aggregates", "Saving emblem aggregates", cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
 
         await ApplyEmblemAggregateDeltasAsync(
                 report,
@@ -282,14 +327,19 @@ public partial class CrawlerService
                 emblemSecondsDeltas,
                 manifest.Manifest,
                 resetDerivedAggregates,
+                progress,
                 cancellationToken)
             .ConfigureAwait(false);
 
         report.TotalActivityTime = TimeSpan.FromSeconds(accumulator.TotalActivitySeconds);
 
-        async Task<IReadOnlyCollection<CompletedRaidActivity>?> GetCompletedRaidHistoryAsync(int membershipType, long membershipId)
+
+        async Task<IReadOnlyCollection<CompletedRaidActivity>?> GetCompletedRaidHistoryAsync(
+            string normalizedRaidName,
+            int membershipType,
+            long membershipId)
         {
-            var accumulatorHistory = await FetchCompletedRaidHistoryFromAccumulatorAsync(membershipType, membershipId, cancellationToken)
+            var accumulatorHistory = await FetchCompletedRaidHistoryFromAccumulatorAsync(normalizedRaidName, membershipType, membershipId, cancellationToken)
                 .ConfigureAwait(false);
             if (accumulatorHistory is not null)
             {
@@ -305,25 +355,86 @@ public partial class CrawlerService
                         activityDefinitions,
                         cancellationToken)));
 
-            return await lazyHistory.Value.ConfigureAwait(false);
+            var fetchedHistory = await lazyHistory.Value.ConfigureAwait(false);
+            if (fetchedHistory is not null)
+            {
+                await PersistInferredRaidCompletionsAsync(membershipType, membershipId, fetchedHistory, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return fetchedHistory;
         }
 
         async Task<IReadOnlyCollection<CompletedRaidActivity>?> FetchCompletedRaidHistoryFromAccumulatorAsync(
+            string normalizedRaidName,
             int membershipType,
             long membershipId,
             CancellationToken cancellationToken)
         {
             var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
             var filter = Builders<CrawlAccumulator>.Filter.Eq(item => item.PlatformId, membershipType)
-                & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, membershipId)
-                & Builders<CrawlAccumulator>.Filter.Eq(item => item.NeedsFullRecrawl, false);
+                & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, membershipId);
             var playerAccumulator = await accumulators.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            if (playerAccumulator is null || playerAccumulator.FirstRaidCompletions.Count == 0)
+            if (playerAccumulator is null)
             {
                 return null;
             }
 
-            return ToCompletedRaidActivities(playerAccumulator).ToArray();
+            var firstCompletions = GetFirstRaidCompletions(playerAccumulator).ToArray();
+            return firstCompletions.Any(item => string.Equals(item.Key, normalizedRaidName, StringComparison.OrdinalIgnoreCase))
+                ? firstCompletions
+                    .Select(item => new CompletedRaidActivity(item.Key, item.Value.CompletedAt, item.Value.InstanceId))
+                    .ToArray()
+                : null;
+        }
+
+        async Task PersistInferredRaidCompletionsAsync(
+            int membershipType,
+            long membershipId,
+            IReadOnlyCollection<CompletedRaidActivity> history,
+            CancellationToken cancellationToken)
+        {
+            if (history.Count == 0)
+            {
+                return;
+            }
+
+            var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
+            var filter = Builders<CrawlAccumulator>.Filter.Eq(item => item.PlatformId, membershipType)
+                & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, membershipId);
+            var updates = new List<UpdateDefinition<CrawlAccumulator>>
+            {
+                Builders<CrawlAccumulator>.Update.SetOnInsert(item => item.PlatformId, membershipType),
+                Builders<CrawlAccumulator>.Update.SetOnInsert(item => item.PlayerMembershipId, membershipId),
+                Builders<CrawlAccumulator>.Update.SetOnInsert(item => item.NeedsFullRecrawl, true),
+                Builders<CrawlAccumulator>.Update.SetOnInsert(item => item.FullRecrawlReason, "First raid completions inferred from sherpa history.")
+            };
+
+            foreach (var raidGroup in history
+                .Where(activity => !string.IsNullOrWhiteSpace(activity.RaidName))
+                .GroupBy(activity => activity.RaidName, StringComparer.OrdinalIgnoreCase))
+            {
+                var raidName = raidGroup.Key;
+                var firstCompletion = raidGroup
+                    .OrderBy(activity => activity.CompletedAt)
+                    .ThenBy(activity => activity.InstanceId)
+                    .First();
+                var firstCompletionRecord = new RaidFirstCompletion
+                {
+                    CompletedAt = firstCompletion.CompletedAt,
+                    InstanceId = firstCompletion.InstanceId
+                };
+
+                updates.Add(Builders<CrawlAccumulator>.Update.Set($"RaidCompletions.{raidName}.CompletionCount", raidGroup.Count()));
+                updates.Add(Builders<CrawlAccumulator>.Update.Set($"RaidCompletions.{raidName}.FirstCompletion", firstCompletionRecord));
+            }
+
+            await accumulators.UpdateOneAsync(
+                    filter,
+                    Builders<CrawlAccumulator>.Update.Combine(updates),
+                    new UpdateOptions { IsUpsert = true },
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         async Task ApplySherpaChecksAsync(CancellationToken cancellationToken)
@@ -341,43 +452,84 @@ public partial class CrawlerService
                         player.MembershipId)))
                 .ToArray();
 
-            var resolvedCandidateChecks = await Task.WhenAll(unresolvedCandidateChecks.Select(ResolveCandidateCheckAsync))
+            var resolvedCandidateChecks = new ConcurrentBag<SherpaCandidateCheck>();
+            var resolvedCount = 0L;
+
+            if (progress is not null)
+            {
+                await progress.StartPhaseAsync("sherpa-memberships", "Resolving sherpa candidates", unresolvedCandidateChecks.Length, cancellationToken).ConfigureAwait(false);
+            }
+
+            await Parallel.ForEachAsync(
+                    unresolvedCandidateChecks,
+                    new ParallelOptions
+                    {
+                        MaxDegreeOfParallelism = sherpaHistoryThrottler.RequestsPerSecond,
+                        CancellationToken = cancellationToken
+                    },
+                    async (check, ct) =>
+                    {
+                        var resolved = await ResolveCandidateCheckAsync(check).ConfigureAwait(false);
+                        if (resolved is not null)
+                        {
+                            resolvedCandidateChecks.Add(resolved);
+                        }
+
+                        var current = Interlocked.Increment(ref resolvedCount);
+                        if (progress is not null)
+                        {
+                            await progress.ReportAsync(current, unresolvedCandidateChecks.Length, ct).ConfigureAwait(false);
+                        }
+                    })
                 .ConfigureAwait(false);
-            var candidateChecks = resolvedCandidateChecks.OfType<SherpaCandidateCheck>().ToArray();
+
+            var candidateChecks = resolvedCandidateChecks.ToArray();
 
             if (candidateChecks.Length == 0)
             {
                 return;
             }
 
-            var candidatePlayers = candidateChecks
-                .Select(check => (check.MembershipType, check.MembershipId))
+            var candidateRaidPlayers = candidateChecks
+                .Select(check => (check.NormalizedRaidName, check.MembershipType, check.MembershipId))
                 .Distinct()
                 .ToArray();
 
-            using var throttler = new SemaphoreSlim(MaxConcurrentSherpaHistoryRequests);
-            var historyTasks = candidatePlayers.Select(async player =>
-            {
-                await throttler.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    var history = await GetCompletedRaidHistoryAsync(player.MembershipType, player.MembershipId).ConfigureAwait(false);
-                    return (player.MembershipType, player.MembershipId, History: history);
-                }
-                finally
-                {
-                    throttler.Release();
-                }
-            });
+            var historyByPlayerRaid = new ConcurrentDictionary<(string NormalizedRaidName, int MembershipType, long MembershipId), IReadOnlyCollection<CompletedRaidActivity>?>();
+            var historiesFetched = 0L;
 
-            var histories = await Task.WhenAll(historyTasks).ConfigureAwait(false);
-            var historyByPlayer = histories.ToDictionary(
-                item => (item.MembershipType, item.MembershipId),
-                item => item.History);
+            if (progress is not null)
+            {
+                await progress.StartPhaseAsync("sherpa-histories", "Checking sherpa raid histories", candidateRaidPlayers.Length, cancellationToken).ConfigureAwait(false);
+            }
+
+            await Parallel.ForEachAsync(
+                    candidateRaidPlayers,
+                    new ParallelOptions
+                    {
+                        MaxDegreeOfParallelism = sherpaHistoryThrottler.RequestsPerSecond,
+                        CancellationToken = cancellationToken
+                    },
+                    async (player, ct) =>
+                    {
+                        var history = await GetCompletedRaidHistoryAsync(
+                                player.NormalizedRaidName,
+                                player.MembershipType,
+                                player.MembershipId)
+                            .ConfigureAwait(false);
+                        historyByPlayerRaid[(player.NormalizedRaidName, player.MembershipType, player.MembershipId)] = history;
+
+                        var current = Interlocked.Increment(ref historiesFetched);
+                        if (progress is not null)
+                        {
+                            await progress.ReportAsync(current, candidateRaidPlayers.Length, ct).ConfigureAwait(false);
+                        }
+                    })
+                .ConfigureAwait(false);
 
             foreach (var check in candidateChecks)
             {
-                if (!historyByPlayer.TryGetValue((check.MembershipType, check.MembershipId), out var history)
+                if (!historyByPlayerRaid.TryGetValue((check.NormalizedRaidName, check.MembershipType, check.MembershipId), out var history)
                     || history is null
                     || history.Any(activity => IsPriorCompletedRaid(
                         activity,
@@ -424,14 +576,19 @@ public partial class CrawlerService
         {
             try
             {
-                var response = await bungieClient.Destiny2_GetLinkedProfilesAsync(
-                        getAllMemberships: true,
-                        membershipId: membershipId,
-                        membershipType: AllMembershipTypes,
-                        cancellationToken: cancellationToken)
+                var operation = $"GetLinkedProfiles:{membershipId}";
+                using var lease = await sherpaHistoryThrottler.AcquireAsync(cancellationToken).ConfigureAwait(false);
+                var response = await ExecuteBungieOperationAsync(
+                        operation,
+                        () => bungieClient.Destiny2_GetLinkedProfilesAsync(
+                            getAllMemberships: true,
+                            membershipId: membershipId,
+                            membershipType: AllMembershipTypes,
+                            cancellationToken: cancellationToken),
+                        cancellationToken)
                     .ConfigureAwait(false);
 
-                var payload = EnsureSuccess(response, item => item.Response, $"GetLinkedProfiles:{membershipId}");
+                var payload = EnsureSuccess(response, item => item.Response, operation);
                 return SelectLinkedProfileMembershipType(payload.Profiles, membershipId);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -895,15 +1052,73 @@ public partial class CrawlerService
         DateTimeOffset completedAt,
         long instanceId)
     {
-        if (!accumulator.FirstRaidCompletions.TryGetValue(normalizedRaidName, out var existing)
-            || completedAt < existing.CompletedAt)
+        SetFirstRaidCompletion(accumulator.RaidCompletions, normalizedRaidName, completedAt, instanceId);
+    }
+
+    private static RaidFirstCompletion? SetFirstRaidCompletion(
+        IDictionary<string, ActivityCompletionAggregate> completions,
+        string normalizedRaidName,
+        DateTimeOffset completedAt,
+        long instanceId)
+    {
+        if (!completions.TryGetValue(normalizedRaidName, out var completion))
         {
-            accumulator.FirstRaidCompletions[normalizedRaidName] = new RaidFirstCompletion
-            {
-                CompletedAt = completedAt,
-                InstanceId = instanceId
-            };
+            completion = new ActivityCompletionAggregate(normalizedRaidName);
+            completions[normalizedRaidName] = completion;
         }
+
+        return SetFirstRaidCompletion(completion, completedAt, instanceId);
+    }
+
+    private static RaidFirstCompletion? SetFirstRaidCompletion(
+        IDictionary<string, ActivityCompletionAccumulator> completions,
+        string normalizedRaidName,
+        DateTimeOffset completedAt,
+        long instanceId)
+    {
+        if (!completions.TryGetValue(normalizedRaidName, out var completion))
+        {
+            completion = new ActivityCompletionAccumulator();
+            completions[normalizedRaidName] = completion;
+        }
+
+        return SetFirstRaidCompletion(completion, completedAt, instanceId);
+    }
+
+    private static RaidFirstCompletion? SetFirstRaidCompletion(
+        ActivityCompletionAggregate completion,
+        DateTimeOffset completedAt,
+        long instanceId)
+    {
+        if (completion.FirstCompletion is not null && completedAt >= completion.FirstCompletion.CompletedAt)
+        {
+            return null;
+        }
+
+        completion.FirstCompletion = new RaidFirstCompletion
+        {
+            CompletedAt = completedAt,
+            InstanceId = instanceId
+        };
+        return completion.FirstCompletion;
+    }
+
+    private static RaidFirstCompletion? SetFirstRaidCompletion(
+        ActivityCompletionAccumulator completion,
+        DateTimeOffset completedAt,
+        long instanceId)
+    {
+        if (completion.FirstCompletion is not null && completedAt >= completion.FirstCompletion.CompletedAt)
+        {
+            return null;
+        }
+
+        completion.FirstCompletion = new RaidFirstCompletion
+        {
+            CompletedAt = completedAt,
+            InstanceId = instanceId
+        };
+        return completion.FirstCompletion;
     }
 
     private static List<ActivityCompletionSummary> ToCompletionSummaries(
@@ -915,6 +1130,7 @@ public partial class CrawlerService
             {
                 ActivityName = completion.ActivityName,
                 CompletionCount = completion.CompletionCount,
+                FirstCompletion = completion.FirstCompletion,
                 ContestClear = completion.ContestClear,
                 FlawlessClear = completion.FlawlessClear,
                 SoloClear = completion.SoloClear,
@@ -958,10 +1174,17 @@ public partial class CrawlerService
 
     private static IEnumerable<CompletedRaidActivity> ToCompletedRaidActivities(CrawlAccumulator accumulator)
     {
-        return accumulator.FirstRaidCompletions.Select(item => new CompletedRaidActivity(
+        return GetFirstRaidCompletions(accumulator).Select(item => new CompletedRaidActivity(
             item.Key,
             item.Value.CompletedAt,
             item.Value.InstanceId));
+    }
+
+    private static IEnumerable<KeyValuePair<string, RaidFirstCompletion>> GetFirstRaidCompletions(CrawlAccumulator accumulator)
+    {
+        return accumulator.RaidCompletions
+            .Where(item => item.Value.FirstCompletion is not null)
+            .Select(item => new KeyValuePair<string, RaidFirstCompletion>(item.Key, item.Value.FirstCompletion!));
     }
 
     private static IEnumerable<CompletedRaidActivity> ToCompletedRaidActivities(

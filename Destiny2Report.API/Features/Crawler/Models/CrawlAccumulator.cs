@@ -17,7 +17,6 @@ public record CrawlAccumulator
     public Dictionary<string, long> PatrolSecondsByPlanet { get; set; } = new();
     public Dictionary<string, ActivityCompletionAccumulator> RaidCompletions { get; set; } = new();
     public Dictionary<string, ActivityCompletionAccumulator> DungeonCompletions { get; set; } = new();
-    public Dictionary<string, RaidFirstCompletion> FirstRaidCompletions { get; set; } = new();
     public Dictionary<string, EncounterAccumulator> EncounterCounts { get; set; } = new();
     public byte[] EncounteredPlayerKeys { get; set; } = [];
     public int UniquePlayersPlayedWith { get; set; }

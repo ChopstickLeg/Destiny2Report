@@ -19,7 +19,9 @@ public partial class CrawlerService
         int ownerMembershipType,
         long ownerMembershipId,
         IReadOnlyDictionary<(int MembershipType, long MembershipId), int> encounterCounts,
+        IReadOnlyCollection<(int MembershipType, long MembershipId)> playersToQueue,
         int uniquePlayersPlayedWith,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         var encounters = mongoDatabase.GetCollection<PlayerEncounterAggregate>("player_encounters");
@@ -55,7 +57,7 @@ public partial class CrawlerService
             }
         }
 
-        await QueueDiscoveredPlayersAsync(encounterCounts.Keys, cancellationToken).ConfigureAwait(false);
+        await QueueDiscoveredPlayersAsync(playersToQueue, progress, cancellationToken).ConfigureAwait(false);
 
         var mostPlayedWith = await encounters
             .Find(ownerFilter)
@@ -90,13 +92,21 @@ public partial class CrawlerService
 
     private async Task QueueDiscoveredPlayersAsync(
         IEnumerable<(int MembershipType, long MembershipId)> players,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         const int batchSize = 500;
         var now = DateTimeOffset.UtcNow;
         var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var validPlayers = players.Where(player => player.MembershipType > 0 && player.MembershipId > 0).ToArray();
+        var queued = 0L;
 
-        foreach (var batch in players.Where(player => player.MembershipType > 0 && player.MembershipId > 0).Chunk(batchSize))
+        if (progress is not null)
+        {
+            await progress.StartPhaseAsync("discovered-players", "Queueing discovered players", validPlayers.Length, cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var batch in validPlayers.Chunk(batchSize))
         {
             var writes = batch
                 .Select(player =>
@@ -122,6 +132,12 @@ public partial class CrawlerService
             {
                 await reports.BulkWriteAsync(writes, new BulkWriteOptions { IsOrdered = false }, cancellationToken)
                     .ConfigureAwait(false);
+            }
+
+            queued += batch.Length;
+            if (progress is not null)
+            {
+                await progress.ReportAsync(queued, validPlayers.Length, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -159,8 +175,13 @@ public partial class CrawlerService
     {
         try
         {
-            var response = await bungieClient.Destiny2_GetProfileAsync(ProfileCharactersComponents, player.EncounteredMembershipId, player.EncounteredMembershipType, cancellationToken).ConfigureAwait(false);
-            var characterResponse = EnsureSuccess(response, profile => profile.Response, $"Destiny2_GetProfileAsync:Characters:{player.EncounteredMembershipType}:{player.EncounteredMembershipId}");
+            var operation = $"Destiny2_GetProfileAsync:Characters:{player.EncounteredMembershipType}:{player.EncounteredMembershipId}";
+            var response = await ExecuteBungieOperationAsync(
+                    operation,
+                    () => bungieClient.Destiny2_GetProfileAsync(ProfileCharactersComponents, player.EncounteredMembershipId, player.EncounteredMembershipType, cancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var characterResponse = EnsureSuccess(response, profile => profile.Response, operation);
             var lastPlayedCharacter = characterResponse?.Characters?.Data?.Values.OrderByDescending(c => c.DateLastPlayed).FirstOrDefault();
             return new ReportPlayer
             {

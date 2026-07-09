@@ -1,4 +1,5 @@
 using System.Reflection;
+using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Features.Reports;
 using Microsoft.AspNetCore.Mvc;
 using StackExchange.Redis;
@@ -127,13 +128,43 @@ public sealed class ReportHandlersBusinessLogicTests
         Assert.Equal(updatedAt, result.UpdatedAtUtc);
     }
 
+    [Theory]
+    [InlineData(DestinyReport.CrawlStateCompleted, true)]
+    [InlineData(DestinyReport.CrawlStateFailed, true)]
+    [InlineData(DestinyReport.CrawlStatePrivate, true)]
+    [InlineData(DestinyReport.CrawlStateQueued, false)]
+    [InlineData(DestinyReport.CrawlStateRunning, false)]
+    public void IsTerminalCrawlState_treats_private_as_terminal(string status, bool expected)
+    {
+        var result = (bool)Invoke("IsTerminalCrawlState", status)!;
+
+        Assert.Equal(expected, result);
+    }
+
     private static object? Invoke(string methodName, params object?[] arguments)
     {
         var method = HandlerType
             .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
             .Where(method => method.Name == methodName)
-            .Single(method => method.GetParameters().Length == arguments.Length);
+            .Single(method =>
+            {
+                var parameters = method.GetParameters();
+                var requiredParameterCount = parameters.Count(parameter => !parameter.IsOptional);
 
-        return method.Invoke(null, arguments);
+                return requiredParameterCount <= arguments.Length && arguments.Length <= parameters.Length;
+            });
+
+        var parameters = method.GetParameters();
+        var invokeArguments = new object?[parameters.Length];
+        Array.Copy(arguments, invokeArguments, arguments.Length);
+        for (var index = arguments.Length; index < parameters.Length; index++)
+        {
+            invokeArguments[index] = parameters[index].DefaultValue;
+        }
+
+        var result = method.Invoke(null, invokeArguments);
+        Array.Copy(invokeArguments, arguments, arguments.Length);
+
+        return result;
     }
 }

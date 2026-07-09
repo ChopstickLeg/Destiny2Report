@@ -20,6 +20,7 @@ public partial class CrawlerService
     private sealed record ActivityCompletionAggregate(string ActivityName)
     {
         public int CompletionCount { get; set; }
+        public RaidFirstCompletion? FirstCompletion { get; set; }
         public bool ContestClear { get; set; }
         public bool FlawlessClear { get; set; }
         public bool SoloClear { get; set; }
@@ -57,24 +58,29 @@ public partial class CrawlerService
         {
             foreach (var activity in activities)
             {
-                var instanceId = activity.ActivityDetails.InstanceId;
-                if (instanceId <= 0)
-                {
-                    continue;
-                }
-
-                if (activity.Period > NewestActivityPeriod)
-                {
-                    NewestActivityPeriod = activity.Period;
-                }
-
-                _recentActivities.Add(new ActivityReference(instanceId, activity.Period));
+                AddFetched(activity);
             }
+        }
+
+        public void AddFetched(DestinyHistoricalStatsPeriodGroup activity)
+        {
+            var instanceId = activity.ActivityDetails.InstanceId;
+            if (instanceId <= 0)
+            {
+                return;
+            }
+
+            if (activity.Period > NewestActivityPeriod)
+            {
+                NewestActivityPeriod = activity.Period;
+            }
+
+            _recentActivities.Add(new ActivityReference(instanceId, activity.Period));
         }
     }
 
-    private sealed class PrivateProfileUnavailableException(string operation, BungieResponse response)
-        : InvalidOperationException($"{operation} failed because the Destiny profile is not public. Bungie error code {response.ErrorCode}: {response.Message}");
+    private sealed class PrivatePlayerUnavailableException(string operation, string resource, BungieResponse response)
+        : InvalidOperationException($"{operation} failed because the Destiny {resource} is not public. Bungie error code {response.ErrorCode}: {response.Message}");
 
     private sealed record WeaponDefinitionSummary(string Name, string IconUrl, string CategoryName, string CategoryKey);
 
@@ -229,6 +235,7 @@ public partial class CrawlerService
             item => new ActivityCompletionAggregate(item.Key)
             {
                 CompletionCount = item.Value.CompletionCount,
+                FirstCompletion = item.Value.FirstCompletion,
                 ContestClear = item.Value.ContestClear,
                 FlawlessClear = item.Value.FlawlessClear,
                 SoloClear = item.Value.SoloClear,
@@ -247,6 +254,7 @@ public partial class CrawlerService
             target[item.Key] = new ActivityCompletionAccumulator
             {
                 CompletionCount = item.Value.CompletionCount,
+                FirstCompletion = item.Value.FirstCompletion,
                 ContestClear = item.Value.ContestClear,
                 FlawlessClear = item.Value.FlawlessClear,
                 SoloClear = item.Value.SoloClear,

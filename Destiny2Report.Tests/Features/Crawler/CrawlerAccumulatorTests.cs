@@ -29,7 +29,8 @@ public sealed class CrawlerAccumulatorTests
             DateTimeOffset.Parse("2024-03-01T01:00:00Z"),
             30L);
 
-        var firstClear = Assert.Single(accumulator.FirstRaidCompletions).Value;
+        var firstClear = Assert.Single(accumulator.RaidCompletions).Value.FirstCompletion;
+        Assert.NotNull(firstClear);
         Assert.Equal(DateTimeOffset.Parse("2024-01-01T01:00:00Z"), firstClear.CompletedAt);
         Assert.Equal(10L, firstClear.InstanceId);
     }
@@ -39,12 +40,15 @@ public sealed class CrawlerAccumulatorTests
     {
         var accumulator = new CrawlAccumulator
         {
-            FirstRaidCompletions =
+            RaidCompletions =
             {
-                ["King's Fall"] = new RaidFirstCompletion
+                ["King's Fall"] = new ActivityCompletionAccumulator
                 {
-                    CompletedAt = DateTimeOffset.Parse("2024-01-02T01:00:00Z"),
-                    InstanceId = 99L
+                    FirstCompletion = new RaidFirstCompletion
+                    {
+                        CompletedAt = DateTimeOffset.Parse("2024-01-02T01:00:00Z"),
+                        InstanceId = 99L
+                    }
                 }
             }
         };

@@ -1,3 +1,5 @@
+using Destiny2Report.API.Features.Crawler;
+
 namespace Destiny2Report.API.Features.Reports;
 
 public sealed record ReportQueueStatusResponse(
@@ -8,4 +10,5 @@ public sealed record ReportQueueStatusResponse(
     string? Error,
     long? Position,
     long QueueLength,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    CrawlProgressSnapshot? Progress);

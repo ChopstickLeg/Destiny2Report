@@ -1,6 +1,7 @@
 using Destiny2Report.API.Bungie;
 using Destiny2Report.API.Features.Auth;
 using Destiny2Report.API.Features.Crawler;
+using Destiny2Report.API.Features.PlayerSearch;
 using Destiny2Report.API.Features.Reports;
 using Destiny2Report.API.Features.Status;
 using Destiny2Report.API.Mongo;
@@ -22,6 +23,8 @@ builder.Services.AddHttpClient<IBungieAuthService, BungieAuthService>(httpClient
 builder.Services.Configure<ContestModeOptions>(builder.Configuration.GetSection(ContestModeOptions.SectionName));
 builder.Services.Configure<ActivityTriumphRecordOptions>(builder.Configuration.GetSection(ActivityTriumphRecordOptions.SectionName));
 builder.Services.Configure<CrawlerOptions>(builder.Configuration.GetSection(CrawlerOptions.SectionName));
+builder.Services.AddSingleton<CrawlerPgcrThrottler>();
+builder.Services.AddSingleton<CrawlerSherpaHistoryThrottler>();
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = builder.Configuration.GetConnectionString("Redis")
@@ -89,6 +92,7 @@ var api = app.MapGroup("/api")
 
 api.MapStatusEndpoints();
 api.MapAuthEndpoints();
+api.MapPlayerSearchEndpoints();
 api.MapReportEndpoints();
 
 app.Run();

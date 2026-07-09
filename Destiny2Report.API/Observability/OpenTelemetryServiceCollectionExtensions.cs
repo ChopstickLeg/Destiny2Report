@@ -29,6 +29,7 @@ public static class OpenTelemetryServiceCollectionExtensions
                 serviceVersion: telemetryOptions.ServiceVersion,
                 serviceInstanceId: Environment.MachineName))
             .WithTracing(tracing => tracing
+                .SetSampler(CreateTraceSampler(telemetryOptions))
                 .AddSource(AppTelemetry.ActivitySourceName)
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
@@ -61,5 +62,15 @@ public static class OpenTelemetryServiceCollectionExtensions
             || telemetryOptions.Protocol.Equals("http/protobuf", StringComparison.OrdinalIgnoreCase)
             ? OtlpExportProtocol.HttpProtobuf
             : OtlpExportProtocol.Grpc;
+    }
+
+    private static Sampler CreateTraceSampler(TelemetryOptions telemetryOptions)
+    {
+        if (telemetryOptions.TraceSampleRatio is < 0 or > 1)
+        {
+            throw new InvalidOperationException($"{TelemetryOptions.SectionName}:{nameof(TelemetryOptions.TraceSampleRatio)} must be between 0 and 1.");
+        }
+
+        return new ParentBasedSampler(new TraceIdRatioBasedSampler(telemetryOptions.TraceSampleRatio));
     }
 }

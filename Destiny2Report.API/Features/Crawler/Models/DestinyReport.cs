@@ -11,6 +11,7 @@ public record DestinyReport
     public const string CrawlStateRunning = "running";
     public const string CrawlStateCompleted = "completed";
     public const string CrawlStateFailed = "failed";
+    public const string CrawlStatePrivate = "private";
 
     private List<PlayerEncounterReport> _mostPlayedWith = new();
     private List<EmblemReport> _mostUsedEmblems = new();

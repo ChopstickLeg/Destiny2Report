@@ -1,3 +1,5 @@
+using Destiny2Report.API.Features.Crawler;
+
 namespace Destiny2Report.API.Features.Reports;
 
 public sealed record ReportJobEvent(
@@ -6,4 +8,5 @@ public sealed record ReportJobEvent(
     string Status,
     string? StreamEntryId,
     string? Error,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    CrawlProgressSnapshot? Progress);

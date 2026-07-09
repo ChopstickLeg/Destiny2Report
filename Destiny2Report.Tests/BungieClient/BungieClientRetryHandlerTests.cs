@@ -49,6 +49,48 @@ public sealed class BungieClientRetryHandlerTests
         Assert.Equal(2, innerHandler.RequestCount);
     }
 
+
+    [Theory]
+    [InlineData(503)]
+    [InlineData(524)]
+    public async Task RetryableHttpStatusReturnsSuccessfulRetryResponse(int statusCode)
+    {
+        var innerHandler = new SequenceHandler(attempt => new HttpResponseMessage(
+            attempt == 1
+                ? (System.Net.HttpStatusCode)statusCode
+                : System.Net.HttpStatusCode.OK));
+        using var invoker = CreateInvoker(innerHandler);
+
+        using var response = await invoker.SendAsync(
+            new HttpRequestMessage(HttpMethod.Get, "https://www.bungie.net/Platform/Destiny2/Stats/PostGameCarnageReport/123/"),
+            CancellationToken.None);
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, innerHandler.RequestCount);
+    }
+
+    [Fact]
+    public async Task RequestTimeoutRetries()
+    {
+        var innerHandler = new AsyncSequenceHandler(attempt =>
+        {
+            if (attempt == 1)
+            {
+                throw new TaskCanceledException("The request timed out.");
+            }
+
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        });
+        using var invoker = CreateInvoker(innerHandler);
+
+        using var response = await invoker.SendAsync(
+            new HttpRequestMessage(HttpMethod.Get, "https://www.bungie.net/Platform/Destiny2/Stats/PostGameCarnageReport/123/"),
+            CancellationToken.None);
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, innerHandler.RequestCount);
+    }
+
     private static HttpMessageInvoker CreateInvoker(HttpMessageHandler innerHandler)
     {
         return new HttpMessageInvoker(new BungieClientRetryHandler
@@ -65,6 +107,17 @@ public sealed class BungieClientRetryHandlerTests
         {
             RequestCount++;
             return Task.FromResult(responseFactory(RequestCount));
+        }
+    }
+
+    private sealed class AsyncSequenceHandler(Func<int, Task<HttpResponseMessage>> responseFactory) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return responseFactory(RequestCount);
         }
     }
 }

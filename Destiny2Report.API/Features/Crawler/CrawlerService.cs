@@ -20,6 +20,8 @@ public partial class CrawlerService(
     IHttpClientFactory httpClientFactory,
     IOptions<ContestModeOptions> contestModeOptions,
     IOptions<ActivityTriumphRecordOptions> activityTriumphRecordOptions,
+    CrawlerPgcrThrottler pgcrThrottler,
+    CrawlerSherpaHistoryThrottler sherpaHistoryThrottler,
     IOptions<CrawlerOptions> crawlerOptions) : ICrawlerService
 {
     private const string BungieNetBaseUrl = "https://www.bungie.net";
@@ -29,7 +31,6 @@ public partial class CrawlerService(
     private const int ProfileRecordsComponent = 900;
     private const int MetricsComponent = 1100;
     private const int PageSize = 250;
-    private const int MaxConcurrentSherpaHistoryRequests = 8;
     private const int RecentActivityInstanceIdLimit = 5000;
     private const int AllMembershipTypes = 254;
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
@@ -152,10 +153,9 @@ public partial class CrawlerService(
     private readonly ContestModeLookup contestMode = ContestModeLookup.FromOptions(contestModeOptions.Value);
     private readonly ActivityTriumphRecordOptions activityTriumphRecords = activityTriumphRecordOptions.Value;
     private readonly CrawlerOptions crawler = crawlerOptions.Value;
-    private int MaxConcurrentPgcrRequests => Math.Max(1, crawler.MaxConcurrentPgcrRequests);
-    private int MaxBufferedPgcrs => Math.Max(1, crawler.MaxBufferedPgcrs ?? MaxConcurrentPgcrRequests * 2);
+    private static int MaxConcurrentDefinitionRequests => Math.Max(1, Math.Min(8, Environment.ProcessorCount));
 
-    public async Task CrawlAsync(int platformId, long playerMembershipId, CancellationToken cancellationToken)
+    public async Task CrawlAsync(int platformId, long playerMembershipId, ICrawlProgress? progress, CancellationToken cancellationToken)
     {
         using var activity = AppTelemetry.ActivitySource.StartActivity("crawler.player.crawl", ActivityKind.Internal);
         activity?.SetTag("destiny.membership_type_id", platformId);
@@ -173,12 +173,68 @@ public partial class CrawlerService(
                 & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
             var existingReportTask = reports.Find(filter).FirstOrDefaultAsync(cancellationToken);
             var existingAccumulatorTask = accumulators.Find(accumulatorFilter).FirstOrDefaultAsync(cancellationToken);
+
+            if (progress is not null)
+            {
+                await progress.StartPhaseAsync("manifest", "Loading manifest", cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
             var manifest = await GetManifestAsync(cancellationToken).ConfigureAwait(false);
 
-            var profileTask = bungieClient.Destiny2_GetProfileAsync(ProfileComponents, playerMembershipId, platformId, cancellationToken);
-            var accountStatsTask = bungieClient.Destiny2_GetHistoricalStatsForAccountAsync(playerMembershipId, AccountStatGroups, platformId, cancellationToken);
+            if (progress is not null)
+            {
+                await progress.StartPhaseAsync("profile", "Loading profile", total: 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
 
-            await Task.WhenAll(profileTask, accountStatsTask, existingReportTask, existingAccumulatorTask).ConfigureAwait(false);
+            var profileTask = ExecuteBungieOperationAsync(
+                $"GetProfile:{platformId}:{playerMembershipId}",
+                () => bungieClient.Destiny2_GetProfileAsync(ProfileComponents, playerMembershipId, platformId, cancellationToken),
+                cancellationToken);
+            var accountStatsTask = ExecuteBungieOperationAsync(
+                $"GetHistoricalStatsForAccount:{platformId}:{playerMembershipId}",
+                () => bungieClient.Destiny2_GetHistoricalStatsForAccountAsync(playerMembershipId, AccountStatGroups, platformId, cancellationToken),
+                cancellationToken);
+
+            try
+            {
+                await Task.WhenAll(profileTask, accountStatsTask, existingReportTask, existingAccumulatorTask).ConfigureAwait(false);
+            }
+            catch (Exception) when (IsNotFoundFault(profileTask))
+            {
+                await MarkPlayerNotFoundAsync(platformId, playerMembershipId, cancellationToken).ConfigureAwait(false);
+                activity?.SetStatus(ActivityStatusCode.Ok);
+                logger.LogInformation(
+                    "Marked Destiny report for membership {MembershipType}/{MembershipId} as failed because the initial GetProfile call returned not found.",
+                    platformId,
+                    playerMembershipId);
+                return;
+            }
+            catch (Exception ex) when (IsPrivateProfileFault(profileTask) || IsPrivateProfileFault(accountStatsTask) || IsPrivateProfileException(ex))
+            {
+                await MarkPlayerPrivateAsync(platformId, playerMembershipId, ex.Message, cancellationToken).ConfigureAwait(false);
+                activity?.SetStatus(ActivityStatusCode.Ok);
+                logger.LogInformation(
+                    "Marked Destiny report for membership {MembershipType}/{MembershipId} as private because an initial profile request returned a privacy restriction.",
+                    platformId,
+                    playerMembershipId);
+                return;
+            }
+
+            if (progress is not null)
+            {
+                await progress.CompletePhaseAsync(current: 2, total: 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
+            if (IsPrivateProfileResponse(profileTask.Result) || IsPrivateProfileResponse(accountStatsTask.Result))
+            {
+                await MarkPlayerPrivateAsync(platformId, playerMembershipId, "Destiny profile is not public.", cancellationToken).ConfigureAwait(false);
+                activity?.SetStatus(ActivityStatusCode.Ok);
+                logger.LogInformation(
+                    "Marked Destiny report for membership {MembershipType}/{MembershipId} as private because an initial profile response returned a privacy restriction.",
+                    platformId,
+                    playerMembershipId);
+                return;
+            }
 
             var profile = EnsureSuccess(profileTask.Result, response => response.Response, "GetProfile");
             var accountStats = EnsureSuccess(accountStatsTask.Result, response => response.Response, "GetHistoricalStatsForAccount");
@@ -197,21 +253,24 @@ public partial class CrawlerService(
 
             var characterIds = historicalCharacters.Select(character => character.CharacterId).ToArray();
 
+            if (progress is not null)
+            {
+                await progress.StartPhaseAsync("character-stats", "Loading character stats", total: characterIds.Length * 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
             var historicalStatsTask = FetchModeStatsAsync(platformId, playerMembershipId, characterIds, cancellationToken);
             var weaponHistoryTask = FetchUniqueWeaponHistoryAsync(platformId, playerMembershipId, characterIds, cancellationToken);
 
             await Task.WhenAll(historicalStatsTask, weaponHistoryTask).ConfigureAwait(false);
 
+            if (progress is not null)
+            {
+                await progress.CompletePhaseAsync(current: characterIds.Length * 2, total: characterIds.Length * 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
             var recentActivityIds = requiresFullCrawl
                 ? new HashSet<long>()
                 : accumulator.RecentActivityInstanceIds.ToHashSet();
-            var activityHistoryBatches = FetchActivityHistoryBatchesAsync(
-                platformId,
-                playerMembershipId,
-                characterIds,
-                crawlAfter,
-                MaxBufferedPgcrs,
-                cancellationToken);
             var characterClassById = BuildCharacterClassMap(historicalCharacters, [], playerMembershipId, characterIds);
 
             var now = DateTimeOffset.UtcNow;
@@ -234,16 +293,46 @@ public partial class CrawlerService(
             ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById);
             ApplyProfileStats(report, profile, manifest);
             ApplyModeStats(report, historicalStatsTask.Result);
-            await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, activityHistoryBatches, recentActivityIds, characterClassById, manifest, requiresFullCrawl, cancellationToken).ConfigureAwait(false);
-            await ApplyWeaponStatsAsync(report, weaponHistoryTask.Result, manifest, cancellationToken).ConfigureAwait(false);
+            await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, characterIds, crawlAfter, recentActivityIds, characterClassById, manifest, requiresFullCrawl, progress, cancellationToken).ConfigureAwait(false);
+            if (progress is not null)
+            {
+                await progress.StartPhaseAsync("weapon-summary", "Building weapon summary", cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
+            await ApplyWeaponStatsAsync(report, weaponHistoryTask.Result, manifest, progress, cancellationToken).ConfigureAwait(false);
+            if (progress is not null)
+            {
+                await progress.StartPhaseAsync("triumphs", "Applying triumphs", cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
             ApplyTriumphSeals(report, profile, manifest);
             ApplyActivityTriumphRecords(report, profile);
+
+            if (progress is not null)
+            {
+                await progress.StartPhaseAsync("saving", "Saving report", total: 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
 
             await reports.ReplaceOneAsync(filter, report, new ReplaceOptions { IsUpsert = true }, cancellationToken)
                 .ConfigureAwait(false);
             await accumulators.ReplaceOneAsync(accumulatorFilter, accumulator, new ReplaceOptions { IsUpsert = true }, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (progress is not null)
+            {
+                await progress.CompletePhaseAsync(current: 2, total: 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
             activity?.SetStatus(ActivityStatusCode.Ok);
+        }
+        catch (Exception ex) when (IsPrivateProfileException(ex))
+        {
+            await MarkPlayerPrivateAsync(platformId, playerMembershipId, ex.Message, cancellationToken).ConfigureAwait(false);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            logger.LogInformation(
+                "Marked Destiny report for membership {MembershipType}/{MembershipId} as private because Bungie returned a privacy restriction.",
+                platformId,
+                playerMembershipId);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -251,4 +340,114 @@ public partial class CrawlerService(
             throw;
         }
     }
+
+    private async Task MarkPlayerNotFoundAsync(int platformId, long playerMembershipId, CancellationToken cancellationToken)
+    {
+        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
+        var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, platformId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
+        var accumulatorFilter = Builders<CrawlAccumulator>.Filter.Eq(item => item.PlatformId, platformId)
+            & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
+        var now = DateTimeOffset.UtcNow;
+        var report = new DestinyReport
+        {
+            PlatformId = platformId,
+            PlayerMembershipId = playerMembershipId,
+            CrawlState = DestinyReport.CrawlStateFailed,
+            QueuedInRedis = false,
+            LastCrawledAtUtc = now,
+            LeaseExpiresAtUtc = null,
+            LeaseOwner = "",
+            CrawlError = "Destiny account not found.",
+            NeedsFullRecrawl = false,
+            FullRecrawlReason = ""
+        };
+
+        await reports.ReplaceOneAsync(filter, report, new ReplaceOptions { IsUpsert = true }, cancellationToken)
+            .ConfigureAwait(false);
+        await accumulators.DeleteOneAsync(accumulatorFilter, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task MarkPlayerPrivateAsync(int platformId, long playerMembershipId, string error, CancellationToken cancellationToken)
+    {
+        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
+        var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, platformId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
+        var accumulatorFilter = Builders<CrawlAccumulator>.Filter.Eq(item => item.PlatformId, platformId)
+            & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, playerMembershipId);
+        var now = DateTimeOffset.UtcNow;
+        var report = new DestinyReport
+        {
+            PlatformId = platformId,
+            PlayerMembershipId = playerMembershipId,
+            CrawlState = DestinyReport.CrawlStatePrivate,
+            QueuedInRedis = false,
+            LastCrawledAtUtc = now,
+            LeaseExpiresAtUtc = null,
+            LeaseOwner = "",
+            CrawlError = string.IsNullOrWhiteSpace(error) ? "Destiny profile is not public." : error,
+            NeedsFullRecrawl = false,
+            FullRecrawlReason = ""
+        };
+
+        await reports.ReplaceOneAsync(filter, report, new ReplaceOptions { IsUpsert = true }, cancellationToken)
+            .ConfigureAwait(false);
+        await accumulators.DeleteOneAsync(accumulatorFilter, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool IsNotFoundFault(Task task)
+    {
+        return task.Exception?.Flatten().InnerExceptions.OfType<ApiException>().Any(exception => exception.IsNotFound()) == true;
+    }
+
+    private static bool IsPrivateProfileFault(Task task)
+    {
+        return task.Exception?.Flatten().InnerExceptions.Any(IsPrivateProfileException) == true;
+    }
+
+    private async Task<T> ExecuteBungieOperationAsync<T>(
+        string operation,
+        Func<Task<T>> request,
+        CancellationToken cancellationToken)
+    {
+        using var activity = AppTelemetry.ActivitySource.StartActivity("bungie.operation", ActivityKind.Client);
+        activity?.SetTag("bungie.operation", operation);
+
+        try
+        {
+            var response = await request().ConfigureAwait(false);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return response;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsTransportFailure(ex))
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("error.type", ex.GetType().FullName);
+            activity?.SetTag("error.message", ex.Message);
+
+            logger.LogWarning(
+                ex,
+                "Bungie operation {BungieOperation} failed before a Bungie API response was available.",
+                operation);
+
+            throw new BungieOperationException(operation, ex);
+        }
+    }
+
+    private static bool IsTransportFailure(Exception exception)
+    {
+        return exception is HttpRequestException
+            or OperationCanceledException
+            or TimeoutException;
+    }
+
+    private static bool IsBungieOperationFailure(Exception exception)
+    {
+        return exception is BungieOperationException;
+    }
+
+    private sealed class BungieOperationException(string operation, Exception innerException)
+        : Exception($"Bungie operation '{operation}' failed: {innerException.Message}", innerException);
 }

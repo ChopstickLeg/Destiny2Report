@@ -186,8 +186,9 @@ public static class ReportHandlers
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        var statusKey = CrawlerQueue.JobStatusKey(request.MembershipTypeId, request.MembershipId);
         await redisDatabase.HashSetAsync(
-                CrawlerQueue.JobStatusKey(request.MembershipTypeId, request.MembershipId),
+                statusKey,
                 [
                     new HashEntry("membershipTypeId", request.MembershipTypeId),
                     new HashEntry("membershipId", request.MembershipId),
@@ -195,9 +196,16 @@ public static class ReportHandlers
                     new HashEntry("status", DestinyReport.CrawlStateQueued),
                     new HashEntry("queuedAtUtc", queuedAtUtc.ToString("O")),
                     new HashEntry("updatedAtUtc", queuedAtUtc.ToString("O")),
-                    new HashEntry("error", "")
+                    new HashEntry("error", ""),
+                    new HashEntry("progressPhase", ""),
+                    new HashEntry("progressLabel", ""),
+                    new HashEntry("progressCurrent", ""),
+                    new HashEntry("progressTotal", ""),
+                    new HashEntry("progressStartedAtUtc", ""),
+                    new HashEntry("progressUpdatedAtUtc", "")
                 ])
             .ConfigureAwait(false);
+        await redisDatabase.KeyExpireAsync(statusKey, CrawlerQueue.ActiveJobStatusTtl).ConfigureAwait(false);
 
         await UpsertForegroundQueuedReportAsync(mongoDatabase, request.MembershipTypeId, request.MembershipId, queuedAtUtc, cancellationToken)
             .ConfigureAwait(false);
@@ -267,9 +275,9 @@ public static class ReportHandlers
         ReportQueueStatusResponse initialStatus,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        if (initialStatus.Status == DestinyReport.CrawlStateCompleted)
+        if (IsTerminalCrawlState(initialStatus.Status))
         {
-            yield return new SseItem<ReportQueueStatusResponse>(initialStatus, "completed");
+            yield return new SseItem<ReportQueueStatusResponse>(initialStatus, initialStatus.Status);
             yield break;
         }
 
@@ -299,11 +307,12 @@ public static class ReportHandlers
                             jobEvent.Error,
                             null,
                             0,
-                            jobEvent.UpdatedAtUtc);
+                            jobEvent.UpdatedAtUtc,
+                            jobEvent.Progress);
 
                         yield return new SseItem<ReportQueueStatusResponse>(eventStatus, jobEvent.Status);
 
-                        if (jobEvent.Status is DestinyReport.CrawlStateCompleted or DestinyReport.CrawlStateFailed)
+                        if (IsTerminalCrawlState(jobEvent.Status))
                         {
                             yield break;
                         }
@@ -331,7 +340,7 @@ public static class ReportHandlers
                 {
                     yield return new SseItem<ReportQueueStatusResponse>(status, status.Status);
 
-                    if (status.Status is DestinyReport.CrawlStateCompleted or DestinyReport.CrawlStateFailed)
+                    if (IsTerminalCrawlState(status.Status))
                     {
                         yield break;
                     }
@@ -352,7 +361,7 @@ public static class ReportHandlers
 
                 var reportStatus = BuildQueueStatusFromReport(report);
                 yield return new SseItem<ReportQueueStatusResponse>(reportStatus, reportStatus.Status);
-                if (reportStatus.Status is DestinyReport.CrawlStateCompleted or DestinyReport.CrawlStateFailed)
+                if (IsTerminalCrawlState(reportStatus.Status))
                 {
                     yield break;
                 }
@@ -398,6 +407,7 @@ public static class ReportHandlers
             DestinyReport.CrawlStateQueued => report.QueuedAtUtc ?? report.CrawledAt,
             DestinyReport.CrawlStateRunning => report.StartedAtUtc ?? report.QueuedAtUtc ?? report.CrawledAt,
             DestinyReport.CrawlStateFailed => report.StartedAtUtc ?? report.QueuedAtUtc ?? report.CrawledAt,
+            DestinyReport.CrawlStatePrivate => report.LastCrawledAtUtc ?? report.StartedAtUtc ?? report.QueuedAtUtc ?? report.CrawledAt,
             _ => report.LastCrawledAtUtc ?? report.CrawledAt
         };
 
@@ -488,6 +498,7 @@ public static class ReportHandlers
         fields.TryGetValue("streamEntryId", out var streamEntryId);
         fields.TryGetValue("error", out var error);
         fields.TryGetValue("updatedAtUtc", out var updatedAtUtcValue);
+        var progress = BuildProgressSnapshot(fields);
 
         var updatedAtUtc = DateTimeOffset.TryParse(updatedAtUtcValue, out var parsedUpdatedAtUtc)
             ? parsedUpdatedAtUtc
@@ -501,7 +512,8 @@ public static class ReportHandlers
             string.IsNullOrWhiteSpace(error) ? null : error,
             null,
             0,
-            updatedAtUtc);
+            updatedAtUtc,
+            progress);
     }
 
     private static ReportQueueStatusResponse BuildQueueStatus(
@@ -522,7 +534,8 @@ public static class ReportHandlers
         string? error,
         long? position,
         long queueLength,
-        DateTimeOffset updatedAtUtc)
+        DateTimeOffset updatedAtUtc,
+        CrawlProgressSnapshot? progress = null)
     {
         return new ReportQueueStatusResponse(
             MembershipTypeId: membershipTypeId,
@@ -532,7 +545,41 @@ public static class ReportHandlers
             Error: error,
             Position: position,
             QueueLength: queueLength,
-            UpdatedAtUtc: updatedAtUtc);
+            UpdatedAtUtc: updatedAtUtc,
+            Progress: progress);
+    }
+
+    private static bool IsTerminalCrawlState(string status)
+    {
+        return status is DestinyReport.CrawlStateCompleted
+            or DestinyReport.CrawlStateFailed
+            or DestinyReport.CrawlStatePrivate;
+    }
+
+
+    private static CrawlProgressSnapshot? BuildProgressSnapshot(IReadOnlyDictionary<string, string> fields)
+    {
+        if (!fields.TryGetValue("progressPhase", out var phase) || string.IsNullOrWhiteSpace(phase))
+        {
+            return null;
+        }
+
+        fields.TryGetValue("progressLabel", out var label);
+        fields.TryGetValue("progressCurrent", out var currentValue);
+        fields.TryGetValue("progressTotal", out var totalValue);
+        fields.TryGetValue("progressStartedAtUtc", out var startedAtUtcValue);
+        fields.TryGetValue("progressUpdatedAtUtc", out var progressUpdatedAtUtcValue);
+
+        var current = long.TryParse(currentValue, out var parsedCurrent) ? parsedCurrent : (long?)null;
+        var total = long.TryParse(totalValue, out var parsedTotal) ? parsedTotal : (long?)null;
+        var startedAtUtc = DateTimeOffset.TryParse(startedAtUtcValue, out var parsedStartedAtUtc)
+            ? parsedStartedAtUtc
+            : DateTimeOffset.UtcNow;
+        var updatedAtUtc = DateTimeOffset.TryParse(progressUpdatedAtUtcValue, out var parsedProgressUpdatedAtUtc)
+            ? parsedProgressUpdatedAtUtc
+            : startedAtUtc;
+
+        return new CrawlProgressSnapshot(phase, label ?? phase, current, total, startedAtUtc, updatedAtUtc);
     }
 
     private static string QueueStatusLocation(int membershipTypeId, long membershipId)
@@ -561,7 +608,7 @@ public static class ReportHandlers
         {
         }
 
-        jobEvent = new ReportJobEvent(0, 0, "", null, null, DateTimeOffset.MinValue);
+        jobEvent = new ReportJobEvent(0, 0, "", null, null, DateTimeOffset.MinValue, null);
         return false;
     }
 

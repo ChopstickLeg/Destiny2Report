@@ -22,15 +22,23 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
         for (var attempt = 0; ; attempt++)
         {
             var retryRequest = CloneRequest(request, requestContent);
-            var response = await base.SendAsync(retryRequest, cancellationToken).ConfigureAwait(false);
-            var errorCode = await TryReadBungieErrorCodeAsync(response, cancellationToken).ConfigureAwait(false);
+            HttpResponseMessage? response = null;
 
-            if (!ShouldRetry(request, response, errorCode, attempt))
+            try
             {
-                return response;
+                response = await base.SendAsync(retryRequest, cancellationToken).ConfigureAwait(false);
+                var errorCode = await TryReadBungieErrorCodeAsync(response, cancellationToken).ConfigureAwait(false);
+
+                if (!ShouldRetry(request, response, errorCode, attempt))
+                {
+                    return response;
+                }
+            }
+            catch (Exception ex) when (ShouldRetryException(ex, cancellationToken, attempt))
+            {
             }
 
-            response.Dispose();
+            response?.Dispose();
             retryRequest.Dispose();
             await Task.Delay(GetRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
         }
@@ -115,13 +123,26 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
             or BungieTimeoutErrorCode;
     }
 
+    private static bool IsRetryableHttpStatusCode(System.Net.HttpStatusCode statusCode)
+    {
+        return statusCode is System.Net.HttpStatusCode.ServiceUnavailable
+            or (System.Net.HttpStatusCode)524;
+    }
+
+    private static bool ShouldRetryException(Exception exception, CancellationToken cancellationToken, int attempt)
+    {
+        return !cancellationToken.IsCancellationRequested
+            && attempt < MaxRetryAttempts
+            && exception is HttpRequestException or TaskCanceledException or TimeoutException;
+    }
+
     private static bool ShouldRetry(
         HttpRequestMessage request,
         HttpResponseMessage response,
         int? errorCode,
         int attempt)
     {
-        if (IsRetryableBungieErrorCode(errorCode))
+        if (IsRetryableBungieErrorCode(errorCode) || IsRetryableHttpStatusCode(response.StatusCode))
         {
             return attempt < MaxRetryAttempts;
         }

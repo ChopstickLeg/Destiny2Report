@@ -69,7 +69,7 @@ public partial class CrawlerService
 
     private static bool IsPrivateProfileException(Exception exception)
     {
-        if (exception is PrivateProfileUnavailableException)
+        if (exception is PrivatePlayerUnavailableException)
         {
             return true;
         }

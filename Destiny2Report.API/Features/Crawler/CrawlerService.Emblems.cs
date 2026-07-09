@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -48,20 +49,42 @@ public partial class CrawlerService
     private async Task<Dictionary<long, EmblemDefinitionSummary>> GetEmblemDefinitionSummariesAsync(
         DestinyManifest manifest,
         IEnumerable<long> emblemHashes,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
-        var tasks = emblemHashes
-            .Distinct()
-            .Select(async emblemHash => new
-            {
-                EmblemHash = emblemHash,
-                Summary = await GetEmblemDefinitionSummaryAsync(manifest, emblemHash, cancellationToken).ConfigureAwait(false)
-            });
+        var distinctHashes = emblemHashes.Distinct().ToArray();
+        var summaries = new ConcurrentDictionary<long, EmblemDefinitionSummary>();
+        var processed = 0L;
 
-        var summaries = await Task.WhenAll(tasks).ConfigureAwait(false);
-        return summaries
-            .Where(item => item.Summary is not null)
-            .ToDictionary(item => item.EmblemHash, item => item.Summary!);
+        if (progress is not null)
+        {
+            await progress.StartPhaseAsync("emblem-definitions", "Resolving emblem definitions", distinctHashes.Length, cancellationToken).ConfigureAwait(false);
+        }
+
+        await Parallel.ForEachAsync(
+                distinctHashes,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = MaxConcurrentDefinitionRequests,
+                    CancellationToken = cancellationToken
+                },
+                async (emblemHash, ct) =>
+                {
+                    var summary = await GetEmblemDefinitionSummaryAsync(manifest, emblemHash, ct).ConfigureAwait(false);
+                    if (summary is not null)
+                    {
+                        summaries[emblemHash] = summary;
+                    }
+
+                    var current = Interlocked.Increment(ref processed);
+                    if (progress is not null)
+                    {
+                        await progress.ReportAsync(current, distinctHashes.Length, ct).ConfigureAwait(false);
+                    }
+                })
+            .ConfigureAwait(false);
+
+        return summaries.ToDictionary(item => item.Key, item => item.Value);
     }
 
     private async Task ApplyEmblemAggregateDeltasAsync(
@@ -71,6 +94,7 @@ public partial class CrawlerService
         IReadOnlyDictionary<long, long> emblemSecondsDeltas,
         DestinyManifest manifest,
         bool resetEmblemAggregates,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         var emblems = mongoDatabase.GetCollection<EmblemAggregate>("emblem_aggregates");
@@ -85,6 +109,7 @@ public partial class CrawlerService
         var emblemDefinitions = await GetEmblemDefinitionSummariesAsync(
                 manifest,
                 emblemSecondsDeltas.Keys.Where(hash => hash > 0),
+                progress,
                 cancellationToken)
             .ConfigureAwait(false);
 

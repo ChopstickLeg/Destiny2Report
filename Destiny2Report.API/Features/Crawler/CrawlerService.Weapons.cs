@@ -70,26 +70,49 @@ public partial class CrawlerService
     private async Task<Dictionary<long, WeaponDefinitionSummary>> GetInventoryItemSummariesAsync(
         DestinyManifest manifest,
         IEnumerable<long> itemHashes,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
-        var tasks = itemHashes
-            .Distinct()
-            .Select(async itemHash => new
-            {
-                ItemHash = itemHash,
-                Summary = await GetInventoryItemSummaryAsync(manifest, itemHash, cancellationToken).ConfigureAwait(false)
-            });
+        var distinctHashes = itemHashes.Distinct().ToArray();
+        var summaries = new ConcurrentDictionary<long, WeaponDefinitionSummary>();
+        var processed = 0L;
 
-        var summaries = await Task.WhenAll(tasks).ConfigureAwait(false);
-        return summaries
-            .Where(item => item.Summary is not null)
-            .ToDictionary(item => item.ItemHash, item => item.Summary!);
+        if (progress is not null)
+        {
+            await progress.StartPhaseAsync("weapon-definitions", "Resolving weapon definitions", distinctHashes.Length, cancellationToken).ConfigureAwait(false);
+        }
+
+        await Parallel.ForEachAsync(
+                distinctHashes,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = MaxConcurrentDefinitionRequests,
+                    CancellationToken = cancellationToken
+                },
+                async (itemHash, ct) =>
+                {
+                    var summary = await GetInventoryItemSummaryAsync(manifest, itemHash, ct).ConfigureAwait(false);
+                    if (summary is not null)
+                    {
+                        summaries[itemHash] = summary;
+                    }
+
+                    var current = Interlocked.Increment(ref processed);
+                    if (progress is not null)
+                    {
+                        await progress.ReportAsync(current, distinctHashes.Length, ct).ConfigureAwait(false);
+                    }
+                })
+            .ConfigureAwait(false);
+
+        return summaries.ToDictionary(item => item.Key, item => item.Value);
     }
 
     private async Task ApplyWeaponStatsAsync(
         DestinyReport report,
         IReadOnlyDictionary<long, ICollection<DestinyHistoricalWeaponStats>> uniqueWeaponHistory,
         ManifestContext manifest,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         var fallback = uniqueWeaponHistory.Values
@@ -104,7 +127,7 @@ public partial class CrawlerService
 
         if (report.PvETopWeapons.Count == 0)
         {
-            var weaponDefinitions = await GetInventoryItemSummariesAsync(manifest.Manifest, TopWeaponHashes(fallback), cancellationToken)
+            var weaponDefinitions = await GetInventoryItemSummariesAsync(manifest.Manifest, TopWeaponHashes(fallback), progress, cancellationToken)
                 .ConfigureAwait(false);
 
             report.PvETopWeapons = BuildWeaponReports(fallback, weaponDefinitions);
@@ -120,6 +143,7 @@ public partial class CrawlerService
         IReadOnlyDictionary<long, WeaponKillDelta> gambitWeaponDeltas,
         DestinyManifest manifest,
         bool resetWeaponAggregates,
+        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
@@ -141,7 +165,7 @@ public partial class CrawlerService
             .Where(hash => hash > 0)
             .Distinct()
             .ToArray();
-        var weaponDefinitions = await GetInventoryItemSummariesAsync(manifest, allHashes, cancellationToken)
+        var weaponDefinitions = await GetInventoryItemSummariesAsync(manifest, allHashes, progress, cancellationToken)
             .ConfigureAwait(false);
 
         var writes = BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "PvE", pveWeaponDeltas, weaponDefinitions)

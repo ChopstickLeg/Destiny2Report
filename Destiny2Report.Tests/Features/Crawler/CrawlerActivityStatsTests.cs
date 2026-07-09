@@ -63,6 +63,7 @@ public sealed class CrawlerActivityStatsTests
             {
                 Assert.Equal("King's Fall", summary.ActivityName);
                 Assert.Equal(2, summary.CompletionCount);
+                Assert.Null(summary.FirstCompletion);
                 Assert.True(summary.ContestClear);
                 Assert.True(summary.FlawlessClear);
                 Assert.False(summary.SoloClear);

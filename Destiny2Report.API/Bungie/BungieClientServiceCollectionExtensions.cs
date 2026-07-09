@@ -22,6 +22,8 @@ public static class BungieClientServiceCollectionExtensions
             {
                 var options = serviceProvider.GetRequiredService<IOptions<BungieClientOptions>>().Value;
 
+                httpClient.Timeout = TimeSpan.FromSeconds(Math.Max(1, options.RequestTimeoutSeconds));
+
                 if (!string.IsNullOrWhiteSpace(options.ApiKey))
                 {
                     httpClient.DefaultRequestHeaders.Add("X-API-Key", options.ApiKey);

@@ -11,4 +11,6 @@ public sealed class TelemetryOptions
     public string Endpoint { get; set; } = "http://localhost:4317";
 
     public string Protocol { get; set; } = "Grpc";
+
+    public double TraceSampleRatio { get; set; } = 0.1;
 }
