@@ -234,13 +234,27 @@ public static class ReportHandlers
         await UpsertForegroundQueuedReportAsync(mongoDatabase, request.MembershipTypeId, request.MembershipId, queuedAtUtc, cancellationToken)
             .ConfigureAwait(false);
 
-        var admission = await EnqueueCrawlAtomicallyAsync(
-                redisDatabase,
-                request.MembershipTypeId,
-                request.MembershipId,
-                queuedAtUtc,
-                cancellationToken)
-            .ConfigureAwait(false);
+        QueueAdmission admission;
+        try
+        {
+            admission = await EnqueueCrawlAtomicallyAsync(
+                    redisDatabase,
+                    request.MembershipTypeId,
+                    request.MembershipId,
+                    queuedAtUtc,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            await MarkReportAsBackgroundQueuedAsync(
+                    mongoDatabase,
+                    request.MembershipTypeId,
+                    request.MembershipId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            throw;
+        }
 
         var response = new ReportQueueResponse(
             JobId: admission.StreamEntryId,
@@ -462,6 +476,21 @@ public static class ReportHandlers
 
         await reports.UpdateOneAsync(filter, update, new UpdateOptions { IsUpsert = true }, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private static async Task MarkReportAsBackgroundQueuedAsync(
+        IMongoDatabase mongoDatabase,
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, membershipTypeId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, membershipId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.CrawlState, DestinyReport.CrawlStateQueued);
+        var update = Builders<DestinyReport>.Update.Set(item => item.QueuedInRedis, false);
+
+        await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static ReportQueueStatusResponse BuildQueueStatusFromReport(DestinyReport report)

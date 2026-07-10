@@ -25,8 +25,8 @@ public partial class CrawlerService
                 },
                 new HybridCacheEntryOptions
                 {
-                    Expiration = ManifestTableCacheDuration,
-                    LocalCacheExpiration = ManifestTableCacheDuration
+                    Expiration = ManifestCacheDuration,
+                    LocalCacheExpiration = ManifestCacheDuration
                 },
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -47,8 +47,8 @@ public partial class CrawlerService
                 },
                 new HybridCacheEntryOptions
                 {
-                    Expiration = ManifestCacheDuration,
-                    LocalCacheExpiration = ManifestCacheDuration
+                    Expiration = ManifestTableCacheDuration,
+                    LocalCacheExpiration = ManifestTableCacheDuration
                 },
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);

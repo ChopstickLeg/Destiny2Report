@@ -181,6 +181,21 @@ public partial class CrawlerService
                     () => bungieClient.Destiny2_GetProfileAsync(ProfileCharactersComponents, player.EncounteredMembershipId, player.EncounteredMembershipType, cancellationToken),
                     cancellationToken)
                 .ConfigureAwait(false);
+
+            if (IsPrivateProfileResponse(response))
+            {
+                logger.LogDebug(
+                    "Skipping profile details for private encountered player {MembershipType}/{MembershipId}.",
+                    player.EncounteredMembershipType,
+                    player.EncounteredMembershipId);
+
+                return new ReportPlayer
+                {
+                    MembershipId = player.EncounteredMembershipId,
+                    MembershipType = player.EncounteredMembershipType
+                };
+            }
+
             var characterResponse = EnsureSuccess(response, profile => profile.Response, operation);
             var lastPlayedCharacter = characterResponse?.Characters?.Data?.Values.OrderByDescending(c => c.DateLastPlayed).FirstOrDefault();
             return new ReportPlayer
@@ -191,10 +206,10 @@ public partial class CrawlerService
                 EmblemUrl = BungieUrl(lastPlayedCharacter?.EmblemPath)
             };
         }
-        catch (ApiException ex) when (ex.IsNotFound())
+        catch (ApiException ex) when (ex.IsNotFound() || ex.IsPrivacyRestriction())
         {
             logger.LogDebug(
-                "Skipping profile details for missing encountered player {MembershipType}/{MembershipId}.",
+                "Skipping profile details for unavailable encountered player {MembershipType}/{MembershipId}.",
                 player.EncounteredMembershipType,
                 player.EncounteredMembershipId);
 
