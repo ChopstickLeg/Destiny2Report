@@ -1,12 +1,12 @@
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
 
@@ -203,6 +203,7 @@ public partial class CrawlerService
         var definitions = new Dictionary<long, WeaponDefinitionSummary>();
         using var stringReader = new StringReader(json);
         using var reader = new JsonTextReader(stringReader);
+        var serializer = JsonSerializer.CreateDefault();
 
         if (reader.Read() is false || reader.TokenType != JsonToken.StartObject)
         {
@@ -224,8 +225,8 @@ public partial class CrawlerService
                 continue;
             }
 
-            var definition = JObject.Load(reader);
-            if (definition["itemType"]?.Value<int>() == WeaponItemType)
+            var definition = serializer.Deserialize<ManifestInventoryItemDefinition>(reader);
+            if (definition?.ItemType == WeaponItemType)
             {
                 definitions[itemHash] = ToWeaponDefinitionSummary(definition, itemHash);
             }
@@ -576,32 +577,30 @@ public partial class CrawlerService
         return (categoryName, categoryKey);
     }
 
-    private static WeaponDefinitionSummary ToWeaponDefinitionSummary(JObject definition, long itemHash)
+    private static WeaponDefinitionSummary ToWeaponDefinitionSummary(ManifestInventoryItemDefinition definition, long itemHash)
     {
-        var displayProperties = definition["displayProperties"] as JObject;
-        var itemTypeDisplayName = definition["itemTypeDisplayName"]?.Value<string>();
+        var displayProperties = definition.DisplayProperties;
+        var itemTypeDisplayName = definition.ItemTypeDisplayName;
         var categoryName = string.IsNullOrWhiteSpace(itemTypeDisplayName)
-            ? WeaponSubTypeName(definition["itemSubType"])
+            ? WeaponSubTypeName(definition.ItemSubType)
             : itemTypeDisplayName;
         return new WeaponDefinitionSummary(
-            displayProperties?["name"]?.Value<string>() ?? ToUnsignedHashIdentifier(itemHash),
-            BungieUrl(displayProperties?["icon"]?.Value<string>()),
+            displayProperties?.Name ?? ToUnsignedHashIdentifier(itemHash),
+            BungieUrl(displayProperties?.Icon),
             categoryName,
             NormalizeWeaponKey(categoryName));
     }
 
     private static WeaponDefinitionSummary ToWeaponDefinitionSummary(DestinyDefinition definition)
     {
-        var displayProperties = TryGetJObject(definition.AdditionalProperties, "displayProperties");
-        var itemTypeDisplayName = definition.AdditionalProperties.TryGetValue("itemTypeDisplayName", out var itemTypeDisplayNameValue)
-            ? itemTypeDisplayNameValue?.ToString()
-            : null;
+        var displayProperties = GetDefinitionProperty<ManifestDisplayProperties>(definition.AdditionalProperties, "displayProperties");
+        var itemTypeDisplayName = GetDefinitionString(definition.AdditionalProperties, "itemTypeDisplayName");
         var categoryName = string.IsNullOrWhiteSpace(itemTypeDisplayName)
-            ? WeaponSubTypeName(definition.AdditionalProperties.TryGetValue("itemSubType", out var itemSubTypeValue) ? itemSubTypeValue : null)
+            ? WeaponSubTypeName(GetDefinitionInt32(definition.AdditionalProperties, "itemSubType"))
             : itemTypeDisplayName!;
         return new WeaponDefinitionSummary(
-            displayProperties?["name"]?.Value<string>() ?? ToUnsignedHashIdentifier(definition.Hash),
-            BungieUrl(displayProperties?["icon"]?.Value<string>()),
+            displayProperties?.Name ?? ToUnsignedHashIdentifier(definition.Hash),
+            BungieUrl(displayProperties?.Icon),
             categoryName,
             NormalizeWeaponKey(categoryName));
     }

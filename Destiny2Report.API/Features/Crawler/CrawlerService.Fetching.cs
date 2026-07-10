@@ -1,11 +1,11 @@
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
-using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
@@ -268,7 +268,7 @@ public partial class CrawlerService
     private async Task<IReadOnlyCollection<CompletedRaidActivity>?> FetchCompletedRaidHistoryAsync(
         int platformId,
         long playerMembershipId,
-        JObject activityDefinitions,
+        IReadOnlyDictionary<string, ManifestActivityDefinition> activityDefinitions,
         CancellationToken cancellationToken)
     {
         long[] characterIds;

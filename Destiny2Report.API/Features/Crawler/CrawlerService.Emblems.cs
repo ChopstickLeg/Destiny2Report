@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Microsoft.Extensions.Caching.Hybrid;
 using MongoDB.Driver;
-using Newtonsoft.Json.Linq;
 
 namespace Destiny2Report.API.Features.Crawler;
 
@@ -222,10 +222,10 @@ public partial class CrawlerService
 
     private static EmblemDefinitionSummary ToEmblemDefinitionSummary(DestinyDefinition definition)
     {
-        var displayProperties = TryGetJObject(definition.AdditionalProperties, "displayProperties");
+        var displayProperties = GetDefinitionProperty<ManifestDisplayProperties>(definition.AdditionalProperties, "displayProperties");
         return new EmblemDefinitionSummary(
-            displayProperties?["name"]?.Value<string>() ?? ToUnsignedHashIdentifier(definition.Hash),
-            BungieUrl(displayProperties?["icon"]?.Value<string>()),
-            BungieUrl(displayProperties?["secondaryIcon"]?.Value<string>()));
+            displayProperties?.Name ?? ToUnsignedHashIdentifier(definition.Hash),
+            BungieUrl(displayProperties?.Icon),
+            BungieUrl(displayProperties?.SecondaryIcon));
     }
 }

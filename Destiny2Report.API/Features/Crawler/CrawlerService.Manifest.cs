@@ -1,9 +1,11 @@
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
@@ -33,10 +35,11 @@ public partial class CrawlerService
         return new ManifestContext(manifest, this);
     }
 
-    private async Task<JObject> GetManifestTableAsync(DestinyManifest manifest, string tableName, CancellationToken cancellationToken)
+    private async Task<Dictionary<string, TDefinition>> GetManifestTableAsync<TDefinition>(DestinyManifest manifest, string tableName, CancellationToken cancellationToken)
     {
         var json = await GetManifestTableJsonAsync(manifest, tableName, cancellationToken).ConfigureAwait(false);
-        return JObject.Parse(json);
+        return JsonConvert.DeserializeObject<Dictionary<string, TDefinition>>(json)
+            ?? throw new JsonSerializationException($"The {tableName} manifest table was empty or invalid.");
     }
 
     private async Task<string> GetManifestTableJsonAsync(DestinyManifest manifest, string tableName, CancellationToken cancellationToken)
@@ -93,32 +96,33 @@ public partial class CrawlerService
         return exception.IsPrivacyRestriction();
     }
 
-    private static JObject? GetDefinition(JObject table, long hash)
+    private static TDefinition? GetDefinition<TDefinition>(IReadOnlyDictionary<string, TDefinition> table, long hash)
     {
-        if (table[hash.ToString()] is JObject definition)
+        return TryGetHashValue(table, hash, out TDefinition? definition) ? definition : default;
+    }
+
+    private static bool TryGetHashValue<T>(
+        IReadOnlyDictionary<string, T> values,
+        long hash,
+        out T? value)
+    {
+        if (values.TryGetValue(hash.ToString(), out value))
         {
-            return definition;
+            return true;
         }
 
         if (hash is >= int.MinValue and <= int.MaxValue)
         {
-            var unsignedHash = unchecked((uint)(int)hash).ToString();
-            if (table[unsignedHash] is JObject unsignedDefinition)
-            {
-                return unsignedDefinition;
-            }
+            return values.TryGetValue(unchecked((uint)(int)hash).ToString(), out value);
         }
 
         if (hash is > int.MaxValue and <= uint.MaxValue)
         {
-            var signedHash = unchecked((int)(uint)hash).ToString();
-            if (table[signedHash] is JObject signedDefinition)
-            {
-                return signedDefinition;
-            }
+            return values.TryGetValue(unchecked((int)(uint)hash).ToString(), out value);
         }
 
-        return null;
+        value = default;
+        return false;
     }
 
     private static bool TryGetHashValue<T>(
@@ -145,14 +149,25 @@ public partial class CrawlerService
         return false;
     }
 
-    private static JObject? TryGetJObject(IDictionary<string, object> source, string key)
+    private static T? GetDefinitionProperty<T>(IDictionary<string, object> source, string key)
+        where T : class
     {
         if (!source.TryGetValue(key, out var value) || value is null)
         {
             return null;
         }
 
-        return value as JObject ?? JObject.FromObject(value);
+        return value as T ?? (value as JToken)?.ToObject<T>();
+    }
+
+    private static string? GetDefinitionString(IDictionary<string, object> source, string key)
+    {
+        return source.TryGetValue(key, out var value) ? value?.ToString() : null;
+    }
+
+    private static int GetDefinitionInt32(IDictionary<string, object> source, string key)
+    {
+        return source.TryGetValue(key, out var value) && int.TryParse(value?.ToString(), out var result) ? result : 0;
     }
 
     private static string BungieUrl(string? path)
