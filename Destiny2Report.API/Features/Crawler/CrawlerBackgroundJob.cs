@@ -262,12 +262,12 @@ public class CrawlerBackgroundJob : BackgroundService
             & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false);
         var expiredLeaseFilter = Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateRunning)
             & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false)
-            & Builders<DestinyReport>.Filter.Lt(report => report.LeaseExpiresAtUtc, now);
+            & Builders<DestinyReport>.Filter.Lt(report => report.LeaseExpiresAtUtc, now.UtcDateTime);
         var filter = queuedFilter | expiredLeaseFilter;
         var update = Builders<DestinyReport>.Update
             .Set(report => report.CrawlState, DestinyReport.CrawlStateRunning)
-            .Set(report => report.StartedAtUtc, now)
-            .Set(report => report.LeaseExpiresAtUtc, now.Add(BackgroundJobLeaseDuration))
+            .Set(report => report.StartedAtUtc, now.UtcDateTime)
+            .Set(report => report.LeaseExpiresAtUtc, now.Add(BackgroundJobLeaseDuration).UtcDateTime)
             .Set(report => report.LeaseOwner, _consumerName)
             .Set(report => report.CrawlError, "");
         var options = new FindOneAndUpdateOptions<DestinyReport>
@@ -407,7 +407,7 @@ public class CrawlerBackgroundJob : BackgroundService
             & Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateRunning)
             & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false)
             & Builders<DestinyReport>.Filter.Eq(report => report.LeaseOwner, _consumerName);
-        var update = Builders<DestinyReport>.Update.Set(report => report.LeaseExpiresAtUtc, now.Add(BackgroundJobLeaseDuration));
+        var update = Builders<DestinyReport>.Update.Set(report => report.LeaseExpiresAtUtc, now.Add(BackgroundJobLeaseDuration).UtcDateTime);
         var result = await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
@@ -432,7 +432,7 @@ public class CrawlerBackgroundJob : BackgroundService
 
         if (crawlState == DestinyReport.CrawlStateRunning)
         {
-            update = update.Set(report => report.StartedAtUtc, DateTimeOffset.UtcNow);
+            update = update.Set(report => report.StartedAtUtc, DateTime.UtcNow);
         }
         else
         {

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Observability;
@@ -36,24 +35,31 @@ public partial class CrawlerService
 
     private async Task<JObject> GetManifestTableAsync(DestinyManifest manifest, string tableName, CancellationToken cancellationToken)
     {
+        var json = await GetManifestTableJsonAsync(manifest, tableName, cancellationToken).ConfigureAwait(false);
+        return JObject.Parse(json);
+    }
+
+    private async Task<string> GetManifestTableJsonAsync(DestinyManifest manifest, string tableName, CancellationToken cancellationToken)
+    {
         var path = manifest.JsonWorldComponentContentPaths["en"][tableName];
         var cacheKey = $"bungie:destiny2:manifest:{manifest.Version}:{tableName}";
-        var json = await cache.GetOrCreateAsync(
+        return await cache.GetOrCreateAsync(
                 cacheKey,
                 async ct =>
                 {
                     var httpClient = httpClientFactory.CreateClient();
                     return await httpClient.GetStringAsync(new Uri($"{BungieNetBaseUrl}{path}"), ct).ConfigureAwait(false);
                 },
-                new HybridCacheEntryOptions
-                {
-                    Expiration = ManifestTableCacheDuration,
-                    LocalCacheExpiration = ManifestTableCacheDuration
-                },
+                    new HybridCacheEntryOptions
+                    {
+                        Expiration = ManifestTableCacheDuration,
+                        // The inventory table is very large; the compact weapon cache retains only the fields we need.
+                        LocalCacheExpiration = tableName == InventoryItemDefinitionType
+                            ? TimeSpan.FromMinutes(1)
+                            : ManifestTableCacheDuration
+                    },
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
-
-        return JObject.Parse(json);
     }
 
     private static T EnsureSuccess<TResponse, T>(TResponse response, Func<TResponse, T> getPayload, string operation)

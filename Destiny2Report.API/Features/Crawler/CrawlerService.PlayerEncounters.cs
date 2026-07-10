@@ -14,6 +14,23 @@ namespace Destiny2Report.API.Features.Crawler;
 
 public partial class CrawlerService
 {
+    private async Task<Dictionary<(int MembershipType, long MembershipId), int>> LoadPlayerEncounterCountsAsync(
+        int ownerMembershipType,
+        long ownerMembershipId,
+        CancellationToken cancellationToken)
+    {
+        var encounters = mongoDatabase.GetCollection<PlayerEncounterAggregate>("player_encounters");
+        var ownerFilter = Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.OwnerMembershipType, ownerMembershipType)
+            & Builders<PlayerEncounterAggregate>.Filter.Eq(encounter => encounter.OwnerMembershipId, ownerMembershipId)
+            & Builders<PlayerEncounterAggregate>.Filter.Gt(encounter => encounter.EncounteredMembershipType, 0)
+            & Builders<PlayerEncounterAggregate>.Filter.Gt(encounter => encounter.EncounteredMembershipId, 0);
+
+        var persistedEncounters = await encounters.Find(ownerFilter).ToListAsync(cancellationToken).ConfigureAwait(false);
+        return persistedEncounters.ToDictionary(
+            encounter => (encounter.EncounteredMembershipType, encounter.EncounteredMembershipId),
+            encounter => encounter.Count);
+    }
+
     private async Task ApplyPlayerEncounterCountsAsync(
         DestinyReport report,
         int ownerMembershipType,
@@ -118,7 +135,7 @@ public partial class CrawlerService
                         .SetOnInsert(report => report.PlayerMembershipId, player.MembershipId)
                         .SetOnInsert(report => report.CrawlState, DestinyReport.CrawlStateQueued)
                         .SetOnInsert(report => report.QueuedInRedis, false)
-                        .SetOnInsert(report => report.QueuedAtUtc, now)
+                        .SetOnInsert(report => report.QueuedAtUtc, now.UtcDateTime)
                         .SetOnInsert(report => report.CrawlError, "");
 
                     return (WriteModel<DestinyReport>)new UpdateOneModel<DestinyReport>(filter, update)

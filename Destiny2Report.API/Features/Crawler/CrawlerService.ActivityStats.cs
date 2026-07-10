@@ -93,8 +93,9 @@ public partial class CrawlerService
         ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
-        var playerEncounterCounts = accumulator.EncounterCounts.Values
-            .ToDictionary(item => (item.MembershipType, item.MembershipId), item => item.Count);
+        var playerEncounterCounts = resetDerivedAggregates
+            ? new Dictionary<(int MembershipType, long MembershipId), int>()
+            : await LoadPlayerEncounterCountsAsync(platformId, playerMembershipId, cancellationToken).ConfigureAwait(false);
         var pveWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
         var pvpWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
         var gambitWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
@@ -264,14 +265,6 @@ public partial class CrawlerService
         SaveCompletionAggregates(accumulator.RaidCompletions, raidCompletions);
         SaveCompletionAggregates(accumulator.DungeonCompletions, dungeonCompletions);
         accumulator.PlayersSherpaed = new Dictionary<string, int>(playersSherpaed, StringComparer.OrdinalIgnoreCase);
-        accumulator.EncounterCounts = persistedPlayerEncounterCounts.ToDictionary(
-            item => PlayerKey(item.Key.MembershipType, item.Key.MembershipId),
-            item => new EncounterAccumulator
-            {
-                MembershipType = item.Key.MembershipType,
-                MembershipId = item.Key.MembershipId,
-                Count = item.Value
-            });
         SaveEncounteredPlayerKeys(accumulator, encounteredPlayerKeys);
 
         report.PatrolTimeByPlanet = accumulator.PatrolSecondsByPlanet.ToDictionary(
@@ -303,15 +296,12 @@ public partial class CrawlerService
         }
 
         await ApplyWeaponAggregateDeltasAsync(
-                report,
                 platformId,
                 playerMembershipId,
                 pveWeaponDeltas,
                 pvpWeaponDeltas,
                 gambitWeaponDeltas,
-                manifest.Manifest,
                 resetDerivedAggregates,
-                progress,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -421,7 +411,7 @@ public partial class CrawlerService
                     .First();
                 var firstCompletionRecord = new RaidFirstCompletion
                 {
-                    CompletedAt = firstCompletion.CompletedAt,
+                    CompletedAt = firstCompletion.CompletedAt.UtcDateTime,
                     InstanceId = firstCompletion.InstanceId
                 };
 
@@ -1120,14 +1110,14 @@ public partial class CrawlerService
         DateTimeOffset completedAt,
         long instanceId)
     {
-        if (completion.FirstCompletion is not null && completedAt >= completion.FirstCompletion.CompletedAt)
+        if (completion.FirstCompletion is not null && completedAt.UtcDateTime >= completion.FirstCompletion.CompletedAt)
         {
             return null;
         }
 
         completion.FirstCompletion = new RaidFirstCompletion
         {
-            CompletedAt = completedAt,
+            CompletedAt = completedAt.UtcDateTime,
             InstanceId = instanceId
         };
         return completion.FirstCompletion;
@@ -1138,14 +1128,14 @@ public partial class CrawlerService
         DateTimeOffset completedAt,
         long instanceId)
     {
-        if (completion.FirstCompletion is not null && completedAt >= completion.FirstCompletion.CompletedAt)
+        if (completion.FirstCompletion is not null && completedAt.UtcDateTime >= completion.FirstCompletion.CompletedAt)
         {
             return null;
         }
 
         completion.FirstCompletion = new RaidFirstCompletion
         {
-            CompletedAt = completedAt,
+            CompletedAt = completedAt.UtcDateTime,
             InstanceId = instanceId
         };
         return completion.FirstCompletion;

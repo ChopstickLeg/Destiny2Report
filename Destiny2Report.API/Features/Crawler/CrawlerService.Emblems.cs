@@ -106,14 +106,7 @@ public partial class CrawlerService
             await emblems.DeleteManyAsync(ownerFilter, cancellationToken).ConfigureAwait(false);
         }
 
-        var emblemDefinitions = await GetEmblemDefinitionSummariesAsync(
-                manifest,
-                emblemSecondsDeltas.Keys.Where(hash => hash > 0),
-                progress,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        var writes = BuildEmblemAggregateWrites(ownerMembershipType, ownerMembershipId, emblemSecondsDeltas, emblemDefinitions)
+        var writes = BuildEmblemAggregateWrites(ownerMembershipType, ownerMembershipId, emblemSecondsDeltas)
             .ToArray();
 
         if (writes.Length > 0)
@@ -121,26 +114,21 @@ public partial class CrawlerService
             await emblems.BulkWriteAsync(writes, new BulkWriteOptions { IsOrdered = false }, cancellationToken).ConfigureAwait(false);
         }
 
-        report.MostUsedEmblems = await GetTopEmblemReportsAsync(emblems, ownerFilter, cancellationToken).ConfigureAwait(false);
+        report.MostUsedEmblems = await GetTopEmblemReportsAsync(emblems, ownerFilter, manifest, cancellationToken).ConfigureAwait(false);
     }
 
     private static IEnumerable<WriteModel<EmblemAggregate>> BuildEmblemAggregateWrites(
         int ownerMembershipType,
         long ownerMembershipId,
-        IReadOnlyDictionary<long, long> emblemSecondsDeltas,
-        IReadOnlyDictionary<long, EmblemDefinitionSummary> emblemDefinitions)
+        IReadOnlyDictionary<long, long> emblemSecondsDeltas)
     {
         return emblemSecondsDeltas
             .Where(item => item.Key > 0 && item.Value > 0)
             .Select(item =>
             {
-                emblemDefinitions.TryGetValue(item.Key, out var definition);
                 return new
                 {
                     EmblemHash = item.Key,
-                    EmblemName = definition?.Name ?? SyntheticEmblemName(item.Key),
-                    IconUrl = definition?.IconUrl ?? "",
-                    BackgroundUrl = definition?.BackgroundUrl ?? "",
                     Seconds = item.Value
                 };
             })
@@ -153,9 +141,6 @@ public partial class CrawlerService
                     .SetOnInsert(emblem => emblem.OwnerMembershipType, ownerMembershipType)
                     .SetOnInsert(emblem => emblem.OwnerMembershipId, ownerMembershipId)
                     .SetOnInsert(emblem => emblem.EmblemHash, item.EmblemHash)
-                    .Set(emblem => emblem.EmblemName, item.EmblemName)
-                    .Set(emblem => emblem.IconUrl, item.IconUrl)
-                    .Set(emblem => emblem.BackgroundUrl, item.BackgroundUrl)
                     .Inc(emblem => emblem.TotalSeconds, item.Seconds);
 
                 return new UpdateOneModel<EmblemAggregate>(filter, update)
@@ -165,9 +150,10 @@ public partial class CrawlerService
             });
     }
 
-    private static async Task<List<EmblemReport>> GetTopEmblemReportsAsync(
+    private async Task<List<EmblemReport>> GetTopEmblemReportsAsync(
         IMongoCollection<EmblemAggregate> emblems,
         FilterDefinition<EmblemAggregate> ownerFilter,
+        DestinyManifest manifest,
         CancellationToken cancellationToken)
     {
         var topEmblems = await emblems
@@ -177,13 +163,23 @@ public partial class CrawlerService
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return topEmblems
-            .Select(emblem => new EmblemReport
+        var definitions = await GetEmblemDefinitionSummariesAsync(
+                manifest,
+                topEmblems.Select(emblem => emblem.EmblemHash),
+                progress: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return topEmblems.Select(emblem =>
             {
-                Name = emblem.EmblemName,
-                IconUrl = emblem.IconUrl,
-                BackgroundUrl = emblem.BackgroundUrl,
-                TotalPlaytime = TimeSpan.FromSeconds(emblem.TotalSeconds)
+                definitions.TryGetValue(emblem.EmblemHash, out var definition);
+                return new EmblemReport
+                {
+                    Name = definition?.Name ?? SyntheticEmblemName(emblem.EmblemHash),
+                    IconUrl = definition?.IconUrl ?? "",
+                    BackgroundUrl = definition?.BackgroundUrl ?? "",
+                    TotalPlaytime = TimeSpan.FromSeconds(emblem.TotalSeconds)
+                };
             })
             .ToList();
     }

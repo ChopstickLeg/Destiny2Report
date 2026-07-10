@@ -73,6 +73,42 @@ public sealed class CrawlerWeaponTests
     }
 
     [Fact]
+    public void AddWeapons_adds_unaccounted_pgcr_kills_as_unknown()
+    {
+        var weapons = NewWeaponDeltaDictionary();
+        var entry = BungieFixture.Entry(
+            4611686018463095984,
+            values: BungieFixture.Stats(("kills", 20)),
+            extended: new Extended
+            {
+                Weapons = [BungieFixture.Weapon(100, ("uniqueWeaponKills", 7))],
+                Values = BungieFixture.Stats(("weaponKillsGrenade", 5), ("weaponKillsMelee", 3))
+            });
+
+        CrawlerReflection.Invoke("AddWeapons", weapons, new[] { entry });
+
+        Assert.Equal(5, IntProperty(weapons[-4L]!, "UnknownKills"));
+        Assert.Equal(20, weapons.Values.Cast<object>().Sum(TotalKills));
+    }
+
+    [Fact]
+    public void AddWeapons_does_not_add_unknown_kills_when_extended_data_exceeds_pgcr_kills()
+    {
+        var weapons = NewWeaponDeltaDictionary();
+        var entry = BungieFixture.Entry(
+            4611686018463095984,
+            values: BungieFixture.Stats(("kills", 4)),
+            extended: new Extended
+            {
+                Weapons = [BungieFixture.Weapon(100, ("uniqueWeaponKills", 5))]
+            });
+
+        CrawlerReflection.Invoke("AddWeapons", weapons, new[] { entry });
+
+        Assert.False(weapons.Contains(-4L));
+    }
+
+    [Fact]
     public void GetWeaponDeltasForClassAndMode_keeps_weapon_kills_in_their_class_and_specific_activity_mode()
     {
         var deltaType = CrawlerReflection.NestedType("WeaponKillDelta");

@@ -27,8 +27,9 @@ builder.Services.AddSingleton<CrawlerPgcrThrottler>();
 builder.Services.AddSingleton<CrawlerSherpaHistoryThrottler>();
 builder.Services.AddStackExchangeRedisCache(options =>
 {
-    options.Configuration = builder.Configuration.GetConnectionString("Redis")
+    var connectionString = builder.Configuration.GetConnectionString("Redis")
         ?? throw new InvalidOperationException("ConnectionStrings:Redis is required.");
+    options.ConfigurationOptions = CreateRedisConfigurationOptions(connectionString);
     options.InstanceName = "Destiny2Report:";
 });
 builder.Services.AddHybridCache(options =>
@@ -44,10 +45,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     var connectionString = builder.Configuration.GetConnectionString("Redis")
         ?? throw new InvalidOperationException("ConnectionStrings:Redis is required.");
 
-    var options = ConfigurationOptions.Parse(connectionString);
-    options.AbortOnConnectFail = false;
-
-    return ConnectionMultiplexer.Connect(options);
+    return ConnectionMultiplexer.Connect(CreateRedisConfigurationOptions(connectionString));
 });
 
 builder.Services.AddRateLimiter(options =>
@@ -84,6 +82,11 @@ if (!app.Environment.IsProduction())
 }
 
 await app.EnsureMongoIndexesAsync();
+using (var scope = app.Services.CreateScope())
+{
+    var crawlerService = scope.ServiceProvider.GetRequiredService<ICrawlerService>();
+    await crawlerService.WarmReportReadModelsAsync(CancellationToken.None);
+}
 
 app.UseRateLimiter();
 
@@ -96,3 +99,12 @@ api.MapPlayerSearchEndpoints();
 api.MapReportEndpoints();
 
 app.Run();
+
+static ConfigurationOptions CreateRedisConfigurationOptions(string connectionString)
+{
+    var options = ConfigurationOptions.Parse(connectionString);
+    options.AbortOnConnectFail = false;
+    options.AsyncTimeout = 60_000;
+    options.SyncTimeout = 60_000;
+    return options;
+}

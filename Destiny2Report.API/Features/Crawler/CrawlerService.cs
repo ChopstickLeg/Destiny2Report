@@ -255,23 +255,22 @@ public partial class CrawlerService(
                 : existingAccumulator!;
             var crawlAfter = requiresFullCrawl
                 ? (DateTimeOffset?)null
-                : accumulator.NewestActivityPeriod.Subtract(IncrementalCrawlOverlap);
+                : new DateTimeOffset(accumulator.NewestActivityPeriod, TimeSpan.Zero).Subtract(IncrementalCrawlOverlap);
 
             var characterIds = historicalCharacters.Select(character => character.CharacterId).ToArray();
 
             if (progress is not null)
             {
-                await progress.StartPhaseAsync("character-stats", "Loading character stats", total: characterIds.Length * 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await progress.StartPhaseAsync("character-stats", "Loading character stats", total: characterIds.Length, cancellationToken: cancellationToken).ConfigureAwait(false);
             }
 
             var historicalStatsTask = FetchModeStatsAsync(platformId, playerMembershipId, characterIds, cancellationToken);
-            var weaponHistoryTask = FetchUniqueWeaponHistoryAsync(platformId, playerMembershipId, characterIds, cancellationToken);
 
-            await Task.WhenAll(historicalStatsTask, weaponHistoryTask).ConfigureAwait(false);
+            await historicalStatsTask.ConfigureAwait(false);
 
             if (progress is not null)
             {
-                await progress.CompletePhaseAsync(current: characterIds.Length * 2, total: characterIds.Length * 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await progress.CompletePhaseAsync(current: characterIds.Length, total: characterIds.Length, cancellationToken: cancellationToken).ConfigureAwait(false);
             }
 
             var recentActivityIds = requiresFullCrawl
@@ -288,7 +287,7 @@ public partial class CrawlerService(
                 QueuedInRedis = false,
                 QueuedAtUtc = existingReport?.QueuedAtUtc,
                 StartedAtUtc = existingReport?.StartedAtUtc,
-                LastCrawledAtUtc = now,
+                LastCrawledAtUtc = now.UtcDateTime,
                 LeaseExpiresAtUtc = null,
                 LeaseOwner = "",
                 CrawlError = "",
@@ -300,12 +299,6 @@ public partial class CrawlerService(
             ApplyProfileStats(report, profile, manifest);
             ApplyModeStats(report, historicalStatsTask.Result);
             await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, characterIds, crawlAfter, recentActivityIds, characterClassById, manifest, requiresFullCrawl, progress, cancellationToken).ConfigureAwait(false);
-            if (progress is not null)
-            {
-                await progress.StartPhaseAsync("weapon-summary", "Building weapon summary", cancellationToken: cancellationToken).ConfigureAwait(false);
-            }
-
-            await ApplyWeaponStatsAsync(report, weaponHistoryTask.Result, manifest, progress, cancellationToken).ConfigureAwait(false);
             if (progress is not null)
             {
                 await progress.StartPhaseAsync("triumphs", "Applying triumphs", cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -362,7 +355,7 @@ public partial class CrawlerService(
             PlayerMembershipId = playerMembershipId,
             CrawlState = DestinyReport.CrawlStateFailed,
             QueuedInRedis = false,
-            LastCrawledAtUtc = now,
+            LastCrawledAtUtc = now.UtcDateTime,
             LeaseExpiresAtUtc = null,
             LeaseOwner = "",
             CrawlError = "Destiny account not found.",
@@ -390,7 +383,7 @@ public partial class CrawlerService(
             PlayerMembershipId = playerMembershipId,
             CrawlState = DestinyReport.CrawlStatePrivate,
             QueuedInRedis = false,
-            LastCrawledAtUtc = now,
+            LastCrawledAtUtc = now.UtcDateTime,
             LeaseExpiresAtUtc = null,
             LeaseOwner = "",
             CrawlError = string.IsNullOrWhiteSpace(error) ? "Destiny profile is not public." : error,

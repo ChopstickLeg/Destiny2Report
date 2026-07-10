@@ -93,7 +93,8 @@ public partial class CrawlerService
         public int GrenadeKills { get; set; }
         public int MeleeKills { get; set; }
         public int SuperKills { get; set; }
-        public int TotalKills => UniqueWeaponKills + WeaponKills + GrenadeKills + MeleeKills + SuperKills;
+        public int UnknownKills { get; set; }
+        public int TotalKills => UniqueWeaponKills + WeaponKills + GrenadeKills + MeleeKills + SuperKills + UnknownKills;
 
         public void Add(WeaponKillDelta delta)
         {
@@ -102,6 +103,7 @@ public partial class CrawlerService
             GrenadeKills += delta.GrenadeKills;
             MeleeKills += delta.MeleeKills;
             SuperKills += delta.SuperKills;
+            UnknownKills += delta.UnknownKills;
         }
     }
 
@@ -121,7 +123,7 @@ public partial class CrawlerService
         IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> fetchedActivities,
         IEnumerable<long> processedActivityIds)
     {
-        accumulator.LastSuccessfulCrawlAt = DateTimeOffset.UtcNow;
+        accumulator.LastSuccessfulCrawlAt = DateTime.UtcNow;
         accumulator.NeedsFullRecrawl = false;
         accumulator.FullRecrawlReason = "";
 
@@ -130,7 +132,7 @@ public partial class CrawlerService
             .FirstOrDefault();
         if (newestFetchedActivity is not null && newestFetchedActivity.Period > accumulator.NewestActivityPeriod)
         {
-            accumulator.NewestActivityPeriod = newestFetchedActivity.Period;
+            accumulator.NewestActivityPeriod = newestFetchedActivity.Period.UtcDateTime;
         }
 
         accumulator.RecentActivityInstanceIds = fetchedActivities
@@ -149,13 +151,13 @@ public partial class CrawlerService
         ActivityCrawlState crawlState,
         IEnumerable<long> processedActivityIds)
     {
-        accumulator.LastSuccessfulCrawlAt = DateTimeOffset.UtcNow;
+        accumulator.LastSuccessfulCrawlAt = DateTime.UtcNow;
         accumulator.NeedsFullRecrawl = false;
         accumulator.FullRecrawlReason = "";
 
         if (crawlState.NewestActivityPeriod > accumulator.NewestActivityPeriod)
         {
-            accumulator.NewestActivityPeriod = crawlState.NewestActivityPeriod;
+            accumulator.NewestActivityPeriod = crawlState.NewestActivityPeriod.UtcDateTime;
         }
 
         accumulator.RecentActivityInstanceIds = crawlState.RecentActivities
@@ -166,11 +168,6 @@ public partial class CrawlerService
             .Distinct()
             .Take(RecentActivityInstanceIdLimit)
             .ToList();
-    }
-
-    private static string PlayerKey(int membershipType, long membershipId)
-    {
-        return $"{membershipType}:{membershipId}";
     }
 
     private static HashSet<(int MembershipType, long MembershipId)> ReadEncounteredPlayerKeys(CrawlAccumulator accumulator)
