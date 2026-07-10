@@ -12,13 +12,10 @@
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
             <PrivateAssets>all</PrivateAssets>
         </PackageReference>
-        <PackageReference Include="System.Threading.RateLimiting" Version="10.0.0" />
+        <PackageReference Include="System.Threading.RateLimiting" Version="10.0.9" />
     </ItemGroup>
 
-    <Target
-        Name="GenerateOpenApiClient"
-        BeforeTargets="BeforeBuild"
-        Condition="'$(DesignTimeBuild)' != 'true' And '$(SkipGenerateOpenApiClient)' != 'true'">
+    <Target Name="GenerateOpenApiClient" BeforeTargets="BeforeBuild" Condition="'$(DesignTimeBuild)' != 'true' And '$(SkipGenerateOpenApiClient)' != 'true'">
         <Exec Command="$(NSwagExe_Net100) run nswag.json" />
     </Target>
 </Project>

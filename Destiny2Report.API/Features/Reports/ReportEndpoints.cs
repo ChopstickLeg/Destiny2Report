@@ -9,14 +9,22 @@ public static class ReportEndpoints
         var reports = api.MapGroup("/reports")
             .WithTags("Reports");
 
-        reports.MapGet("/{membershipId:long}/summary", ReportHandlers.GetSummary)
-            .WithName("GetReportSummary")
-            .WithSummary("Example read endpoint for a public Destiny report summary.");
+        reports.MapGet("/{membershipTypeId:int}/{membershipId:long}", ReportHandlers.GetReport)
+            .WithName("GetReport")
+            .WithSummary("Returns a crawled Destiny player report from MongoDB.");
+
+        reports.MapGet("/{membershipTypeId:int}/{membershipId:long}/weapons/{activityMode}", ReportHandlers.GetWeapons)
+            .WithName("GetReportWeapons")
+            .WithSummary("Returns weapon and ability kill aggregates grouped by the requested activity bucket and its specific Destiny activity modes.");
 
         reports.MapPost("/queue", ReportHandlers.QueueCrawl)
             .WithName("QueueReportCrawl")
             .WithSummary("Queues a Destiny player report crawl.")
             .RequireRateLimiting(RateLimitPolicies.PublicWrite);
+
+        reports.MapGet("/{membershipTypeId:int}/{membershipId:long}/queue", ReportHandlers.StreamQueuePosition)
+            .WithName("StreamReportQueuePosition")
+            .WithSummary("Streams a queued Destiny report crawl position until the report is available.");
 
         return api;
     }

@@ -4,9 +4,12 @@ public static class BungieClientHandlers
 {
     public static HttpMessageHandler CreateRateLimitedHandler(BungieClientRateLimitOptions? options = null)
     {
-        return new BungieClientRateLimitingHandler(options)
+        return new BungieClientRetryHandler
         {
-            InnerHandler = CreateRedirectHandler()
+            InnerHandler = new BungieClientRateLimitingHandler(options)
+            {
+                InnerHandler = CreateRedirectHandler()
+            }
         };
     }
 
