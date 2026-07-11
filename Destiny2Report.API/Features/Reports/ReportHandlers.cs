@@ -108,7 +108,7 @@ public static class ReportHandlers
         int membershipTypeId,
         long membershipId,
         WeaponActivityMode activityMode,
-        IMongoDatabase mongoDatabase,
+        ICrawlerService crawlerService,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
@@ -116,122 +116,77 @@ public static class ReportHandlers
             return TypedResults.BadRequest(problemDetails);
         }
 
-        var storedActivityMode = ToStoredActivityMode(activityMode);
-        var categories = mongoDatabase.GetCollection<WeaponCategoryAggregate>("weapon_category_aggregates");
-        var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
-        var categoryFilter = Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipType, membershipTypeId)
-            & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipId, membershipId)
-            & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.ActivityMode, storedActivityMode);
-        var weaponFilter = Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipType, membershipTypeId)
-            & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipId, membershipId)
-            & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, storedActivityMode);
-
-        var categoryAggregates = await categories
-            .Find(categoryFilter)
-            .SortByDescending(category => category.Kills)
-            .ToListAsync(cancellationToken)
+        var response = await crawlerService
+            .GetWeaponActivityModeReportAsync(membershipTypeId, membershipId, activityMode, cancellationToken)
             .ConfigureAwait(false);
 
-        if (categoryAggregates.Count == 0)
-        {
-            return TypedResults.NotFound();
-        }
-
-        var weaponAggregates = await weapons
-            .Find(weaponFilter)
-            .SortBy(weapon => weapon.CategoryKey)
-            .ThenByDescending(weapon => weapon.Kills)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-        var weaponsByClassModeAndCategory = weaponAggregates
-            .GroupBy(weapon => (weapon.ClassName, weapon.SpecificActivityMode, weapon.CategoryKey))
-            .ToDictionary(group => group.Key, group => (IReadOnlyCollection<WeaponAggregate>)group.ToList());
-        var response = new WeaponActivityModeAggregateReport
-        {
-            ActivityMode = storedActivityMode,
-            Classes = categoryAggregates
-                .GroupBy(category => string.IsNullOrWhiteSpace(category.ClassName) ? "Unknown" : category.ClassName)
-                .OrderByDescending(group => group.Sum(category => category.Kills))
-                .Select(classGroup => new WeaponClassAggregateReport
-                {
-                    ClassName = classGroup.Key,
-                    Modes = classGroup
-                        .GroupBy(category => category.SpecificActivityMode)
-                        .OrderByDescending(group => group.Sum(category => category.Kills))
-                        .Select(modeGroup => new WeaponModeAggregateReport
-                        {
-                            SpecificActivityMode = CrawlerService.GetSpecificActivityModeName(modeGroup.Key),
-                            Categories = modeGroup
-                                .OrderByDescending(category => category.Kills)
-                                .Select(category => new WeaponCategoryAggregateReport
-                                {
-                                    OwnerMembershipType = category.OwnerMembershipType,
-                                    OwnerMembershipId = category.OwnerMembershipId,
-                                    ActivityMode = category.ActivityMode,
-                                    ClassName = classGroup.Key,
-                                    SpecificActivityMode = CrawlerService.GetSpecificActivityModeName(category.SpecificActivityMode),
-                                    CategoryKey = category.CategoryKey,
-                                    CategoryName = category.CategoryName,
-                                    Kills = category.Kills,
-                                    Weapons = weaponsByClassModeAndCategory.GetValueOrDefault((category.ClassName, category.SpecificActivityMode, category.CategoryKey)) ?? []
-                                })
-                                .ToList()
-                        })
-                        .ToList()
-                })
-                .ToList()
-        };
-
-        return TypedResults.Ok(response);
+        return response is null ? TypedResults.NotFound() : TypedResults.Ok(response);
     }
 
-    public static async Task<Results<Accepted<ReportQueueResponse>, BadRequest<ProblemDetails>>> QueueCrawl(
-        ReportQueueRequest request,
+    public static async Task<Results<Accepted<IReadOnlyList<ReportQueueResponse>>, BadRequest<ProblemDetails>>> QueueCrawl(
+        IReadOnlyList<ReportQueueRequest> requests,
         IConnectionMultiplexer redis,
         IMongoDatabase mongoDatabase,
         CancellationToken cancellationToken)
     {
-        if (!TryValidateMembership(request.MembershipTypeId, request.MembershipId, out var problemDetails))
+        if (!TryValidateQueueRequests(requests, out var memberships, out var problemDetails))
         {
             return TypedResults.BadRequest(problemDetails);
         }
 
-        System.Diagnostics.Activity.Current?.SetTag("destiny.membership_type_id", request.MembershipTypeId);
-        System.Diagnostics.Activity.Current?.SetTag("destiny.membership_id", request.MembershipId);
+        System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", memberships.Count);
 
-        var queuedAtUtc = DateTimeOffset.UtcNow;
         var redisDatabase = redis.GetDatabase();
-        var existingStatus = await GetStoredQueueStatusAsync(redisDatabase, request.MembershipTypeId, request.MembershipId)
+        var responses = new List<ReportQueueResponse>(memberships.Count);
+        foreach (var (membershipTypeId, membershipId) in memberships)
+        {
+            responses.Add(await QueueCrawlAsync(
+                    redisDatabase,
+                    mongoDatabase,
+                    membershipTypeId,
+                    membershipId,
+                    cancellationToken)
+                .ConfigureAwait(false));
+        }
+
+        return TypedResults.Accepted<IReadOnlyList<ReportQueueResponse>>((string?)null, responses);
+    }
+
+    private static async Task<ReportQueueResponse> QueueCrawlAsync(
+        IDatabase redisDatabase,
+        IMongoDatabase mongoDatabase,
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var queuedAtUtc = DateTimeOffset.UtcNow;
+        var existingStatus = await GetStoredQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (existingStatus is not null && existingStatus.Status is DestinyReport.CrawlStateQueued or DestinyReport.CrawlStateRunning)
         {
-            var existingResponse = new ReportQueueResponse(
+            return new ReportQueueResponse(
                 JobId: existingStatus.StreamEntryId ?? "",
                 MembershipTypeId: existingStatus.MembershipTypeId,
                 MembershipId: existingStatus.MembershipId,
                 Status: existingStatus.Status,
                 QueuedAtUtc: existingStatus.UpdatedAtUtc);
-
-            return TypedResults.Accepted(QueueStatusLocation(request.MembershipTypeId, request.MembershipId), existingResponse);
         }
 
-        var existingReport = await FindReportAsync(mongoDatabase, request.MembershipTypeId, request.MembershipId, cancellationToken)
+        var existingReport = await FindReportAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
             .ConfigureAwait(false);
         if (existingReport?.CrawlState == DestinyReport.CrawlStateRunning)
         {
-            var existingResponse = new ReportQueueResponse(
+            return new ReportQueueResponse(
                 JobId: "",
-                MembershipTypeId: request.MembershipTypeId,
-                MembershipId: request.MembershipId,
+                MembershipTypeId: membershipTypeId,
+                MembershipId: membershipId,
                 Status: DestinyReport.CrawlStateRunning,
                 QueuedAtUtc: existingReport.StartedAtUtc ?? queuedAtUtc);
-
-            return TypedResults.Accepted(QueueStatusLocation(request.MembershipTypeId, request.MembershipId), existingResponse);
         }
 
-        await UpsertForegroundQueuedReportAsync(mongoDatabase, request.MembershipTypeId, request.MembershipId, queuedAtUtc, cancellationToken)
+        await UpsertForegroundQueuedReportAsync(mongoDatabase, membershipTypeId, membershipId, queuedAtUtc, cancellationToken)
             .ConfigureAwait(false);
 
         QueueAdmission admission;
@@ -239,8 +194,8 @@ public static class ReportHandlers
         {
             admission = await EnqueueCrawlAtomicallyAsync(
                     redisDatabase,
-                    request.MembershipTypeId,
-                    request.MembershipId,
+                    membershipTypeId,
+                    membershipId,
                     queuedAtUtc,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -249,8 +204,8 @@ public static class ReportHandlers
         {
             await MarkReportAsBackgroundQueuedAsync(
                     mongoDatabase,
-                    request.MembershipTypeId,
-                    request.MembershipId,
+                    membershipTypeId,
+                    membershipId,
                     cancellationToken)
                 .ConfigureAwait(false);
             throw;
@@ -258,12 +213,12 @@ public static class ReportHandlers
 
         var response = new ReportQueueResponse(
             JobId: admission.StreamEntryId,
-            MembershipTypeId: request.MembershipTypeId,
-            MembershipId: request.MembershipId,
+            MembershipTypeId: membershipTypeId,
+            MembershipId: membershipId,
             Status: admission.Status,
             QueuedAtUtc: admission.UpdatedAtUtc);
 
-        return TypedResults.Accepted(QueueStatusLocation(request.MembershipTypeId, request.MembershipId), response);
+        return response;
     }
 
     public static async Task<IResult> StreamQueuePosition(
@@ -469,7 +424,7 @@ public static class ReportHandlers
             .SetOnInsert(report => report.PlayerMembershipId, membershipId)
             .Set(report => report.CrawlState, DestinyReport.CrawlStateQueued)
             .Set(report => report.QueuedInRedis, true)
-            .Set(report => report.QueuedAtUtc, queuedAtUtc)
+            .Set(report => report.QueuedAtUtc, queuedAtUtc.UtcDateTime)
             .Set(report => report.LeaseExpiresAtUtc, null)
             .Set(report => report.LeaseOwner, "")
             .Set(report => report.CrawlError, "");
@@ -531,17 +486,6 @@ public static class ReportHandlers
         return await reports.Find(filter)
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    private static string ToStoredActivityMode(WeaponActivityMode activityMode)
-    {
-        return activityMode switch
-        {
-            WeaponActivityMode.PvP => "Crucible",
-            WeaponActivityMode.PvE => "PvE",
-            WeaponActivityMode.Gambit => "Gambit",
-            _ => ""
-        };
     }
 
     private static async Task<ReportQueueStatusResponse?> GetQueueStatusAsync(
@@ -717,6 +661,40 @@ public static class ReportHandlers
             && long.TryParse(entryMembershipId.ToString(), out var parsedMembershipId)
             && parsedMembershipTypeId == membershipTypeId
             && parsedMembershipId == membershipId;
+    }
+
+    private static bool TryValidateQueueRequests(
+        IReadOnlyList<ReportQueueRequest> requests,
+        out IReadOnlyList<(int MembershipTypeId, long MembershipId)> memberships,
+        out ProblemDetails problemDetails)
+    {
+        if (requests is null || requests.Count == 0)
+        {
+            memberships = [];
+            problemDetails = new ProblemDetails
+            {
+                Title = "Missing memberships",
+                Detail = "At least one membership must be supplied.",
+                Status = StatusCodes.Status400BadRequest
+            };
+            return false;
+        }
+
+        var membershipsToQueue = new List<(int MembershipTypeId, long MembershipId)>(requests.Count);
+        foreach (var request in requests)
+        {
+            if (!TryValidateMembership(request.MembershipTypeId, request.MembershipId, out problemDetails))
+            {
+                memberships = [];
+                return false;
+            }
+
+            membershipsToQueue.Add((request.MembershipTypeId, request.MembershipId));
+        }
+
+        memberships = membershipsToQueue;
+        problemDetails = new ProblemDetails();
+        return true;
     }
 
     private static bool TryValidateMembership(int membershipTypeId, long membershipId, out ProblemDetails problemDetails)

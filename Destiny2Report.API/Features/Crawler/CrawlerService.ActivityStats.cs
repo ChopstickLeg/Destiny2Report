@@ -1,11 +1,11 @@
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
-using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
 using ReportPlayer = Destiny2Report.API.Features.Crawler.Models.DestinyPlayer;
@@ -28,9 +28,9 @@ public partial class CrawlerService
         ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
-        var activityDefinitions = await manifest.GetTableAsync("DestinyActivityDefinition", cancellationToken).ConfigureAwait(false);
-        var activityModeDefinitions = await manifest.GetTableAsync("DestinyActivityModeDefinition", cancellationToken).ConfigureAwait(false);
-        var destinationDefinitions = await manifest.GetTableAsync("DestinyDestinationDefinition", cancellationToken).ConfigureAwait(false);
+        var activityDefinitions = await manifest.GetActivityDefinitionsAsync(cancellationToken).ConfigureAwait(false);
+        var activityModeDefinitions = await manifest.GetActivityModeDefinitionsAsync(cancellationToken).ConfigureAwait(false);
+        var destinationDefinitions = await manifest.GetDestinationDefinitionsAsync(cancellationToken).ConfigureAwait(false);
 
         await ApplyPgcrAggregatesAsync(
                 report,
@@ -54,14 +54,14 @@ public partial class CrawlerService
     private static void ApplyPatrolTime(
         CrawlAccumulator accumulator,
         DestinyHistoricalStatsPeriodGroup activity,
-        JObject activityDefinitions,
-        JObject destinationDefinitions)
+        IReadOnlyDictionary<string, ManifestActivityDefinition> activityDefinitions,
+        IReadOnlyDictionary<string, ManifestDestinationDefinition> destinationDefinitions)
     {
         var activityDefinition = GetDefinition(activityDefinitions, activity.ActivityDetails.ReferenceId)
             ?? GetDefinition(activityDefinitions, activity.ActivityDetails.DirectorActivityHash);
-        var destinationHash = activityDefinition?["destinationHash"]?.Value<long>() ?? 0;
+        var destinationHash = activityDefinition?.DestinationHash ?? 0;
         var destination = GetDefinition(destinationDefinitions, destinationHash);
-        var destinationName = destination?["displayProperties"]?["name"]?.Value<string>();
+        var destinationName = destination?.DisplayProperties?.Name;
         if (string.IsNullOrWhiteSpace(destinationName))
         {
             destinationName = destinationHash > 0 ? destinationHash.ToString() : "Unknown";
@@ -85,16 +85,17 @@ public partial class CrawlerService
         DateTimeOffset? crawlAfter,
         IReadOnlySet<long> recentActivityIds,
         IDictionary<long, string> characterClassById,
-        JObject activityDefinitions,
-        JObject activityModeDefinitions,
-        JObject destinationDefinitions,
+        IReadOnlyDictionary<string, ManifestActivityDefinition> activityDefinitions,
+        IReadOnlyDictionary<string, ManifestActivityModeDefinition> activityModeDefinitions,
+        IReadOnlyDictionary<string, ManifestDestinationDefinition> destinationDefinitions,
         ManifestContext manifest,
         bool resetDerivedAggregates,
         ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
-        var playerEncounterCounts = accumulator.EncounterCounts.Values
-            .ToDictionary(item => (item.MembershipType, item.MembershipId), item => item.Count);
+        var playerEncounterCounts = resetDerivedAggregates
+            ? new Dictionary<(int MembershipType, long MembershipId), int>()
+            : await LoadPlayerEncounterCountsAsync(platformId, playerMembershipId, cancellationToken).ConfigureAwait(false);
         var pveWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
         var pvpWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
         var gambitWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
@@ -264,14 +265,6 @@ public partial class CrawlerService
         SaveCompletionAggregates(accumulator.RaidCompletions, raidCompletions);
         SaveCompletionAggregates(accumulator.DungeonCompletions, dungeonCompletions);
         accumulator.PlayersSherpaed = new Dictionary<string, int>(playersSherpaed, StringComparer.OrdinalIgnoreCase);
-        accumulator.EncounterCounts = persistedPlayerEncounterCounts.ToDictionary(
-            item => PlayerKey(item.Key.MembershipType, item.Key.MembershipId),
-            item => new EncounterAccumulator
-            {
-                MembershipType = item.Key.MembershipType,
-                MembershipId = item.Key.MembershipId,
-                Count = item.Value
-            });
         SaveEncounteredPlayerKeys(accumulator, encounteredPlayerKeys);
 
         report.PatrolTimeByPlanet = accumulator.PatrolSecondsByPlanet.ToDictionary(
@@ -303,15 +296,12 @@ public partial class CrawlerService
         }
 
         await ApplyWeaponAggregateDeltasAsync(
-                report,
                 platformId,
                 playerMembershipId,
                 pveWeaponDeltas,
                 pvpWeaponDeltas,
                 gambitWeaponDeltas,
-                manifest.Manifest,
                 resetDerivedAggregates,
-                progress,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -421,7 +411,7 @@ public partial class CrawlerService
                     .First();
                 var firstCompletionRecord = new RaidFirstCompletion
                 {
-                    CompletedAt = firstCompletion.CompletedAt,
+                    CompletedAt = firstCompletion.CompletedAt.UtcDateTime,
                     InstanceId = firstCompletion.InstanceId
                 };
 
@@ -738,7 +728,7 @@ public partial class CrawlerService
 
     private static List<ActivityModePlaytimeReport> ToActivityModePlaytimeReports(
         IReadOnlyDictionary<string, ActivityModePlaytimeAccumulator> playtimeByActivityMode,
-        JObject activityModeDefinitions)
+        IReadOnlyDictionary<string, ManifestActivityModeDefinition> activityModeDefinitions)
     {
         return ActivityPlaytimeBroadModes
             .Select(mode => (Mode: mode, Playtime: GetActivityModePlaytime(playtimeByActivityMode, mode)))
@@ -759,7 +749,7 @@ public partial class CrawlerService
 
     private static ActivityModePlaytimeBreakdown ToActivityModePlaytimeBreakdown(
         KeyValuePair<string, long> modePlaytime,
-        JObject activityModeDefinitions)
+        IReadOnlyDictionary<string, ManifestActivityModeDefinition> activityModeDefinitions)
     {
         var mode = int.TryParse(modePlaytime.Key, out var parsedMode) ? parsedMode : 0;
         return new ActivityModePlaytimeBreakdown
@@ -779,16 +769,16 @@ public partial class CrawlerService
             : null;
     }
 
-    private static string GetActivityModeName(JObject activityModeDefinitions, int mode)
+    private static string GetActivityModeName(IReadOnlyDictionary<string, ManifestActivityModeDefinition> activityModeDefinitions, int mode)
     {
-        foreach (var definition in activityModeDefinitions.Properties())
+        foreach (var definition in activityModeDefinitions.Values)
         {
-            if (definition.Value["modeType"]?.Value<int>() != mode)
+            if (definition.ModeType != mode)
             {
                 continue;
             }
 
-            var name = definition.Value["displayProperties"]?["name"]?.Value<string>();
+            var name = definition.DisplayProperties?.Name;
             if (!string.IsNullOrWhiteSpace(name))
             {
                 return name;
@@ -856,12 +846,12 @@ public partial class CrawlerService
 
     private static bool HasActivityTypeHash(
         DestinyPostGameCarnageReportData pgcr,
-        JObject activityDefinitions,
+        IReadOnlyDictionary<string, ManifestActivityDefinition> activityDefinitions,
         IReadOnlySet<long> activityTypeHashes)
     {
         var definition = GetDefinition(activityDefinitions, pgcr.ActivityDetails.ReferenceId)
             ?? GetDefinition(activityDefinitions, pgcr.ActivityDetails.DirectorActivityHash);
-        var activityTypeHash = definition?["activityTypeHash"]?.Value<long>() ?? 0;
+        var activityTypeHash = definition?.ActivityTypeHash ?? 0;
         return activityTypeHashes.Contains(activityTypeHash);
     }
 
@@ -908,10 +898,10 @@ public partial class CrawlerService
         return null;
     }
 
-    private static string ActivityName(JObject definitions, int referenceId, int directorActivityHash)
+    private static string ActivityName(IReadOnlyDictionary<string, ManifestActivityDefinition> definitions, int referenceId, int directorActivityHash)
     {
         var definition = GetDefinition(definitions, referenceId) ?? GetDefinition(definitions, directorActivityHash);
-        return definition?["displayProperties"]?["name"]?.Value<string>() ?? referenceId.ToString();
+        return definition?.DisplayProperties?.Name ?? referenceId.ToString();
     }
 
     private static long ToUnsignedHash(int hash)
@@ -1120,14 +1110,14 @@ public partial class CrawlerService
         DateTimeOffset completedAt,
         long instanceId)
     {
-        if (completion.FirstCompletion is not null && completedAt >= completion.FirstCompletion.CompletedAt)
+        if (completion.FirstCompletion is not null && completedAt.UtcDateTime >= completion.FirstCompletion.CompletedAt)
         {
             return null;
         }
 
         completion.FirstCompletion = new RaidFirstCompletion
         {
-            CompletedAt = completedAt,
+            CompletedAt = completedAt.UtcDateTime,
             InstanceId = instanceId
         };
         return completion.FirstCompletion;
@@ -1138,14 +1128,14 @@ public partial class CrawlerService
         DateTimeOffset completedAt,
         long instanceId)
     {
-        if (completion.FirstCompletion is not null && completedAt >= completion.FirstCompletion.CompletedAt)
+        if (completion.FirstCompletion is not null && completedAt.UtcDateTime >= completion.FirstCompletion.CompletedAt)
         {
             return null;
         }
 
         completion.FirstCompletion = new RaidFirstCompletion
         {
-            CompletedAt = completedAt,
+            CompletedAt = completedAt.UtcDateTime,
             InstanceId = instanceId
         };
         return completion.FirstCompletion;
@@ -1183,7 +1173,7 @@ public partial class CrawlerService
         string normalizedRaidName,
         DateTimeOffset activityCompletedAt,
         long activityInstanceId,
-        JObject activityDefinitions)
+        IReadOnlyDictionary<string, ManifestActivityDefinition> activityDefinitions)
     {
         return HasPriorCompletedRaidInHistory(
             ToCompletedRaidActivities(activities, activityDefinitions),
@@ -1219,7 +1209,7 @@ public partial class CrawlerService
 
     private static IEnumerable<CompletedRaidActivity> ToCompletedRaidActivities(
         IEnumerable<DestinyHistoricalStatsPeriodGroup> activities,
-        JObject activityDefinitions)
+        IReadOnlyDictionary<string, ManifestActivityDefinition> activityDefinitions)
     {
         foreach (var activity in activities)
         {

@@ -5,7 +5,6 @@ using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
-using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
 using ReportPlayer = Destiny2Report.API.Features.Crawler.Models.DestinyPlayer;
@@ -66,16 +65,9 @@ public partial class CrawlerService
                 continue;
             }
 
-            className = value switch
-            {
-                string text => ClassName(text),
-                int classType => ClassName(classType),
-                long classType => ClassName((int)classType),
-                JValue { Value: string text } => ClassName(text),
-                JValue { Value: long classType } => ClassName((int)classType),
-                JValue { Value: int classType } => ClassName(classType),
-                _ => "Unknown"
-            };
+            className = int.TryParse(value?.ToString(), out var classType)
+                ? ClassName(classType)
+                : ClassName(value?.ToString() ?? "");
 
             if (className != "Unknown")
             {

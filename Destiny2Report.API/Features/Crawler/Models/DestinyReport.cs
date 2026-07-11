@@ -19,33 +19,43 @@ public record DestinyReport
 
     public int PlatformId { get; init; }
     public long PlayerMembershipId { get; init; }
-    public DateTimeOffset CrawledAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTime CrawledAt { get; init; } = DateTime.UtcNow;
+    [BsonDefaultValue(CrawlStateCompleted)]
+    [BsonIgnoreIfDefault]
     public string CrawlState { get; set; } = CrawlStateCompleted;
     public bool QueuedInRedis { get; set; }
-    public DateTimeOffset? QueuedAtUtc { get; set; }
-    public DateTimeOffset? StartedAtUtc { get; set; }
-    public DateTimeOffset? LastCrawledAtUtc { get; set; }
-    public DateTimeOffset? LeaseExpiresAtUtc { get; set; }
+    public DateTime? QueuedAtUtc { get; set; }
+    public DateTime? StartedAtUtc { get; set; }
+    public DateTime? LastCrawledAtUtc { get; set; }
+    public DateTime? LeaseExpiresAtUtc { get; set; }
+    [BsonDefaultValue("")]
+    [BsonIgnoreIfDefault]
     public string LeaseOwner { get; set; } = "";
+    [BsonDefaultValue("")]
+    [BsonIgnoreIfDefault]
     public string CrawlError { get; set; } = "";
+    [BsonIgnoreIfDefault]
     public bool NeedsFullRecrawl { get; set; }
+    [BsonDefaultValue("")]
+    [BsonIgnoreIfDefault]
     public string FullRecrawlReason { get; set; } = "";
+    [BsonIgnoreIfDefault]
     public TimeSpan TotalPlaytime { get; set; }
     public Dictionary<string, TimeSpan> PlaytimeByClass { get; set; } = new();
     public List<ActivityModePlaytimeReport> PlaytimeByActivityMode { get; set; } = new();
     public Dictionary<string, TimeSpan> PatrolTimeByPlanet { get; set; } = new();
-    public int GoodBoyProtocol { get; set; }
-    public int FishCaught { get; set; }
-    public long TotalKills { get; set; }
-    public long TotalDeaths { get; set; }
-    public double CrucibleKd { get; set; }
-    public double CrucibleKda { get; set; }
-    public double GambitKd { get; set; }
-    public double GambitKda { get; set; }
-    public int CrucibleMatchesPlayed { get; set; }
-    public int GambitMatchesPlayed { get; set; }
-    public int CrucibleWins { get; set; }
-    public int GambitWins { get; set; }
+    [BsonIgnoreIfDefault] public int GoodBoyProtocol { get; set; }
+    [BsonIgnoreIfDefault] public int FishCaught { get; set; }
+    [BsonIgnoreIfDefault] public long TotalKills { get; set; }
+    [BsonIgnoreIfDefault] public long TotalDeaths { get; set; }
+    [BsonIgnoreIfDefault] public double CrucibleKd { get; set; }
+    [BsonIgnoreIfDefault] public double CrucibleKda { get; set; }
+    [BsonIgnoreIfDefault] public double GambitKd { get; set; }
+    [BsonIgnoreIfDefault] public double GambitKda { get; set; }
+    [BsonIgnoreIfDefault] public int CrucibleMatchesPlayed { get; set; }
+    [BsonIgnoreIfDefault] public int GambitMatchesPlayed { get; set; }
+    [BsonIgnoreIfDefault] public int CrucibleWins { get; set; }
+    [BsonIgnoreIfDefault] public int GambitWins { get; set; }
     public CrucibleKillsReport CrucibleKills { get; set; } = new();
     public GambitMotesReport GambitMotes { get; set; } = new();
     public List<DestinyTriumphSeal> TriumphSeals
@@ -53,9 +63,9 @@ public record DestinyReport
         get => _triumphSeals;
         set => _triumphSeals = value?.Where(IsCompletedSeal).ToList() ?? [];
     }
-    public int Misadventures { get; set; }
-    public int ZeroKillActivities { get; set; }
-    public TimeSpan TotalActivityTime { get; set; }
+    [BsonIgnoreIfDefault] public int Misadventures { get; set; }
+    [BsonIgnoreIfDefault] public int ZeroKillActivities { get; set; }
+    [BsonIgnoreIfDefault] public TimeSpan TotalActivityTime { get; set; }
     public List<ActivityCompletionSummary> RaidCompletions { get; set; } = new();
     public List<ActivityCompletionSummary> DungeonCompletions { get; set; } = new();
     public List<PlayerEncounterReport> MostPlayedWith
@@ -63,11 +73,9 @@ public record DestinyReport
         get => _mostPlayedWith;
         set => _mostPlayedWith = value?.Take(MostPlayedWithLimit).ToList() ?? [];
     }
+    [BsonIgnoreIfDefault]
     public int UniquePlayersPlayedWith { get; set; }
     public List<SherpaReport> PlayersSherpaed { get; set; } = new();
-    public List<WeaponReport> PvETopWeapons { get; set; } = new();
-    public List<WeaponReport> CrucibleTopWeapons { get; set; } = new();
-    public List<WeaponReport> GambitTopWeapons { get; set; } = new();
     public List<EmblemReport> MostUsedEmblems
     {
         get => _mostUsedEmblems;

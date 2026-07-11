@@ -1,6 +1,7 @@
 using System.Reflection;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.Tests.TestSupport;
 using Newtonsoft.Json.Linq;
 
@@ -151,7 +152,7 @@ public sealed class CrawlerActivityStatsTests
         var report = Assert.Single((List<ActivityModePlaytimeReport>)CrawlerReflection.Invoke(
             "ToActivityModePlaytimeReports",
             accumulator.PlaytimeByActivityMode,
-            new JObject())!);
+            new Dictionary<string, ManifestActivityModeDefinition>())!);
         Assert.Equal(5, report.Mode);
         Assert.Equal("AllPvP", report.ModeName);
         Assert.Equal(TimeSpan.FromMinutes(7), report.TotalPlaytime);
@@ -318,14 +319,12 @@ public sealed class CrawlerActivityStatsTests
     [Fact]
     public void HasPriorCompletedRaid_matches_same_normalized_raid_before_current_instance_only()
     {
-        var activityDefinitions = JObject.Parse(
-            """
-            {
-              "100": { "displayProperties": { "name": "Root of Nightmares: Master" } },
-              "101": { "displayProperties": { "name": "Root of Nightmares" } },
-              "102": { "displayProperties": { "name": "King's Fall" } }
-            }
-            """);
+        IReadOnlyDictionary<string, ManifestActivityDefinition> activityDefinitions = new Dictionary<string, ManifestActivityDefinition>
+        {
+            ["100"] = ActivityDefinition("Root of Nightmares: Master"),
+            ["101"] = ActivityDefinition("Root of Nightmares"),
+            ["102"] = ActivityDefinition("King's Fall")
+        };
         var currentCompletedAt = DateTimeOffset.Parse("2024-01-02T01:00:00Z");
         var history = new[]
         {
@@ -403,28 +402,25 @@ public sealed class CrawlerActivityStatsTests
         Assert.Equal(1, result);
     }
 
-    private static JObject ActivityModeDefinitions()
+    private static IReadOnlyDictionary<string, ManifestActivityModeDefinition> ActivityModeDefinitions()
     {
-        return JObject.Parse(
-            """
-            {
-              "100": {
-                "modeType": 4,
-                "displayProperties": { "name": "Raids" }
-              },
-              "101": {
-                "modeType": 7,
-                "displayProperties": { "name": "All PvE Activities" }
-              },
-              "102": {
-                "modeType": 63,
-                "displayProperties": { "name": "Gambit" }
-              },
-              "103": {
-                "modeType": 64,
-                "displayProperties": { "name": "All PvE Competitive" }
-              }
-            }
-            """);
+        return new Dictionary<string, ManifestActivityModeDefinition>
+        {
+            ["100"] = ActivityModeDefinition(4, "Raids"),
+            ["101"] = ActivityModeDefinition(7, "All PvE Activities"),
+            ["102"] = ActivityModeDefinition(63, "Gambit"),
+            ["103"] = ActivityModeDefinition(64, "All PvE Competitive")
+        };
     }
+
+    private static ManifestActivityDefinition ActivityDefinition(string name) => new()
+    {
+        DisplayProperties = new ManifestDisplayProperties { Name = name }
+    };
+
+    private static ManifestActivityModeDefinition ActivityModeDefinition(int modeType, string name) => new()
+    {
+        ModeType = modeType,
+        DisplayProperties = new ManifestDisplayProperties { Name = name }
+    };
 }

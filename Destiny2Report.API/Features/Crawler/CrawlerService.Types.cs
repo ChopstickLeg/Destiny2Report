@@ -2,11 +2,11 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
-using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
 
@@ -93,7 +93,8 @@ public partial class CrawlerService
         public int GrenadeKills { get; set; }
         public int MeleeKills { get; set; }
         public int SuperKills { get; set; }
-        public int TotalKills => UniqueWeaponKills + WeaponKills + GrenadeKills + MeleeKills + SuperKills;
+        public int UnknownKills { get; set; }
+        public int TotalKills => UniqueWeaponKills + WeaponKills + GrenadeKills + MeleeKills + SuperKills + UnknownKills;
 
         public void Add(WeaponKillDelta delta)
         {
@@ -102,6 +103,7 @@ public partial class CrawlerService
             GrenadeKills += delta.GrenadeKills;
             MeleeKills += delta.MeleeKills;
             SuperKills += delta.SuperKills;
+            UnknownKills += delta.UnknownKills;
         }
     }
 
@@ -121,7 +123,7 @@ public partial class CrawlerService
         IReadOnlyCollection<DestinyHistoricalStatsPeriodGroup> fetchedActivities,
         IEnumerable<long> processedActivityIds)
     {
-        accumulator.LastSuccessfulCrawlAt = DateTimeOffset.UtcNow;
+        accumulator.LastSuccessfulCrawlAt = DateTime.UtcNow;
         accumulator.NeedsFullRecrawl = false;
         accumulator.FullRecrawlReason = "";
 
@@ -130,7 +132,7 @@ public partial class CrawlerService
             .FirstOrDefault();
         if (newestFetchedActivity is not null && newestFetchedActivity.Period > accumulator.NewestActivityPeriod)
         {
-            accumulator.NewestActivityPeriod = newestFetchedActivity.Period;
+            accumulator.NewestActivityPeriod = newestFetchedActivity.Period.UtcDateTime;
         }
 
         accumulator.RecentActivityInstanceIds = fetchedActivities
@@ -149,13 +151,13 @@ public partial class CrawlerService
         ActivityCrawlState crawlState,
         IEnumerable<long> processedActivityIds)
     {
-        accumulator.LastSuccessfulCrawlAt = DateTimeOffset.UtcNow;
+        accumulator.LastSuccessfulCrawlAt = DateTime.UtcNow;
         accumulator.NeedsFullRecrawl = false;
         accumulator.FullRecrawlReason = "";
 
         if (crawlState.NewestActivityPeriod > accumulator.NewestActivityPeriod)
         {
-            accumulator.NewestActivityPeriod = crawlState.NewestActivityPeriod;
+            accumulator.NewestActivityPeriod = crawlState.NewestActivityPeriod.UtcDateTime;
         }
 
         accumulator.RecentActivityInstanceIds = crawlState.RecentActivities
@@ -166,11 +168,6 @@ public partial class CrawlerService
             .Distinct()
             .Take(RecentActivityInstanceIdLimit)
             .ToList();
-    }
-
-    private static string PlayerKey(int membershipType, long membershipId)
-    {
-        return $"{membershipType}:{membershipId}";
     }
 
     private static HashSet<(int MembershipType, long MembershipId)> ReadEncounteredPlayerKeys(CrawlAccumulator accumulator)
@@ -277,41 +274,48 @@ public partial class CrawlerService
 
     private sealed class ManifestContext(DestinyManifest manifest, CrawlerService service)
     {
-        private readonly ConcurrentDictionary<string, Lazy<Task<JObject>>> _tables = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, Lazy<Task<object>>> _tables = new(StringComparer.Ordinal);
 
         public DestinyManifest Manifest => manifest;
 
-        public JObject PresentationNodes => GetTable("DestinyPresentationNodeDefinition");
-        public JObject Records => GetTable("DestinyRecordDefinition");
+        public IReadOnlyDictionary<string, ManifestPresentationNodeDefinition> PresentationNodes => GetTable<ManifestPresentationNodeDefinition>("DestinyPresentationNodeDefinition");
+        public IReadOnlyDictionary<string, ManifestRecordDefinition> Records => GetTable<ManifestRecordDefinition>("DestinyRecordDefinition");
 
-        public async Task<JObject> GetTableAsync(string tableName, CancellationToken cancellationToken)
+        public Task<IReadOnlyDictionary<string, ManifestActivityDefinition>> GetActivityDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestActivityDefinition>("DestinyActivityDefinition", cancellationToken);
+
+        public Task<IReadOnlyDictionary<string, ManifestActivityModeDefinition>> GetActivityModeDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestActivityModeDefinition>("DestinyActivityModeDefinition", cancellationToken);
+
+        public Task<IReadOnlyDictionary<string, ManifestDestinationDefinition>> GetDestinationDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestDestinationDefinition>("DestinyDestinationDefinition", cancellationToken);
+
+        public async Task<IReadOnlyDictionary<string, TDefinition>> GetTableAsync<TDefinition>(string tableName, CancellationToken cancellationToken)
         {
-            return await _tables.GetOrAdd(tableName, name => new Lazy<Task<JObject>>(() => service.GetManifestTableAsync(manifest, name, cancellationToken)))
+            var table = await _tables.GetOrAdd(tableName, name => new Lazy<Task<object>>(async () => await service.GetManifestTableAsync<TDefinition>(manifest, name, CancellationToken.None).ConfigureAwait(false)))
                 .Value
                 .ConfigureAwait(false);
+            return (IReadOnlyDictionary<string, TDefinition>)table;
         }
 
         public uint? FindMetricHash(params string[] terms)
         {
-            var metrics = GetTable("DestinyMetricDefinition");
-            foreach (var property in metrics.Properties())
+            var metrics = GetTable<ManifestMetricDefinition>("DestinyMetricDefinition");
+            foreach (var metric in metrics)
             {
-                var name = property.Value["displayProperties"]?["name"]?.Value<string>() ?? "";
-                var description = property.Value["displayProperties"]?["description"]?.Value<string>() ?? "";
+                var name = metric.Value.DisplayProperties?.Name ?? "";
+                var description = metric.Value.DisplayProperties?.Description ?? "";
                 if (terms.All(term =>
                         name.Contains(term, StringComparison.OrdinalIgnoreCase)
                         || description.Contains(term, StringComparison.OrdinalIgnoreCase)))
                 {
-                    return uint.Parse(property.Name);
+                    return uint.Parse(metric.Key);
                 }
             }
 
             return null;
         }
 
-        private JObject GetTable(string tableName)
+        private IReadOnlyDictionary<string, TDefinition> GetTable<TDefinition>(string tableName)
         {
-            return GetTableAsync(tableName, CancellationToken.None).GetAwaiter().GetResult();
+            return GetTableAsync<TDefinition>(tableName, CancellationToken.None).GetAwaiter().GetResult();
         }
     }
 }

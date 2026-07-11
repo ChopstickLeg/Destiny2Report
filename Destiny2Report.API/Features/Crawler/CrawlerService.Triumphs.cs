@@ -1,11 +1,11 @@
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
-using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
 using ReportPlayer = Destiny2Report.API.Features.Crawler.Models.DestinyPlayer;
@@ -26,7 +26,7 @@ public partial class CrawlerService
         foreach (var sealPresentationNodeHash in GetSealPresentationNodeHashes(manifest.PresentationNodes))
         {
             var sealNode = GetDefinition(manifest.PresentationNodes, sealPresentationNodeHash);
-            var completionRecordHash = sealNode?["completionRecordHash"]?.Value<long>() ?? 0;
+            var completionRecordHash = sealNode?.CompletionRecordHash ?? 0;
             if (completionRecordHash <= 0 || !seenCompletionRecordHashes.Add(completionRecordHash))
             {
                 continue;
@@ -46,9 +46,9 @@ public partial class CrawlerService
 
             report.TriumphSeals.Add(new DestinyTriumphSeal
             {
-                Name = definition["displayProperties"]?["name"]?.Value<string>() ?? "",
-                Description = definition["displayProperties"]?["description"]?.Value<string>() ?? "",
-                IconUrl = BungieUrl(sealNode?["displayProperties"]?["icon"]?.Value<string>()),
+                Name = definition.DisplayProperties?.Name ?? "",
+                Description = definition.DisplayProperties?.Description ?? "",
+                IconUrl = BungieUrl(sealNode?.DisplayProperties?.Icon),
                 IsCompleted = true
             });
         }
@@ -131,18 +131,18 @@ public partial class CrawlerService
         }
     }
 
-    private static IEnumerable<long> GetSealPresentationNodeHashes(JObject presentationNodes)
+    private static IEnumerable<long> GetSealPresentationNodeHashes(IReadOnlyDictionary<string, ManifestPresentationNodeDefinition> presentationNodes)
     {
         return TriumphSealRootPresentationNodeHashes
             .Select(rootHash => GetDefinition(presentationNodes, rootHash))
             .SelectMany(GetChildPresentationNodeHashes);
     }
 
-    private static IEnumerable<long> GetChildPresentationNodeHashes(JObject? presentationNode)
+    private static IEnumerable<long> GetChildPresentationNodeHashes(ManifestPresentationNodeDefinition? presentationNode)
     {
-        return presentationNode?["children"]?["presentationNodes"]?
-            .OrderBy(node => node["nodeDisplayPriority"]?.Value<int>() ?? int.MaxValue)
-            .Select(node => node["presentationNodeHash"]?.Value<long>() ?? 0)
+        return presentationNode?.Children?.PresentationNodes?
+            .OrderBy(node => node.NodeDisplayPriority)
+            .Select(node => node.PresentationNodeHash)
             .Where(hash => hash > 0) ?? [];
     }
 

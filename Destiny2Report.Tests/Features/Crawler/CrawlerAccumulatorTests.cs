@@ -31,7 +31,7 @@ public sealed class CrawlerAccumulatorTests
 
         var firstClear = Assert.Single(accumulator.RaidCompletions).Value.FirstCompletion;
         Assert.NotNull(firstClear);
-        Assert.Equal(DateTimeOffset.Parse("2024-01-01T01:00:00Z"), firstClear.CompletedAt);
+        Assert.Equal(DateTime.Parse("2024-01-01T01:00:00Z").ToUniversalTime(), firstClear.CompletedAt);
         Assert.Equal(10L, firstClear.InstanceId);
     }
 
@@ -46,7 +46,7 @@ public sealed class CrawlerAccumulatorTests
                 {
                     FirstCompletion = new RaidFirstCompletion
                     {
-                        CompletedAt = DateTimeOffset.Parse("2024-01-02T01:00:00Z"),
+                        CompletedAt = DateTime.Parse("2024-01-02T01:00:00Z").ToUniversalTime(),
                         InstanceId = 99L
                     }
                 }
@@ -77,7 +77,7 @@ public sealed class CrawlerAccumulatorTests
         {
             NeedsFullRecrawl = true,
             FullRecrawlReason = "stat migration",
-            NewestActivityPeriod = DateTimeOffset.Parse("2024-01-01T00:00:00Z"),
+            NewestActivityPeriod = DateTime.Parse("2024-01-01T00:00:00Z").ToUniversalTime(),
             RecentActivityInstanceIds = [1, 2, 3]
         };
         var fetchedActivities = new[]
@@ -90,9 +90,9 @@ public sealed class CrawlerAccumulatorTests
 
         Assert.False(accumulator.NeedsFullRecrawl);
         Assert.Empty(accumulator.FullRecrawlReason);
-        Assert.Equal(DateTimeOffset.Parse("2024-01-03T00:00:00Z"), accumulator.NewestActivityPeriod);
+        Assert.Equal(DateTime.Parse("2024-01-03T00:00:00Z").ToUniversalTime(), accumulator.NewestActivityPeriod);
         Assert.Equal([4, 2, 5, 1, 3], accumulator.RecentActivityInstanceIds);
-        Assert.True(accumulator.LastSuccessfulCrawlAt > DateTimeOffset.MinValue);
+        Assert.True(accumulator.LastSuccessfulCrawlAt > DateTime.MinValue);
     }
 
     [Theory]

@@ -19,7 +19,7 @@ public static class ReportEndpoints
 
         reports.MapPost("/queue", ReportHandlers.QueueCrawl)
             .WithName("QueueReportCrawl")
-            .WithSummary("Queues a Destiny player report crawl.")
+            .WithSummary("Queues one or more Destiny player report crawls.")
             .RequireRateLimiting(RateLimitPolicies.PublicWrite);
 
         reports.MapGet("/{membershipTypeId:int}/{membershipId:long}/queue", ReportHandlers.StreamQueuePosition)

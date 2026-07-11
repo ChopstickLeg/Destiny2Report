@@ -1,11 +1,12 @@
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
-using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
 
@@ -16,45 +17,115 @@ public partial class CrawlerService
     private const long GrenadeKillsReferenceId = -1;
     private const long MeleeKillsReferenceId = -2;
     private const long SuperKillsReferenceId = -3;
+    private const long UnknownKillsReferenceId = -4;
     private const string AbilityCategoryName = "Abilities";
     private const string AbilityCategoryKey = "ABILITIES";
     private const string UnknownWeaponCategoryName = "Unknown";
+    private const int WeaponItemType = 3;
+    private static readonly ConcurrentDictionary<string, Lazy<Task<IReadOnlyDictionary<long, WeaponDefinitionSummary>>>> WeaponDefinitionCaches = new();
 
-    private async Task<WeaponDefinitionSummary?> GetInventoryItemSummaryAsync(
-        DestinyManifest manifest,
-        long itemHash,
+    public async Task WarmReportReadModelsAsync(CancellationToken cancellationToken)
+    {
+        var manifest = await GetManifestAsync(cancellationToken).ConfigureAwait(false);
+        await GetWeaponDefinitionCacheAsync(manifest.Manifest, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<WeaponActivityModeAggregateReport?> GetWeaponActivityModeReportAsync(
+        int membershipTypeId,
+        long membershipId,
+        WeaponActivityMode activityMode,
         CancellationToken cancellationToken)
     {
-        try
+        var storedActivityMode = activityMode switch
         {
-            var hashIdentifier = ToUnsignedHashIdentifier(itemHash);
-            var cacheKey = $"bungie:destiny2:manifest:{manifest.Version}:{InventoryItemDefinitionType}:{hashIdentifier}";
-            return await cache.GetOrCreateAsync(
-                    cacheKey,
-                    async ct =>
-                    {
-                        var operation = $"GetDestinyEntityDefinition:{InventoryItemDefinitionType}:{hashIdentifier}";
-                        var response = await bungieClient.Destiny2_GetDestinyEntityDefinitionAsync(
-                                InventoryItemDefinitionType,
-                                hashIdentifier,
-                                ct)
-                            .ConfigureAwait(false);
-                        var definition = EnsureSuccess(response, item => item.Response, operation);
-                        return ToWeaponDefinitionSummary(definition);
-                    },
-                    new HybridCacheEntryOptions
-                    {
-                        Expiration = ManifestCacheDuration,
-                        LocalCacheExpiration = ManifestCacheDuration
-                    },
-                    cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+            WeaponActivityMode.PvP => "Crucible",
+            WeaponActivityMode.PvE => "PvE",
+            WeaponActivityMode.Gambit => "Gambit",
+            _ => ""
+        };
+        var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
+        var filter = Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipType, membershipTypeId)
+            & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipId, membershipId)
+            & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, storedActivityMode);
+        var aggregates = await weapons.Find(filter).ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (aggregates.Count == 0)
         {
-            logger.LogWarning(ex, "Could not resolve Destiny inventory item definition {ItemHash}.", itemHash);
             return null;
         }
+
+        var manifest = await GetManifestAsync(cancellationToken).ConfigureAwait(false);
+        var definitions = await GetInventoryItemSummariesAsync(
+                manifest,
+                aggregates.Select(weapon => weapon.WeaponHash),
+                progress: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var resolved = aggregates.Select(weapon =>
+        {
+            definitions.TryGetValue(weapon.WeaponHash, out var definition);
+            var (categoryName, categoryKey) = WeaponCategory(weapon.WeaponHash, definition);
+            return new
+            {
+                Weapon = weapon,
+                Name = definition?.Name ?? SyntheticWeaponName(weapon.WeaponHash),
+                IconUrl = definition?.IconUrl ?? "",
+                CategoryName = categoryName,
+                CategoryKey = categoryKey
+            };
+        });
+
+        return new WeaponActivityModeAggregateReport
+        {
+            ActivityMode = storedActivityMode,
+            Classes = resolved
+                .GroupBy(item => string.IsNullOrWhiteSpace(item.Weapon.ClassName) ? "Unknown" : item.Weapon.ClassName)
+                .OrderByDescending(group => group.Sum(item => item.Weapon.Kills))
+                .Select(classGroup => new WeaponClassAggregateReport
+                {
+                    ClassName = classGroup.Key,
+                    Modes = classGroup
+                        .GroupBy(item => item.Weapon.SpecificActivityMode)
+                        .OrderByDescending(group => group.Sum(item => item.Weapon.Kills))
+                        .Select(modeGroup => new WeaponModeAggregateReport
+                        {
+                            SpecificActivityMode = GetSpecificActivityModeName(modeGroup.Key),
+                            Categories = modeGroup
+                                .GroupBy(item => (item.CategoryKey, item.CategoryName))
+                                .OrderByDescending(group => group.Sum(item => item.Weapon.Kills))
+                                .Select(categoryGroup => new WeaponCategoryAggregateReport
+                                {
+                                    OwnerMembershipType = membershipTypeId,
+                                    OwnerMembershipId = membershipId,
+                                    ActivityMode = storedActivityMode,
+                                    ClassName = classGroup.Key,
+                                    SpecificActivityMode = GetSpecificActivityModeName(modeGroup.Key),
+                                    CategoryKey = categoryGroup.Key.CategoryKey,
+                                    CategoryName = categoryGroup.Key.CategoryName,
+                                    Kills = categoryGroup.Sum(item => item.Weapon.Kills),
+                                    Weapons = categoryGroup
+                                        .OrderByDescending(item => item.Weapon.Kills)
+                                        .ThenBy(item => item.Name, StringComparer.Ordinal)
+                                        .Select(item => new WeaponAggregateDetailReport
+                                        {
+                                            OwnerMembershipType = item.Weapon.OwnerMembershipType,
+                                            OwnerMembershipId = item.Weapon.OwnerMembershipId,
+                                            ActivityMode = item.Weapon.ActivityMode,
+                                            WeaponKey = NormalizeWeaponKey(item.Name),
+                                            WeaponName = item.Name,
+                                            ReferenceId = item.Weapon.WeaponHash,
+                                            IconUrl = item.IconUrl,
+                                            CategoryKey = item.CategoryKey,
+                                            CategoryName = item.CategoryName,
+                                            Kills = item.Weapon.Kills
+                                        })
+                                        .ToList()
+                                })
+                                .ToList()
+                        })
+                        .ToList()
+                })
+                .ToList()
+        };
     }
 
     private static string ToUnsignedHashIdentifier(long hash)
@@ -68,110 +139,123 @@ public partial class CrawlerService
     }
 
     private async Task<Dictionary<long, WeaponDefinitionSummary>> GetInventoryItemSummariesAsync(
-        DestinyManifest manifest,
+        ManifestContext manifest,
         IEnumerable<long> itemHashes,
         ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         var distinctHashes = itemHashes.Distinct().ToArray();
-        var summaries = new ConcurrentDictionary<long, WeaponDefinitionSummary>();
-        var processed = 0L;
+        var definitions = await GetWeaponDefinitionCacheAsync(manifest.Manifest, cancellationToken).ConfigureAwait(false);
+        var summaries = new Dictionary<long, WeaponDefinitionSummary>();
 
         if (progress is not null)
         {
             await progress.StartPhaseAsync("weapon-definitions", "Resolving weapon definitions", distinctHashes.Length, cancellationToken).ConfigureAwait(false);
         }
 
-        await Parallel.ForEachAsync(
-                distinctHashes,
-                new ParallelOptions
-                {
-                    MaxDegreeOfParallelism = MaxConcurrentDefinitionRequests,
-                    CancellationToken = cancellationToken
-                },
-                async (itemHash, ct) =>
-                {
-                    var summary = await GetInventoryItemSummaryAsync(manifest, itemHash, ct).ConfigureAwait(false);
-                    if (summary is not null)
-                    {
-                        summaries[itemHash] = summary;
-                    }
+        for (var index = 0; index < distinctHashes.Length; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var itemHash = distinctHashes[index];
+            if (definitions.TryGetValue(itemHash, out var definition))
+            {
+                summaries[itemHash] = definition;
+            }
 
-                    var current = Interlocked.Increment(ref processed);
-                    if (progress is not null)
-                    {
-                        await progress.ReportAsync(current, distinctHashes.Length, ct).ConfigureAwait(false);
-                    }
-                })
-            .ConfigureAwait(false);
+            if (progress is not null)
+            {
+                await progress.ReportAsync(index + 1, distinctHashes.Length, cancellationToken).ConfigureAwait(false);
+            }
+        }
 
-        return summaries.ToDictionary(item => item.Key, item => item.Value);
+        return summaries;
     }
 
-    private async Task ApplyWeaponStatsAsync(
-        DestinyReport report,
-        IReadOnlyDictionary<long, ICollection<DestinyHistoricalWeaponStats>> uniqueWeaponHistory,
-        ManifestContext manifest,
-        ICrawlProgress? progress,
+    private async Task<IReadOnlyDictionary<long, WeaponDefinitionSummary>> GetWeaponDefinitionCacheAsync(
+        DestinyManifest manifest,
         CancellationToken cancellationToken)
     {
-        var fallback = uniqueWeaponHistory.Values
-            .SelectMany(weapons => weapons)
-            .GroupBy(weapon => ToUnsignedWeaponReferenceId(weapon.ReferenceId))
-            .ToDictionary(
-                group => group.Key,
-                group => new WeaponKillDelta
+        var cacheKey = $"{manifest.Version}:{InventoryItemDefinitionType}";
+        var lazyCache = WeaponDefinitionCaches.GetOrAdd(
+            cacheKey,
+            _ => new Lazy<Task<IReadOnlyDictionary<long, WeaponDefinitionSummary>>>(
+                async () =>
                 {
-                    UniqueWeaponKills = group.Sum(weapon => (int)GetStat(weapon.Values, "uniqueWeaponKills"))
-                });
+                    var json = await GetManifestTableJsonAsync(manifest, InventoryItemDefinitionType, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    return ParseWeaponDefinitions(json);
+                },
+                LazyThreadSafetyMode.ExecutionAndPublication));
 
-        if (report.PvETopWeapons.Count == 0)
+        try
         {
-            var weaponDefinitions = await GetInventoryItemSummariesAsync(manifest.Manifest, TopWeaponHashes(fallback), progress, cancellationToken)
-                .ConfigureAwait(false);
-
-            report.PvETopWeapons = BuildWeaponReports(fallback, weaponDefinitions);
+            return await lazyCache.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            WeaponDefinitionCaches.TryRemove(KeyValuePair.Create(cacheKey, lazyCache));
+            throw;
         }
     }
 
+    private static IReadOnlyDictionary<long, WeaponDefinitionSummary> ParseWeaponDefinitions(string json)
+    {
+        var definitions = new Dictionary<long, WeaponDefinitionSummary>();
+        using var stringReader = new StringReader(json);
+        using var reader = new JsonTextReader(stringReader);
+        var serializer = JsonSerializer.CreateDefault();
+
+        if (reader.Read() is false || reader.TokenType != JsonToken.StartObject)
+        {
+            throw new JsonReaderException("The DestinyInventoryItemDefinition manifest table must be a JSON object.");
+        }
+
+        while (reader.Read())
+        {
+            if (reader.TokenType != JsonToken.PropertyName
+                || long.TryParse(reader.Value?.ToString(), out var itemHash) is false
+                || reader.Read() is false)
+            {
+                continue;
+            }
+
+            if (reader.TokenType != JsonToken.StartObject)
+            {
+                reader.Skip();
+                continue;
+            }
+
+            var definition = serializer.Deserialize<ManifestInventoryItemDefinition>(reader);
+            if (definition?.ItemType == WeaponItemType)
+            {
+                definitions[itemHash] = ToWeaponDefinitionSummary(definition, itemHash);
+            }
+        }
+
+        return definitions;
+    }
+
     private async Task ApplyWeaponAggregateDeltasAsync(
-        DestinyReport report,
         int ownerMembershipType,
         long ownerMembershipId,
         IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> pveWeaponDeltas,
         IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> crucibleWeaponDeltas,
         IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> gambitWeaponDeltas,
-        DestinyManifest manifest,
         bool resetWeaponAggregates,
-        ICrawlProgress? progress,
         CancellationToken cancellationToken)
     {
         var weapons = mongoDatabase.GetCollection<WeaponAggregate>("weapon_aggregates");
-        var weaponCategories = mongoDatabase.GetCollection<WeaponCategoryAggregate>("weapon_category_aggregates");
         var ownerFilter = Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipType, ownerMembershipType)
             & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.OwnerMembershipId, ownerMembershipId);
-        var categoryOwnerFilter = Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipType, ownerMembershipType)
-            & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipId, ownerMembershipId);
 
         if (resetWeaponAggregates)
         {
             await weapons.DeleteManyAsync(ownerFilter, cancellationToken).ConfigureAwait(false);
-            await weaponCategories.DeleteManyAsync(categoryOwnerFilter, cancellationToken).ConfigureAwait(false);
         }
 
-        var allHashes = pveWeaponDeltas.Values
-            .Concat(crucibleWeaponDeltas.Values)
-            .Concat(gambitWeaponDeltas.Values)
-            .SelectMany(weaponDeltas => weaponDeltas.Keys)
-            .Where(hash => hash > 0)
-            .Distinct()
-            .ToArray();
-        var weaponDefinitions = await GetInventoryItemSummariesAsync(manifest, allHashes, progress, cancellationToken)
-            .ConfigureAwait(false);
-
-        var writes = BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "PvE", pveWeaponDeltas, weaponDefinitions)
-            .Concat(BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "Crucible", crucibleWeaponDeltas, weaponDefinitions))
-            .Concat(BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "Gambit", gambitWeaponDeltas, weaponDefinitions))
+        var writes = BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "PvE", pveWeaponDeltas)
+            .Concat(BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "Crucible", crucibleWeaponDeltas))
+            .Concat(BuildWeaponAggregateWrites(ownerMembershipType, ownerMembershipId, "Gambit", gambitWeaponDeltas))
             .ToArray();
 
         if (writes.Length > 0)
@@ -179,51 +263,35 @@ public partial class CrawlerService
             await weapons.BulkWriteAsync(writes, new BulkWriteOptions { IsOrdered = false }, cancellationToken).ConfigureAwait(false);
         }
 
-        var categoryWrites = BuildWeaponCategoryAggregateWrites(ownerMembershipType, ownerMembershipId, "PvE", pveWeaponDeltas, weaponDefinitions)
-            .Concat(BuildWeaponCategoryAggregateWrites(ownerMembershipType, ownerMembershipId, "Crucible", crucibleWeaponDeltas, weaponDefinitions))
-            .Concat(BuildWeaponCategoryAggregateWrites(ownerMembershipType, ownerMembershipId, "Gambit", gambitWeaponDeltas, weaponDefinitions))
-            .ToArray();
-
-        if (categoryWrites.Length > 0)
+        var pveFilter = ownerFilter & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, "PvE");
+        if (await weapons.Find(pveFilter).Limit(1).AnyAsync(cancellationToken).ConfigureAwait(false) is false)
         {
-            await weaponCategories.BulkWriteAsync(categoryWrites, new BulkWriteOptions { IsOrdered = false }, cancellationToken).ConfigureAwait(false);
+            logger.LogWarning(
+                "No PvE weapon aggregates were produced for membership {MembershipType}/{MembershipId}. The report will not include a fallback top-weapons summary.",
+                ownerMembershipType,
+                ownerMembershipId);
         }
-
-        report.PvETopWeapons = await GetTopWeaponReportsAsync(weapons, ownerFilter, "PvE", cancellationToken).ConfigureAwait(false);
-        report.CrucibleTopWeapons = await GetTopWeaponReportsAsync(weapons, ownerFilter, "Crucible", cancellationToken).ConfigureAwait(false);
-        report.GambitTopWeapons = await GetTopWeaponReportsAsync(weapons, ownerFilter, "Gambit", cancellationToken).ConfigureAwait(false);
     }
 
     private static IEnumerable<WriteModel<WeaponAggregate>> BuildWeaponAggregateWrites(
         int ownerMembershipType,
         long ownerMembershipId,
         string activityMode,
-        IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> weaponDeltasByClassAndMode,
-        IReadOnlyDictionary<long, WeaponDefinitionSummary> weaponDefinitions)
+        IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> weaponDeltasByClassAndMode)
     {
         return weaponDeltasByClassAndMode.SelectMany(mode => mode.Value.Select(weapon => (mode.Key.ClassName, mode.Key.SpecificActivityMode, Weapon: weapon)))
             .Where(item => item.Weapon.Value.TotalKills > 0)
             .Select(item =>
             {
-                weaponDefinitions.TryGetValue(item.Weapon.Key, out var definition);
-                var weaponName = definition?.Name ?? SyntheticWeaponName(item.Weapon.Key);
-                var weaponKey = NormalizeWeaponKey(weaponName);
-                var (categoryName, categoryKey) = WeaponCategory(item.Weapon.Key, definition);
                 return new
                 {
                     item.SpecificActivityMode,
                     item.ClassName,
-                    ReferenceId = item.Weapon.Key,
-                    WeaponName = weaponName,
-                    WeaponKey = weaponKey,
-                    IconUrl = definition?.IconUrl ?? "",
-                    CategoryName = categoryName,
-                    CategoryKey = categoryKey,
+                    WeaponHash = item.Weapon.Key,
                     Delta = item.Weapon.Value
                 };
             })
-            .Where(item => !string.IsNullOrWhiteSpace(item.WeaponKey))
-            .GroupBy(item => (item.ClassName, item.SpecificActivityMode, item.WeaponKey))
+            .GroupBy(item => (item.ClassName, item.SpecificActivityMode, item.WeaponHash))
             .Select(group =>
             {
                 var first = group.First();
@@ -232,78 +300,25 @@ public partial class CrawlerService
                     & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, activityMode)
                     & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ClassName, first.ClassName)
                     & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.SpecificActivityMode, first.SpecificActivityMode)
-                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.WeaponKey, first.WeaponKey);
+                    & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.WeaponHash, first.WeaponHash);
                 var update = Builders<WeaponAggregate>.Update
                     .SetOnInsert(weapon => weapon.OwnerMembershipType, ownerMembershipType)
                     .SetOnInsert(weapon => weapon.OwnerMembershipId, ownerMembershipId)
                     .SetOnInsert(weapon => weapon.ActivityMode, activityMode)
                     .SetOnInsert(weapon => weapon.ClassName, first.ClassName)
                     .SetOnInsert(weapon => weapon.SpecificActivityMode, first.SpecificActivityMode)
-                    .SetOnInsert(weapon => weapon.WeaponKey, first.WeaponKey)
-                    .Set(weapon => weapon.WeaponName, first.WeaponName)
-                    .Set(weapon => weapon.ReferenceId, first.ReferenceId)
-                    .Set(weapon => weapon.IconUrl, first.IconUrl)
-                    .Set(weapon => weapon.CategoryKey, first.CategoryKey)
-                    .Set(weapon => weapon.CategoryName, first.CategoryName)
+                    .SetOnInsert(weapon => weapon.WeaponHash, first.WeaponHash)
                     .Inc(weapon => weapon.Kills, group.Sum(item => item.Delta.TotalKills));
 
                 return new UpdateOneModel<WeaponAggregate>(filter, update) { IsUpsert = true };
             });
     }
 
-    private static IEnumerable<WriteModel<WeaponCategoryAggregate>> BuildWeaponCategoryAggregateWrites(
-        int ownerMembershipType,
-        long ownerMembershipId,
-        string activityMode,
-        IReadOnlyDictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>> weaponDeltasByClassAndMode,
-        IReadOnlyDictionary<long, WeaponDefinitionSummary> weaponDefinitions)
-    {
-        return weaponDeltasByClassAndMode.SelectMany(mode => mode.Value.Select(weapon => (mode.Key.ClassName, mode.Key.SpecificActivityMode, Weapon: weapon)))
-            .Where(item => item.Weapon.Value.TotalKills > 0)
-            .Select(item =>
-            {
-                weaponDefinitions.TryGetValue(item.Weapon.Key, out var definition);
-                var (categoryName, categoryKey) = WeaponCategory(item.Weapon.Key, definition);
-                return new
-                {
-                    item.SpecificActivityMode,
-                    item.ClassName,
-                    CategoryName = categoryName,
-                    CategoryKey = categoryKey,
-                    Delta = item.Weapon.Value
-                };
-            })
-            .GroupBy(item => (item.ClassName, item.SpecificActivityMode, item.CategoryKey))
-            .Select(group =>
-            {
-                var first = group.First();
-                var filter = Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipType, ownerMembershipType)
-                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.OwnerMembershipId, ownerMembershipId)
-                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.ActivityMode, activityMode)
-                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.ClassName, first.ClassName)
-                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.SpecificActivityMode, first.SpecificActivityMode)
-                    & Builders<WeaponCategoryAggregate>.Filter.Eq(category => category.CategoryKey, first.CategoryKey);
-                var update = Builders<WeaponCategoryAggregate>.Update
-                    .SetOnInsert(category => category.OwnerMembershipType, ownerMembershipType)
-                    .SetOnInsert(category => category.OwnerMembershipId, ownerMembershipId)
-                    .SetOnInsert(category => category.ActivityMode, activityMode)
-                    .SetOnInsert(category => category.ClassName, first.ClassName)
-                    .SetOnInsert(category => category.SpecificActivityMode, first.SpecificActivityMode)
-                    .SetOnInsert(category => category.CategoryKey, first.CategoryKey)
-                    .Set(category => category.CategoryName, first.CategoryName)
-                    .Inc(category => category.Kills, group.Sum(item => item.Delta.TotalKills));
-
-                return new UpdateOneModel<WeaponCategoryAggregate>(filter, update)
-                {
-                    IsUpsert = true
-                };
-            });
-    }
-
-    private static async Task<List<WeaponReport>> GetTopWeaponReportsAsync(
+    private async Task<List<WeaponReport>> GetTopWeaponReportsAsync(
         IMongoCollection<WeaponAggregate> weapons,
         FilterDefinition<WeaponAggregate> ownerFilter,
         string activityMode,
+        ManifestContext manifest,
         CancellationToken cancellationToken)
     {
         var modeFilter = ownerFilter & Builders<WeaponAggregate>.Filter.Eq(weapon => weapon.ActivityMode, activityMode);
@@ -312,17 +327,32 @@ public partial class CrawlerService
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return weaponAggregates
-            .GroupBy(weapon => weapon.WeaponKey, StringComparer.Ordinal)
-            .Select(group => new WeaponReport
+        var topWeapons = weaponAggregates
+            .GroupBy(weapon => weapon.WeaponHash)
+            .Select(group => new { WeaponHash = group.Key, TotalKills = group.Sum(weapon => weapon.Kills) })
+            .OrderByDescending(weapon => weapon.TotalKills)
+            .Take(10)
+            .ToList();
+        var definitions = await GetInventoryItemSummariesAsync(
+                manifest,
+                topWeapons.Select(weapon => weapon.WeaponHash),
+                progress: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return topWeapons
+            .Select(weapon =>
             {
-                Name = group.First().WeaponName,
-                IconUrl = group.First().IconUrl,
-                TotalKills = group.Sum(weapon => weapon.Kills)
+                definitions.TryGetValue(weapon.WeaponHash, out var definition);
+                return new WeaponReport
+                {
+                    Name = definition?.Name ?? SyntheticWeaponName(weapon.WeaponHash),
+                    IconUrl = definition?.IconUrl ?? "",
+                    TotalKills = weapon.TotalKills
+                };
             })
             .OrderByDescending(weapon => weapon.TotalKills)
             .ThenBy(weapon => weapon.Name, StringComparer.Ordinal)
-            .Take(10)
             .ToList();
     }
 
@@ -332,6 +362,7 @@ public partial class CrawlerService
     {
         foreach (var entry in entries)
         {
+            var extendedKills = 0;
             foreach (var weapon in entry.Extended?.Weapons ?? [])
             {
                 var uniqueWeaponKills = (int)GetStat(weapon.Values, "uniqueWeaponKills");
@@ -340,6 +371,8 @@ public partial class CrawlerService
                 {
                     fallbackWeaponKills = (int)GetStat(weapon.Values, "kills");
                 }
+
+                extendedKills += uniqueWeaponKills + fallbackWeaponKills;
 
                 AddWeaponDelta(
                     weapons,
@@ -351,13 +384,19 @@ public partial class CrawlerService
                     });
             }
 
-            AddAbilityDelta(weapons, entry, GrenadeKillsReferenceId, "weaponKillsGrenade");
-            AddAbilityDelta(weapons, entry, MeleeKillsReferenceId, "weaponKillsMelee");
-            AddAbilityDelta(weapons, entry, SuperKillsReferenceId, "weaponKillsSuper");
+            extendedKills += AddAbilityDelta(weapons, entry, GrenadeKillsReferenceId, "weaponKillsGrenade");
+            extendedKills += AddAbilityDelta(weapons, entry, MeleeKillsReferenceId, "weaponKillsMelee");
+            extendedKills += AddAbilityDelta(weapons, entry, SuperKillsReferenceId, "weaponKillsSuper");
+
+            var unknownKills = (int)GetStat(entry.Values, "kills") - extendedKills;
+            if (unknownKills > 0)
+            {
+                AddWeaponDelta(weapons, UnknownKillsReferenceId, new WeaponKillDelta { UnknownKills = unknownKills });
+            }
         }
     }
 
-    private static void AddAbilityDelta(
+    private static int AddAbilityDelta(
         IDictionary<long, WeaponKillDelta> weapons,
         DestinyPostGameCarnageReportEntry entry,
         long referenceId,
@@ -366,7 +405,7 @@ public partial class CrawlerService
         var kills = (int)GetStat(entry.Extended?.Values, statId);
         if (kills <= 0)
         {
-            return;
+            return 0;
         }
 
         var delta = new WeaponKillDelta();
@@ -384,6 +423,7 @@ public partial class CrawlerService
         }
 
         AddWeaponDelta(weapons, referenceId, delta);
+        return kills;
     }
 
     private static void AddWeaponDelta(
@@ -515,6 +555,7 @@ public partial class CrawlerService
             GrenadeKillsReferenceId => "Grenade",
             MeleeKillsReferenceId => "Melee",
             SuperKillsReferenceId => "Super",
+            UnknownKillsReferenceId => "Unknown",
             _ => referenceId.ToString(System.Globalization.CultureInfo.InvariantCulture)
         };
     }
@@ -536,18 +577,30 @@ public partial class CrawlerService
         return (categoryName, categoryKey);
     }
 
+    private static WeaponDefinitionSummary ToWeaponDefinitionSummary(ManifestInventoryItemDefinition definition, long itemHash)
+    {
+        var displayProperties = definition.DisplayProperties;
+        var itemTypeDisplayName = definition.ItemTypeDisplayName;
+        var categoryName = string.IsNullOrWhiteSpace(itemTypeDisplayName)
+            ? WeaponSubTypeName(definition.ItemSubType)
+            : itemTypeDisplayName;
+        return new WeaponDefinitionSummary(
+            displayProperties?.Name ?? ToUnsignedHashIdentifier(itemHash),
+            BungieUrl(displayProperties?.Icon),
+            categoryName,
+            NormalizeWeaponKey(categoryName));
+    }
+
     private static WeaponDefinitionSummary ToWeaponDefinitionSummary(DestinyDefinition definition)
     {
-        var displayProperties = TryGetJObject(definition.AdditionalProperties, "displayProperties");
-        var itemTypeDisplayName = definition.AdditionalProperties.TryGetValue("itemTypeDisplayName", out var itemTypeDisplayNameValue)
-            ? itemTypeDisplayNameValue?.ToString()
-            : null;
+        var displayProperties = GetDefinitionProperty<ManifestDisplayProperties>(definition.AdditionalProperties, "displayProperties");
+        var itemTypeDisplayName = GetDefinitionString(definition.AdditionalProperties, "itemTypeDisplayName");
         var categoryName = string.IsNullOrWhiteSpace(itemTypeDisplayName)
-            ? WeaponSubTypeName(definition.AdditionalProperties.TryGetValue("itemSubType", out var itemSubTypeValue) ? itemSubTypeValue : null)
+            ? WeaponSubTypeName(GetDefinitionInt32(definition.AdditionalProperties, "itemSubType"))
             : itemTypeDisplayName!;
         return new WeaponDefinitionSummary(
-            displayProperties?["name"]?.Value<string>() ?? ToUnsignedHashIdentifier(definition.Hash),
-            BungieUrl(displayProperties?["icon"]?.Value<string>()),
+            displayProperties?.Name ?? ToUnsignedHashIdentifier(definition.Hash),
+            BungieUrl(displayProperties?.Icon),
             categoryName,
             NormalizeWeaponKey(categoryName));
     }
