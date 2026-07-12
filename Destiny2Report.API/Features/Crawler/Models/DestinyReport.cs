@@ -19,6 +19,13 @@ public record DestinyReport
 
     public int PlatformId { get; init; }
     public long PlayerMembershipId { get; init; }
+    public string DisplayName { get; init; } = "";
+    public int DisplayCode { get; init; }
+    public string FullDisplayName
+    {
+        get => $"{DisplayName}#{DisplayCode:D4}";
+        init { }
+    }
     public DateTime CrawledAt { get; init; } = DateTime.UtcNow;
     [BsonDefaultValue(CrawlStateCompleted)]
     [BsonIgnoreIfDefault]

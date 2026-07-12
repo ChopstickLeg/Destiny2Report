@@ -35,7 +35,7 @@ public partial class CrawlerService(
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
 
     private static readonly int[] AccountStatGroups = [GeneralStatsGroup];
-    private static readonly int[] ProfileComponents = [ProfileRecordsComponent, MetricsComponent, ProfileCharactersComponent];
+    private static readonly int[] ProfileComponents = [BasicProfileComponent, ProfileRecordsComponent, MetricsComponent, ProfileCharactersComponent];
     private static readonly int[] ProfileCharactersComponents = [BasicProfileComponent, ProfileCharactersComponent];
     private static readonly int[] ModeStatGroups = [GeneralStatsGroup];
     private static readonly long[] TriumphSealRootPresentationNodeHashes = [616318467, 1881970629];
@@ -278,10 +278,15 @@ public partial class CrawlerService(
             var characterClassById = BuildCharacterClassMap(historicalCharacters, [], playerMembershipId, characterIds);
 
             var now = DateTimeOffset.UtcNow;
+            var userInfo = profile.Profile?.Data?.UserInfo;
             var report = new DestinyReport
             {
                 PlatformId = platformId,
                 PlayerMembershipId = playerMembershipId,
+                DisplayName = !string.IsNullOrWhiteSpace(userInfo?.BungieGlobalDisplayName)
+                    ? userInfo.BungieGlobalDisplayName
+                    : userInfo?.DisplayName ?? "",
+                DisplayCode = userInfo?.BungieGlobalDisplayNameCode ?? 0,
                 CrawlState = DestinyReport.CrawlStateCompleted,
                 QueuedInRedis = false,
                 QueuedAtUtc = existingReport?.QueuedAtUtc,

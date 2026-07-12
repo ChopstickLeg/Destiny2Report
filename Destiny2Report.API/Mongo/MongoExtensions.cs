@@ -1,11 +1,14 @@
 using Destiny2Report.API.Features.Crawler.Models;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using MongoDB.Driver.Search;
 
 namespace Destiny2Report.API.Mongo;
 
 public static class MongoExtensions
 {
+    private const string PlayerFullDisplayNameSearchIndex = "player-full-display-name";
+
     public static IServiceCollection AddMongo(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton<IMongoClient>(_ =>
@@ -60,6 +63,7 @@ public static class MongoExtensions
                     })
             ],
             cancellationToken);
+        await reports.EnsureFullDisplayNameSearchIndexAsync(cancellationToken);
 
         var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
         var accumulatorIndexKeys = Builders<CrawlAccumulator>.IndexKeys
@@ -159,6 +163,43 @@ public static class MongoExtensions
         {
             await collection.Indexes.CreateManyAsync(missingIndexModels, cancellationToken);
         }
+    }
+
+    private static async Task EnsureFullDisplayNameSearchIndexAsync(
+        this IMongoCollection<DestinyReport> reports,
+        CancellationToken cancellationToken)
+    {
+        using var searchIndexes = await reports.SearchIndexes
+            .ListAsync(PlayerFullDisplayNameSearchIndex, aggregateOptions: null, cancellationToken)
+            .ConfigureAwait(false);
+        var existingSearchIndexes = await searchIndexes.ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (existingSearchIndexes.Count > 0)
+        {
+            return;
+        }
+
+        var definition = new BsonDocument
+        {
+            {
+                "mappings",
+                new BsonDocument
+                {
+                    { "dynamic", false },
+                    {
+                        "fields",
+                        new BsonDocument
+                        {
+                            { nameof(DestinyReport.FullDisplayName), new BsonDocument("type", "string") }
+                        }
+                    }
+                }
+            }
+        };
+
+        await reports.SearchIndexes.CreateOneAsync(
+                new CreateSearchIndexModel(PlayerFullDisplayNameSearchIndex, definition),
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
 }
