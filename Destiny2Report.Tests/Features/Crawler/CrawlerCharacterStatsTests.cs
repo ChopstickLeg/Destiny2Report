@@ -1,5 +1,6 @@
 using D2Report.BungieClient;
 using Destiny2Report.Tests.TestSupport;
+using Destiny2Report.API.Features.Crawler.Models;
 using Newtonsoft.Json.Linq;
 
 namespace Destiny2Report.Tests.Features.Crawler;
@@ -42,7 +43,7 @@ public sealed class CrawlerCharacterStatsTests
     }
 
     [Fact]
-    public void BuildPlaytimeByClass_aggregates_seconds_by_normalized_class()
+    public void BuildCharacterPlaytime_includes_current_and_deleted_characters()
     {
         var characters = new[]
         {
@@ -51,18 +52,24 @@ public sealed class CrawlerCharacterStatsTests
             BungieFixture.HistoricalCharacter(33, merged: BungieFixture.Bucket(("secondsPlayed", 600)))
         };
 
-        var result = (Dictionary<string, TimeSpan>)CrawlerReflection.Invoke(
-            "BuildPlaytimeByClass",
+        var result = (List<CharacterPlaytimeReport>)CrawlerReflection.Invoke(
+            "BuildCharacterPlaytime",
             characters,
             new Dictionary<long, string>
             {
                 [11] = "titan",
                 [22] = "Hunter",
                 [33] = "Bogus"
+            },
+            new[]
+            {
+                new DestinyCharacterComponent { CharacterId = 11, ClassType = 0, RaceType = 2, MinutesPlayedTotal = 60 },
+                new DestinyCharacterComponent { CharacterId = 22, ClassType = 1, RaceType = 1, MinutesPlayedTotal = 30 }
             })!;
 
-        Assert.Equal(TimeSpan.FromMinutes(60), result["Titan"]);
-        Assert.Equal(TimeSpan.FromMinutes(30), result["Hunter"]);
-        Assert.Equal(TimeSpan.FromMinutes(10), result["Unknown"]);
+        Assert.Equal(3, result.Count);
+        Assert.Contains(result, item => item.Class == "Titan" && item.Race == "Exo" && !item.IsDeleted && item.Playtime == TimeSpan.FromMinutes(60));
+        Assert.Contains(result, item => item.Class == "Hunter" && item.Race == "Awoken" && !item.IsDeleted && item.Playtime == TimeSpan.FromMinutes(30));
+        Assert.Contains(result, item => item.Class == "Unknown" && item.Race == "Unknown" && item.IsDeleted && item.Playtime == TimeSpan.FromMinutes(10));
     }
 }

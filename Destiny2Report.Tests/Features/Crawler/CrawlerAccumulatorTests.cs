@@ -195,4 +195,43 @@ public sealed class CrawlerAccumulatorTests
         Assert.True(report.NeedsFullRecrawl);
         Assert.Equal("recompute gambit mote stats", report.FullRecrawlReason);
     }
+
+    [Fact]
+    public void GetLongestPlaytimeStreak_uses_distinct_UTC_dates_and_keeps_earliest_tie()
+    {
+        var streak = (PlaytimeStreakReport)CrawlerReflection.Invoke(
+            "GetLongestPlaytimeStreak",
+            new[]
+            {
+                DateTime.Parse("2024-01-01T00:00:00Z"),
+                DateTime.Parse("2024-01-02T23:00:00Z"),
+                DateTime.Parse("2024-01-02T01:00:00Z"),
+                DateTime.Parse("2024-01-04T00:00:00Z"),
+                DateTime.Parse("2024-01-05T00:00:00Z")
+            })!;
+
+        Assert.Equal(DateTimeOffset.Parse("2024-01-01T00:00:00Z").UtcDateTime, streak.StartDate);
+        Assert.Equal(DateTimeOffset.Parse("2024-01-02T00:00:00Z").UtcDateTime, streak.EndDate);
+    }
+
+    [Fact]
+    public void GetLongestPlaytimeStreak_returns_null_without_play_dates()
+    {
+        var streak = CrawlerReflection.Invoke("GetLongestPlaytimeStreak", Array.Empty<DateTime>());
+
+        Assert.Null(streak);
+    }
+
+    [Fact]
+    public void GetCurrentPlaytimeStreak_returns_active_streak_ending_yesterday()
+    {
+        var today = DateTimeOffset.Parse("2024-06-10T00:00:00Z").UtcDateTime;
+        var streak = (PlaytimeStreakReport)CrawlerReflection.Invoke(
+            "GetCurrentPlaytimeStreak",
+            new[] { today.AddDays(-4), today.AddDays(-3), today.AddDays(-2), today.AddDays(-1) },
+            today)!;
+
+        Assert.Equal(today.AddDays(-4), streak.StartDate);
+        Assert.Equal(today.AddDays(-1), streak.EndDate);
+    }
 }

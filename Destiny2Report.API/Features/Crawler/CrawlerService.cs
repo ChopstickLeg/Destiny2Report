@@ -299,7 +299,7 @@ public partial class CrawlerService(
                 FullRecrawlReason = ""
             };
 
-            ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById);
+            ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById, profile);
             ApplyProfileStats(report, profile, manifest);
             ApplyModeStats(report, historicalStatsTask.Result);
             await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, characterIds, crawlAfter, recentActivityIds, characterClassById, manifest, requiresFullCrawl, progress, cancellationToken).ConfigureAwait(false);

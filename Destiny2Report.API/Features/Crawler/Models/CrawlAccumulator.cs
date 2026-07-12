@@ -17,8 +17,6 @@ public record CrawlAccumulator
     public string FullRecrawlReason { get; set; } = "";
     [BsonIgnoreIfDefault]
     public long TotalKills { get; set; }
-    [BsonIgnoreIfDefault]
-    public long TotalDeaths { get; set; }
     public Dictionary<string, long> PatrolSecondsByPlanet { get; set; } = new();
     public Dictionary<string, ActivityCompletionAccumulator> RaidCompletions { get; set; } = new();
     public Dictionary<string, ActivityCompletionAccumulator> DungeonCompletions { get; set; } = new();
@@ -29,6 +27,7 @@ public record CrawlAccumulator
     public int ZeroKillActivities { get; set; }
     [BsonIgnoreIfDefault]
     public long TotalActivitySeconds { get; set; }
+    public List<DateTime> PlayDates { get; set; } = new();
     public Dictionary<string, ActivityModePlaytimeAccumulator> PlaytimeByActivityMode { get; set; } = new();
     [BsonIgnoreIfDefault]
     public int GambitMotesBanked { get; set; }
@@ -42,6 +41,9 @@ public record CrawlAccumulator
     [BsonIgnoreIfDefault]
     public int GambitBankOverage { get; set; }
     public Dictionary<string, int> GambitBankOverageByMode { get; set; } = new();
+    [BsonIgnoreIfDefault]
+    public int GambitMoteMatches { get; set; }
+    public Dictionary<string, PvpPlaylistAccumulator> PvpPlaylists { get; set; } = new();
     [BsonIgnoreIfDefault]
     public long CrucibleKills { get; set; }
     public Dictionary<string, long> CrucibleKillsByMode { get; set; } = new();

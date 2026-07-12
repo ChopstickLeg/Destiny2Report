@@ -102,6 +102,23 @@ public static class MongoExtensions
                     })
             ],
             cancellationToken);
+        var deaths = mongoDatabase.GetCollection<DeathAggregate>("death_aggregates");
+        var deathUniqueIndexKeys = Builders<DeathAggregate>.IndexKeys
+            .Ascending(death => death.OwnerMembershipType)
+            .Ascending(death => death.OwnerMembershipId)
+            .Ascending(death => death.ActivityMode)
+            .Ascending(death => death.SpecificActivityMode);
+        await deaths.EnsureIndexesAsync(
+            [
+                new CreateIndexModel<DeathAggregate>(
+                    deathUniqueIndexKeys,
+                    new CreateIndexOptions
+                    {
+                        Name = "ux_death_aggregates_owner_mode_specific_mode",
+                        Unique = true
+                    })
+            ],
+            cancellationToken);
         var emblems = mongoDatabase.GetCollection<EmblemAggregate>("emblem_aggregates");
         var emblemUniqueIndexKeys = Builders<EmblemAggregate>.IndexKeys
             .Ascending(emblem => emblem.OwnerMembershipType)

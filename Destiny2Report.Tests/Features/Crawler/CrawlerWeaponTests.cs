@@ -184,8 +184,12 @@ public sealed class CrawlerWeaponTests
         Assert.Equal(7, accumulator.GambitMotesDeniedByMode["75"]);
         Assert.Equal(4, accumulator.GambitMotesDeniedByMode["64"]);
 
+        accumulator.GambitMoteMatches = 3;
         var report = (GambitMotesReport)CrawlerReflection.Invoke("ToGambitMotesReport", accumulator)!;
 
+        Assert.Equal(3, report.Matches);
+        Assert.Equal(13.33, report.AverageMotesBanked);
+        Assert.Equal(2, report.AverageMotesLost);
         Assert.Equal(40, report.MotesBanked.Total);
         Assert.Equal(16, report.MotesBanked.ByMode["Gambit"]);
         Assert.Equal(14, report.MotesBanked.ByMode["GambitPrime"]);
