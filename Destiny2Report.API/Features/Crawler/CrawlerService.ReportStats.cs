@@ -10,18 +10,18 @@ public partial class CrawlerService
         DestinyReport report,
         DestinyHistoricalStatsAccountResult accountStats,
         IEnumerable<DestinyHistoricalStatsPerCharacter> historicalCharacters,
-        IReadOnlyDictionary<long, string> characterClassById)
+        IReadOnlyDictionary<long, string> characterClassById,
+        DestinyProfileResponse profile)
     {
         report.Misadventures = (int)accountStats.Characters.Sum(c => c.Results.Sum(a => a.Value.AllTime?.TryGetValue("suicides", out var stat) ?? false ? stat?.Basic.Value ?? 0 : 0));
 
-        report.PlaytimeByClass = BuildPlaytimeByClass(historicalCharacters, characterClassById);
+        report.CharacterPlaytime = BuildCharacterPlaytime(historicalCharacters, characterClassById, profile.Characters?.Data?.Values ?? []);
     }
 
     private static void ApplyProfileStats(DestinyReport report, DestinyProfileResponse profile, ManifestContext manifest)
     {
         var profileCharacters = profile.Characters?.Data?.Values.ToArray() ?? [];
         report.TotalPlaytime = TimeSpan.FromMinutes(profileCharacters.Sum(character => character.MinutesPlayedTotal));
-        report.PlaytimeByClass = BuildTotalPlaytimeByClass(profileCharacters);
 
         var metrics = profile.Metrics?.Data?.Metrics;
         if (metrics is null)

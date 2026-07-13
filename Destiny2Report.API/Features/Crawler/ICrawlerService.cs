@@ -13,4 +13,16 @@ public interface ICrawlerService
         long membershipId,
         WeaponActivityMode activityMode,
         CancellationToken cancellationToken);
+
+    Task<DeathActivityModeAggregateReport?> GetDeathActivityModeReportAsync(
+        int membershipTypeId,
+        long membershipId,
+        DeathActivityMode activityMode,
+        CancellationToken cancellationToken);
+
+    Task<ActivityPlaytimeAggregateReport?> GetActivityPlaytimeReportAsync(
+        int membershipTypeId,
+        long membershipId,
+        ActivityPlaytimeMode activityMode,
+        CancellationToken cancellationToken);
 }

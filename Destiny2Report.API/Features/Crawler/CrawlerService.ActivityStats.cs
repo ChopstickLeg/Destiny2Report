@@ -29,7 +29,6 @@ public partial class CrawlerService
         CancellationToken cancellationToken)
     {
         var activityDefinitions = await manifest.GetActivityDefinitionsAsync(cancellationToken).ConfigureAwait(false);
-        var activityModeDefinitions = await manifest.GetActivityModeDefinitionsAsync(cancellationToken).ConfigureAwait(false);
         var destinationDefinitions = await manifest.GetDestinationDefinitionsAsync(cancellationToken).ConfigureAwait(false);
 
         await ApplyPgcrAggregatesAsync(
@@ -42,7 +41,6 @@ public partial class CrawlerService
                 recentActivityIds,
                 characterClassById,
                 activityDefinitions,
-                activityModeDefinitions,
                 destinationDefinitions,
                 manifest,
                 resetDerivedAggregates,
@@ -86,7 +84,6 @@ public partial class CrawlerService
         IReadOnlySet<long> recentActivityIds,
         IDictionary<long, string> characterClassById,
         IReadOnlyDictionary<string, ManifestActivityDefinition> activityDefinitions,
-        IReadOnlyDictionary<string, ManifestActivityModeDefinition> activityModeDefinitions,
         IReadOnlyDictionary<string, ManifestDestinationDefinition> destinationDefinitions,
         ManifestContext manifest,
         bool resetDerivedAggregates,
@@ -99,9 +96,13 @@ public partial class CrawlerService
         var pveWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
         var pvpWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
         var gambitWeaponDeltas = new Dictionary<(string ClassName, int SpecificActivityMode), Dictionary<long, WeaponKillDelta>>();
+        var pveDeathDeltas = new Dictionary<int, long>();
+        var pvpDeathDeltas = new Dictionary<int, long>();
+        var gambitDeathDeltas = new Dictionary<int, long>();
         var emblemSecondsDeltas = new Dictionary<long, long>();
         var raidCompletions = ToCompletionAggregates(accumulator.RaidCompletions);
         var dungeonCompletions = ToCompletionAggregates(accumulator.DungeonCompletions);
+        var conquestCompletions = ToCompletionAggregates(accumulator.ConquestCompletions);
         var playersSherpaed = new Dictionary<string, int>(accumulator.PlayersSherpaed, StringComparer.OrdinalIgnoreCase);
         var pendingSherpaChecks = new List<SherpaCheck>();
         var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>>();
@@ -159,6 +160,8 @@ public partial class CrawlerService
                 continue;
             }
 
+            AddPlayDate(accumulator, pgcr.Period);
+
             var completionReason = GetPgcrCompletionReason(pgcr);
             var playerCompleted = playerEntries.Any(entry => IsNormallyCompleted(entry.Values, completionReason));
             var playerKills = SumStats(playerEntries, "kills");
@@ -182,6 +185,10 @@ public partial class CrawlerService
             var isFlawless = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && activityPlayerEntries.Length > 0 && activityPlayerEntries.All(entry => GetStat(entry.Values, "deaths") <= 0);
             var isSolo = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && IsSoloActivity(activityPlayerEntries);
             var activityCompletedAt = GetActivityCompletedAt(pgcr, playerEntries);
+            var conquestName = conquests.GetName(
+                pgcr.ActivityDetails.ReferenceId,
+                pgcr.ActivityDetails.DirectorActivityHash,
+                activityCompletedAt);
             var isContest = IsContest(pgcr, activityCompletedAt, isRaid, isDungeon);
             var isSoloFlawless = isSolo && isFlawless;
             var playerActivitySeconds = SumPlayerActivitySeconds(playerEntries);
@@ -190,23 +197,44 @@ public partial class CrawlerService
             AddActivityModePlaytime(accumulator, pgcr, (long)playerActivitySeconds);
             AddEmblemPlaytime(emblemSecondsDeltas, playerEntries);
 
-            if (playerCompleted && isRaid)
+            if (isRaid)
             {
-                AddCompletion(raidCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
-                var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
-                AddFirstRaidCompletion(accumulator, normalizedRaidName, activityCompletedAt, instanceId);
-                SetFirstRaidCompletion(raidCompletions, normalizedRaidName, activityCompletedAt, instanceId);
-                completedRaidActivities.Add(new CompletedRaidActivity(normalizedRaidName, activityCompletedAt, instanceId));
-                pendingSherpaChecks.Add(new SherpaCheck(
-                    instanceId,
-                    normalizedRaidName,
-                    activityCompletedAt,
-                    GetCompletedFireteamMembers(pgcr, playerMembershipId).ToArray()));
+                AddActivity(raidCompletions, activityName);
+                if (playerCompleted)
+                {
+                    AddCompletion(raidCompletions, activityName, activityCompletedAt, instanceId, playerActivitySeconds, isContest, isFlawless, isSolo, isSoloFlawless);
+                    var normalizedRaidName = ContestModeLookup.NormalizeActivityName(activityName);
+                    AddFirstRaidCompletion(accumulator, normalizedRaidName, activityCompletedAt, instanceId);
+                    completedRaidActivities.Add(new CompletedRaidActivity(normalizedRaidName, activityCompletedAt, instanceId));
+                    pendingSherpaChecks.Add(new SherpaCheck(instanceId, normalizedRaidName, activityCompletedAt, GetCompletedFireteamMembers(pgcr, playerMembershipId).ToArray()));
+                }
             }
 
-            if (playerCompleted && isDungeon)
+            if (isDungeon)
             {
-                AddCompletion(dungeonCompletions, activityName, isContest, isFlawless, isSolo, isSoloFlawless);
+                AddActivity(dungeonCompletions, activityName);
+                if (playerCompleted)
+                {
+                    AddCompletion(dungeonCompletions, activityName, activityCompletedAt, instanceId, playerActivitySeconds, isContest, isFlawless, isSolo, isSoloFlawless);
+                }
+            }
+
+            if (conquestName is not null)
+            {
+                AddActivity(conquestCompletions, conquestName);
+                if (playerCompleted)
+                {
+                    AddCompletion(
+                        conquestCompletions,
+                        conquestName,
+                        activityCompletedAt,
+                        instanceId,
+                        playerActivitySeconds,
+                        contestClear: false,
+                        isFlawless,
+                        isSolo,
+                        isSoloFlawless);
+                }
             }
 
             var otherPlayers = GetDistinctOtherPlayers(pgcr, playerMembershipId);
@@ -221,8 +249,9 @@ public partial class CrawlerService
                 }
             }
 
-            if (hasGambitMoteStats)
+            if (isGambit && hasGambitMoteStats)
             {
+                accumulator.GambitMoteMatches++;
                 foreach (var playerEntry in playerEntries)
                 {
                     AddGambitMoteStats(accumulator, pgcr, playerEntry);
@@ -234,7 +263,9 @@ public partial class CrawlerService
                 AddCrucibleKills(accumulator, pgcr, (long)playerKills);
                 if (!isPrivateCrucible)
                 {
+                    AddPvpPlaylistResult(accumulator, pgcr, playerEntries);
                     AddWeaponsByClassAndMode(pvpWeaponDeltas, pgcr, playerEntries, characterClassById);
+                    AddDeathsByMode(pvpDeathDeltas, pgcr, playerEntries);
                 }
             }
             else if (isGambit)
@@ -242,11 +273,13 @@ public partial class CrawlerService
                 if (!isPrivateGambit)
                 {
                     AddWeaponsByClassAndMode(gambitWeaponDeltas, pgcr, playerEntries, characterClassById);
+                    AddDeathsByMode(gambitDeathDeltas, pgcr, playerEntries);
                 }
             }
             else
             {
                 AddWeaponsByClassAndMode(pveWeaponDeltas, pgcr, playerEntries, characterClassById);
+                AddDeathsByMode(pveDeathDeltas, pgcr, playerEntries);
             }
         }
 
@@ -264,6 +297,7 @@ public partial class CrawlerService
 
         SaveCompletionAggregates(accumulator.RaidCompletions, raidCompletions);
         SaveCompletionAggregates(accumulator.DungeonCompletions, dungeonCompletions);
+        SaveCompletionAggregates(accumulator.ConquestCompletions, conquestCompletions);
         accumulator.PlayersSherpaed = new Dictionary<string, int>(playersSherpaed, StringComparer.OrdinalIgnoreCase);
         SaveEncounteredPlayerKeys(accumulator, encounteredPlayerKeys);
 
@@ -271,13 +305,13 @@ public partial class CrawlerService
             item => item.Key,
             item => TimeSpan.FromSeconds(item.Value));
         report.TotalKills = accumulator.TotalKills;
-        report.TotalDeaths = accumulator.TotalDeaths;
-        report.PlaytimeByActivityMode = ToActivityModePlaytimeReports(accumulator.PlaytimeByActivityMode, activityModeDefinitions);
         report.ZeroKillActivities = accumulator.ZeroKillActivities;
         report.CrucibleKills = ToCrucibleKillsReport(accumulator);
         report.GambitMotes = ToGambitMotesReport(accumulator);
         report.RaidCompletions = ToCompletionSummaries(raidCompletions);
         report.DungeonCompletions = ToCompletionSummaries(dungeonCompletions);
+        report.ConquestCompletions = ToCompletionSummaries(conquestCompletions);
+        report.PvpPlaylists = ToPvpPlaylistReports(accumulator.PvpPlaylists);
         report.PlayersSherpaed = ToSherpaReports(playersSherpaed);
         await ApplyPlayerEncounterCountsAsync(
                 report,
@@ -305,6 +339,16 @@ public partial class CrawlerService
                 cancellationToken)
             .ConfigureAwait(false);
 
+        await ApplyDeathAggregateDeltasAsync(
+                platformId,
+                playerMembershipId,
+                pveDeathDeltas,
+                pvpDeathDeltas,
+                gambitDeathDeltas,
+                resetDerivedAggregates,
+                cancellationToken)
+            .ConfigureAwait(false);
+
         if (progress is not null)
         {
             await progress.StartPhaseAsync("emblem-aggregates", "Saving emblem aggregates", cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -322,6 +366,8 @@ public partial class CrawlerService
             .ConfigureAwait(false);
 
         report.TotalActivityTime = TimeSpan.FromSeconds(accumulator.TotalActivitySeconds);
+        report.LongestPlaytimeStreak = GetLongestPlaytimeStreak(accumulator.PlayDates);
+        report.CurrentPlaytimeStreak = GetCurrentPlaytimeStreak(accumulator.PlayDates, DateTime.UtcNow.Date);
 
 
         async Task<IReadOnlyCollection<CompletedRaidActivity>?> GetCompletedRaidHistoryAsync(
@@ -604,6 +650,103 @@ public partial class CrawlerService
         }
     }
 
+    private static void AddPlayDate(CrawlAccumulator accumulator, DateTimeOffset period)
+    {
+        var playDate = period.UtcDateTime.Date;
+        if (!accumulator.PlayDates.Contains(playDate))
+        {
+            accumulator.PlayDates.Add(playDate);
+        }
+    }
+
+    private static PlaytimeStreakReport? GetLongestPlaytimeStreak(IEnumerable<DateTime> playDates)
+    {
+        var dates = playDates
+            .Select(date => date.ToUniversalTime().Date)
+            .Distinct()
+            .OrderBy(date => date)
+            .ToArray();
+        if (dates.Length == 0)
+        {
+            return null;
+        }
+
+        var longestStart = dates[0];
+        var longestEnd = dates[0];
+        var currentStart = dates[0];
+
+        for (var index = 1; index < dates.Length; index++)
+        {
+            if (dates[index] != dates[index - 1].AddDays(1))
+            {
+                currentStart = dates[index];
+            }
+
+            if ((dates[index] - currentStart).Days > (longestEnd - longestStart).Days)
+            {
+                longestStart = currentStart;
+                longestEnd = dates[index];
+            }
+        }
+
+        return new PlaytimeStreakReport
+        {
+            StartDate = longestStart,
+            EndDate = longestEnd
+        };
+    }
+
+    private static PlaytimeStreakReport? GetCurrentPlaytimeStreak(IEnumerable<DateTime> playDates, DateTime utcToday)
+    {
+        var dates = playDates.Select(date => date.ToUniversalTime().Date).Distinct().OrderBy(date => date).ToArray();
+        if (dates.Length == 0 || dates[^1] < utcToday.AddDays(-1))
+        {
+            return null;
+        }
+
+        var start = dates[^1];
+        for (var index = dates.Length - 2; index >= 0 && dates[index] == start.AddDays(-1); index--)
+        {
+            start = dates[index];
+        }
+
+        return new PlaytimeStreakReport { StartDate = start, EndDate = dates[^1] };
+    }
+
+    private static void AddPvpPlaylistResult(
+        CrawlAccumulator accumulator,
+        DestinyPostGameCarnageReportData pgcr,
+        IReadOnlyCollection<DestinyPostGameCarnageReportEntry> playerEntries)
+    {
+        var key = pgcr.ActivityDetails.Mode.ToString();
+        if (!accumulator.PvpPlaylists.TryGetValue(key, out var playlist))
+        {
+            playlist = new PvpPlaylistAccumulator();
+            accumulator.PvpPlaylists[key] = playlist;
+        }
+
+        if (playerEntries.Any(entry => entry.Standing == 0)) playlist.Wins++;
+        else playlist.Losses++;
+    }
+
+    private static List<PvpPlaylistReport> ToPvpPlaylistReports(IReadOnlyDictionary<string, PvpPlaylistAccumulator> playlists)
+    {
+        return playlists.Select(item =>
+            {
+                var mode = int.TryParse(item.Key, out var parsed) ? parsed : 0;
+                return new PvpPlaylistReport
+                {
+                    Mode = mode,
+                    ModeName = GetSpecificActivityModeName(mode),
+                    Wins = item.Value.Wins,
+                    Losses = item.Value.Losses
+                };
+            })
+            .OrderByDescending(item => item.Matches)
+            .ThenBy(item => item.Mode)
+            .ToList();
+    }
+
     private static DestinyPostGameCarnageReportEntry[] FindPlayerEntries(
         DestinyPostGameCarnageReportData pgcr,
         int membershipType,
@@ -624,7 +767,22 @@ public partial class CrawlerService
         IReadOnlyCollection<DestinyPostGameCarnageReportEntry> playerEntries)
     {
         accumulator.TotalKills += (long)SumStats(playerEntries, "kills");
-        accumulator.TotalDeaths += (long)SumStats(playerEntries, "deaths");
+    }
+
+    private static void AddDeathsByMode(
+        IDictionary<int, long> deathDeltasByMode,
+        DestinyPostGameCarnageReportData pgcr,
+        IEnumerable<DestinyPostGameCarnageReportEntry> entries)
+    {
+        var deaths = (long)SumStats(entries, "deaths");
+        if (deaths <= 0)
+        {
+            return;
+        }
+
+        var mode = pgcr.ActivityDetails.Mode;
+        deathDeltasByMode.TryGetValue(mode, out var currentDeaths);
+        deathDeltasByMode[mode] = currentDeaths + deaths;
     }
 
     private static void AddCrucibleKills(
@@ -792,6 +950,7 @@ public partial class CrawlerService
     {
         return new GambitMotesReport
         {
+            Matches = accumulator.GambitMoteMatches,
             MotesBanked = ToGambitMoteStatReport(
                 accumulator.GambitMotesBanked + accumulator.GambitBankOverage,
                 SumModeTotals(accumulator.GambitMotesBankedByMode, accumulator.GambitBankOverageByMode)),
@@ -1044,9 +1203,23 @@ public partial class CrawlerService
         }
     }
 
+    private static void AddActivity(IDictionary<string, ActivityCompletionAggregate> completions, string activityName)
+    {
+        var key = ContestModeLookup.NormalizeActivityName(activityName);
+        if (!completions.TryGetValue(key, out var completion))
+        {
+            completion = new ActivityCompletionAggregate(key);
+            completions[key] = completion;
+        }
+        completion.ActivityCount++;
+    }
+
     private static void AddCompletion(
         IDictionary<string, ActivityCompletionAggregate> completions,
         string activityName,
+        DateTimeOffset completedAt,
+        long instanceId,
+        double durationSeconds,
         bool contestClear,
         bool flawlessClear,
         bool soloClear,
@@ -1060,6 +1233,18 @@ public partial class CrawlerService
         }
 
         completion.CompletionCount++;
+        SetFirstRaidCompletion(completion, completedAt, instanceId);
+        if (completion.LastCompletion is null || completedAt.UtcDateTime > completion.LastCompletion.CompletedAt)
+        {
+            completion.LastCompletion = new RaidFirstCompletion { CompletedAt = completedAt.UtcDateTime, InstanceId = instanceId };
+        }
+        if (durationSeconds > 0 && (completion.FastestCompletion is null || durationSeconds < completion.FastestCompletion.Duration.TotalSeconds))
+        {
+            completion.FastestCompletion = new ActivityFastestCompletion
+            {
+                Duration = TimeSpan.FromSeconds(durationSeconds), CompletedAt = completedAt.UtcDateTime, InstanceId = instanceId
+            };
+        }
         completion.ContestClear |= contestClear;
         completion.FlawlessClear |= flawlessClear;
         completion.SoloClear |= soloClear;
@@ -1149,8 +1334,11 @@ public partial class CrawlerService
             .Select(completion => new ActivityCompletionSummary
             {
                 ActivityName = completion.ActivityName,
+                ActivityCount = completion.ActivityCount,
                 CompletionCount = completion.CompletionCount,
                 FirstCompletion = completion.FirstCompletion,
+                LastCompletion = completion.LastCompletion,
+                FastestCompletion = completion.FastestCompletion,
                 ContestClear = completion.ContestClear,
                 FlawlessClear = completion.FlawlessClear,
                 SoloClear = completion.SoloClear,

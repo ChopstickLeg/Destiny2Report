@@ -19,6 +19,13 @@ public record DestinyReport
 
     public int PlatformId { get; init; }
     public long PlayerMembershipId { get; init; }
+    public string DisplayName { get; init; } = "";
+    public int DisplayCode { get; init; }
+    public string FullDisplayName
+    {
+        get => $"{DisplayName}#{DisplayCode:D4}";
+        init { }
+    }
     public DateTime CrawledAt { get; init; } = DateTime.UtcNow;
     [BsonDefaultValue(CrawlStateCompleted)]
     [BsonIgnoreIfDefault]
@@ -41,13 +48,11 @@ public record DestinyReport
     public string FullRecrawlReason { get; set; } = "";
     [BsonIgnoreIfDefault]
     public TimeSpan TotalPlaytime { get; set; }
-    public Dictionary<string, TimeSpan> PlaytimeByClass { get; set; } = new();
-    public List<ActivityModePlaytimeReport> PlaytimeByActivityMode { get; set; } = new();
+    public List<CharacterPlaytimeReport> CharacterPlaytime { get; set; } = new();
     public Dictionary<string, TimeSpan> PatrolTimeByPlanet { get; set; } = new();
     [BsonIgnoreIfDefault] public int GoodBoyProtocol { get; set; }
     [BsonIgnoreIfDefault] public int FishCaught { get; set; }
     [BsonIgnoreIfDefault] public long TotalKills { get; set; }
-    [BsonIgnoreIfDefault] public long TotalDeaths { get; set; }
     [BsonIgnoreIfDefault] public double CrucibleKd { get; set; }
     [BsonIgnoreIfDefault] public double CrucibleKda { get; set; }
     [BsonIgnoreIfDefault] public double GambitKd { get; set; }
@@ -66,8 +71,12 @@ public record DestinyReport
     [BsonIgnoreIfDefault] public int Misadventures { get; set; }
     [BsonIgnoreIfDefault] public int ZeroKillActivities { get; set; }
     [BsonIgnoreIfDefault] public TimeSpan TotalActivityTime { get; set; }
+    public PlaytimeStreakReport? LongestPlaytimeStreak { get; set; }
+    public PlaytimeStreakReport? CurrentPlaytimeStreak { get; set; }
+    public List<PvpPlaylistReport> PvpPlaylists { get; set; } = new();
     public List<ActivityCompletionSummary> RaidCompletions { get; set; } = new();
     public List<ActivityCompletionSummary> DungeonCompletions { get; set; } = new();
+    public List<ActivityCompletionSummary> ConquestCompletions { get; set; } = new();
     public List<PlayerEncounterReport> MostPlayedWith
     {
         get => _mostPlayedWith;

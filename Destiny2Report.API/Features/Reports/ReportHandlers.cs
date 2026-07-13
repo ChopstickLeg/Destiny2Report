@@ -123,6 +123,43 @@ public static class ReportHandlers
         return response is null ? TypedResults.NotFound() : TypedResults.Ok(response);
     }
 
+    public static async Task<Results<Ok<DeathActivityModeAggregateReport>, NotFound, BadRequest<ProblemDetails>>> GetDeaths(
+        int membershipTypeId,
+        long membershipId,
+        DeathActivityMode activityMode,
+        ICrawlerService crawlerService,
+        CancellationToken cancellationToken)
+    {
+        if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
+        {
+            return TypedResults.BadRequest(problemDetails);
+        }
+
+        var response = await crawlerService
+            .GetDeathActivityModeReportAsync(membershipTypeId, membershipId, activityMode, cancellationToken)
+            .ConfigureAwait(false);
+
+        return response is null ? TypedResults.NotFound() : TypedResults.Ok(response);
+    }
+
+    public static async Task<Results<Ok<ActivityPlaytimeAggregateReport>, NotFound, BadRequest<ProblemDetails>>> GetPlaytime(
+        int membershipTypeId,
+        long membershipId,
+        ActivityPlaytimeMode activityMode,
+        ICrawlerService crawlerService,
+        CancellationToken cancellationToken)
+    {
+        if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
+        {
+            return TypedResults.BadRequest(problemDetails);
+        }
+
+        var response = await crawlerService
+            .GetActivityPlaytimeReportAsync(membershipTypeId, membershipId, activityMode, cancellationToken)
+            .ConfigureAwait(false);
+        return response is null ? TypedResults.NotFound() : TypedResults.Ok(response);
+    }
+
     public static async Task<Results<Accepted<IReadOnlyList<ReportQueueResponse>>, BadRequest<ProblemDetails>>> QueueCrawl(
         IReadOnlyList<ReportQueueRequest> requests,
         IConnectionMultiplexer redis,

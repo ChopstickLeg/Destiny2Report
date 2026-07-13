@@ -19,8 +19,11 @@ public partial class CrawlerService
 
     private sealed record ActivityCompletionAggregate(string ActivityName)
     {
+        public int ActivityCount { get; set; }
         public int CompletionCount { get; set; }
         public RaidFirstCompletion? FirstCompletion { get; set; }
+        public RaidFirstCompletion? LastCompletion { get; set; }
+        public ActivityFastestCompletion? FastestCompletion { get; set; }
         public bool ContestClear { get; set; }
         public bool FlawlessClear { get; set; }
         public bool SoloClear { get; set; }
@@ -231,8 +234,11 @@ public partial class CrawlerService
             item => item.Key,
             item => new ActivityCompletionAggregate(item.Key)
             {
+                ActivityCount = item.Value.ActivityCount,
                 CompletionCount = item.Value.CompletionCount,
                 FirstCompletion = item.Value.FirstCompletion,
+                LastCompletion = item.Value.LastCompletion,
+                FastestCompletion = item.Value.FastestCompletion,
                 ContestClear = item.Value.ContestClear,
                 FlawlessClear = item.Value.FlawlessClear,
                 SoloClear = item.Value.SoloClear,
@@ -250,8 +256,11 @@ public partial class CrawlerService
         {
             target[item.Key] = new ActivityCompletionAccumulator
             {
+                ActivityCount = item.Value.ActivityCount,
                 CompletionCount = item.Value.CompletionCount,
                 FirstCompletion = item.Value.FirstCompletion,
+                LastCompletion = item.Value.LastCompletion,
+                FastestCompletion = item.Value.FastestCompletion,
                 ContestClear = item.Value.ContestClear,
                 FlawlessClear = item.Value.FlawlessClear,
                 SoloClear = item.Value.SoloClear,

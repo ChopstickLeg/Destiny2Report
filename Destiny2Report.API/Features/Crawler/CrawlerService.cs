@@ -18,6 +18,7 @@ public partial class CrawlerService(
     HybridCache cache,
     IHttpClientFactory httpClientFactory,
     IOptions<ContestModeOptions> contestModeOptions,
+    IOptions<ConquestOptions> conquestOptions,
     IOptions<ActivityTriumphRecordOptions> activityTriumphRecordOptions,
     CrawlerPgcrThrottler pgcrThrottler,
     CrawlerSherpaHistoryThrottler sherpaHistoryThrottler,
@@ -35,7 +36,7 @@ public partial class CrawlerService(
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
 
     private static readonly int[] AccountStatGroups = [GeneralStatsGroup];
-    private static readonly int[] ProfileComponents = [ProfileRecordsComponent, MetricsComponent, ProfileCharactersComponent];
+    private static readonly int[] ProfileComponents = [BasicProfileComponent, ProfileRecordsComponent, MetricsComponent, ProfileCharactersComponent];
     private static readonly int[] ProfileCharactersComponents = [BasicProfileComponent, ProfileCharactersComponent];
     private static readonly int[] ModeStatGroups = [GeneralStatsGroup];
     private static readonly long[] TriumphSealRootPresentationNodeHashes = [616318467, 1881970629];
@@ -156,6 +157,7 @@ public partial class CrawlerService(
         2449714930, 3446541099, 4206123728, 3912437239, 3879860661, 3857338478
     ];
     private readonly ContestModeLookup contestMode = ContestModeLookup.FromOptions(contestModeOptions.Value);
+    private readonly ConquestLookup conquests = ConquestLookup.FromOptions(conquestOptions.Value);
     private readonly ActivityTriumphRecordOptions activityTriumphRecords = activityTriumphRecordOptions.Value;
     private readonly CrawlerOptions crawler = crawlerOptions.Value;
     private static int MaxConcurrentDefinitionRequests => Math.Max(1, Math.Min(8, Environment.ProcessorCount));
@@ -278,10 +280,15 @@ public partial class CrawlerService(
             var characterClassById = BuildCharacterClassMap(historicalCharacters, [], playerMembershipId, characterIds);
 
             var now = DateTimeOffset.UtcNow;
+            var userInfo = profile.Profile?.Data?.UserInfo;
             var report = new DestinyReport
             {
                 PlatformId = platformId,
                 PlayerMembershipId = playerMembershipId,
+                DisplayName = !string.IsNullOrWhiteSpace(userInfo?.BungieGlobalDisplayName)
+                    ? userInfo.BungieGlobalDisplayName
+                    : userInfo?.DisplayName ?? "",
+                DisplayCode = userInfo?.BungieGlobalDisplayNameCode ?? 0,
                 CrawlState = DestinyReport.CrawlStateCompleted,
                 QueuedInRedis = false,
                 QueuedAtUtc = existingReport?.QueuedAtUtc,
@@ -294,7 +301,7 @@ public partial class CrawlerService(
                 FullRecrawlReason = ""
             };
 
-            ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById);
+            ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById, profile);
             ApplyProfileStats(report, profile, manifest);
             ApplyModeStats(report, historicalStatsTask.Result);
             await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, characterIds, crawlAfter, recentActivityIds, characterClassById, manifest, requiresFullCrawl, progress, cancellationToken).ConfigureAwait(false);

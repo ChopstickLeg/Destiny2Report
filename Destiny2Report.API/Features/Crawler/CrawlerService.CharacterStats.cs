@@ -113,33 +113,40 @@ public partial class CrawlerService
             item => ClassName(item.Value));
     }
 
-    private static Dictionary<string, TimeSpan> BuildPlaytimeByClass(
+    private static List<CharacterPlaytimeReport> BuildCharacterPlaytime(
         IEnumerable<DestinyHistoricalStatsPerCharacter> historicalCharacters,
-        IReadOnlyDictionary<long, string> characterClassById)
+        IReadOnlyDictionary<long, string> characterClassById,
+        IEnumerable<DestinyCharacterComponent> profileCharacters)
     {
-        var playtimeByClass = new Dictionary<string, TimeSpan>();
         var normalizedClassById = NormalizeCharacterClassMap(characterClassById);
+        var currentCharacters = profileCharacters.ToDictionary(character => character.CharacterId);
+        var historical = historicalCharacters.ToDictionary(character => character.CharacterId);
+        var characterIds = historical.Keys.Concat(currentCharacters.Keys).Distinct();
 
-        foreach (var character in historicalCharacters)
-        {
-            var className = normalizedClassById.GetValueOrDefault(character.CharacterId, "Unknown");
-            var seconds = GetStat(character.Merged?.AllTime, "secondsPlayed");
-            playtimeByClass[className] = playtimeByClass.GetValueOrDefault(className) + TimeSpan.FromSeconds(seconds);
-        }
-
-        return playtimeByClass;
+        return characterIds.Select(characterId =>
+            {
+                currentCharacters.TryGetValue(characterId, out var current);
+                historical.TryGetValue(characterId, out var history);
+                var playtime = current is not null
+                    ? TimeSpan.FromMinutes(current.MinutesPlayedTotal)
+                    : TimeSpan.FromSeconds(GetStat(history?.Merged?.AllTime, "secondsPlayed"));
+                return new CharacterPlaytimeReport
+                {
+                    Race = current is null ? "Unknown" : RaceName(current.RaceType),
+                    Class = current is null ? normalizedClassById.GetValueOrDefault(characterId, "Unknown") : ClassName(current.ClassType),
+                    IsDeleted = current is null || history?.Deleted == true,
+                    Playtime = playtime
+                };
+            })
+            .OrderByDescending(character => character.Playtime)
+            .ToList();
     }
 
-    private static Dictionary<string, TimeSpan> BuildTotalPlaytimeByClass(IEnumerable<DestinyCharacterComponent> characters)
+    private static string RaceName(int raceType) => raceType switch
     {
-        var playtimeByClass = new Dictionary<string, TimeSpan>();
-
-        foreach (var character in characters)
-        {
-            var className = ClassName(character.ClassType);
-            playtimeByClass[className] = playtimeByClass.GetValueOrDefault(className) + TimeSpan.FromMinutes(character.MinutesPlayedTotal);
-        }
-
-        return playtimeByClass;
-    }
+        0 => "Human",
+        1 => "Awoken",
+        2 => "Exo",
+        _ => "Unknown"
+    };
 }

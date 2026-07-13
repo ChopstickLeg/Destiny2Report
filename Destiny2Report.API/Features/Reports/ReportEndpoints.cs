@@ -17,6 +17,14 @@ public static class ReportEndpoints
             .WithName("GetReportWeapons")
             .WithSummary("Returns weapon and ability kill aggregates grouped by the requested activity bucket and its specific Destiny activity modes.");
 
+        reports.MapGet("/{membershipTypeId:int}/{membershipId:long}/deaths/{activityMode}", ReportHandlers.GetDeaths)
+            .WithName("GetReportDeaths")
+            .WithSummary("Returns death aggregates grouped by the requested activity bucket and its specific Destiny activity modes.");
+
+        reports.MapGet("/{membershipTypeId:int}/{membershipId:long}/playtime/{activityMode}", ReportHandlers.GetPlaytime)
+            .WithName("GetReportPlaytime")
+            .WithSummary("Returns playtime for PvE, PvP, or Gambit grouped by specific Destiny activity mode.");
+
         reports.MapPost("/queue", ReportHandlers.QueueCrawl)
             .WithName("QueueReportCrawl")
             .WithSummary("Queues one or more Destiny player report crawls.")

@@ -4,9 +4,14 @@ namespace Destiny2Report.API.Features.Crawler.Models;
 
 public record ActivityCompletionAccumulator
 {
+    public int ActivityCount { get; set; }
     public int CompletionCount { get; set; }
     [BsonIgnoreIfNull]
     public RaidFirstCompletion? FirstCompletion { get; set; }
+    [BsonIgnoreIfNull]
+    public RaidFirstCompletion? LastCompletion { get; set; }
+    [BsonIgnoreIfNull]
+    public ActivityFastestCompletion? FastestCompletion { get; set; }
     [BsonIgnoreIfDefault]
     public bool ContestClear { get; set; }
     [BsonIgnoreIfDefault]

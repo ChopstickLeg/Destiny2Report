@@ -1,18 +1,26 @@
 using D2Report.BungieClient;
+using Destiny2Report.API.Features.Crawler.Models;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
+using MongoDB.Bson;
+using MongoDB.Driver;
+using MongoDB.Driver.Search;
 
 namespace Destiny2Report.API.Features.PlayerSearch;
 
 public static class PlayerSearchHandlers
 {
     private const int CharactersComponent = 200;
+    private const int MaxSearchResults = 25;
     private const int SearchPage = 0;
+    private const string FullDisplayNameSearchIndex = "player-full-display-name";
     private const string BungieNetBaseUrl = "https://www.bungie.net";
 
-    public static async Task<Results<Ok<PlayerSearchResponse>, NotFound, BadRequest<ProblemDetails>, ProblemHttpResult>> SearchPlayer(
+    public static async Task<Results<Ok<IReadOnlyList<PlayerSearchResponse>>, NotFound, BadRequest<ProblemDetails>, ProblemHttpResult>> SearchPlayer(
         [FromBody] PlayerSearchRequest request,
         ID2ReportClient bungieClient,
+        IMongoDatabase mongoDatabase,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.DisplayNamePrefix))
@@ -25,10 +33,11 @@ public static class PlayerSearchHandlers
             });
         }
 
+        var displayNamePrefix = request.DisplayNamePrefix.Trim();
         var searchResponse = await bungieClient
             .User_SearchByGlobalNamePostAsync(
                 SearchPage,
-                new UserSearchPrefixRequest { DisplayNamePrefix = request.DisplayNamePrefix.Trim() },
+                new UserSearchPrefixRequest { DisplayNamePrefix = displayNamePrefix },
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -37,46 +46,161 @@ public static class PlayerSearchHandlers
             return BungieProblem("SearchByGlobalNamePost", searchResponse);
         }
 
-        var searchResult = searchResponse.Response.SearchResults?
+        var searchResults = searchResponse.Response.SearchResults?
             .Select(result => new
             {
                 Result = result,
                 Membership = SelectMembership(result.DestinyMemberships)
             })
-            .FirstOrDefault(result => result.Membership is not null);
+            .Where(result => result.Membership is not null)
+            .ToArray()
+            ?? [];
 
-        if (searchResult?.Membership is null)
+        var reportSearchTask = SearchStoredReportsAsync(
+            mongoDatabase.GetCollection<DestinyReport>("destiny_reports"),
+            displayNamePrefix,
+            loggerFactory.CreateLogger(typeof(PlayerSearchHandlers).FullName!),
+            cancellationToken);
+        var bungieResultTasks = searchResults
+            .Select(result => CreateBungieResponseAsync(result.Result, result.Membership!, bungieClient, cancellationToken))
+            .ToArray();
+
+        var bungieResults = await Task.WhenAll(bungieResultTasks).ConfigureAwait(false);
+        var reportResults = await reportSearchTask.ConfigureAwait(false);
+
+        if (bungieResults.Length == 0 && reportResults.Count == 0)
         {
             return TypedResults.NotFound();
         }
 
-        var profileResponse = await bungieClient
-            .Destiny2_GetProfileAsync(
-                [CharactersComponent],
-                searchResult.Membership.MembershipId,
-                searchResult.Membership.MembershipType,
-                cancellationToken)
-            .ConfigureAwait(false);
+        var resultsByMembership = bungieResults
+            .GroupBy(result => (result.MembershipId, result.MembershipTypeId))
+            .ToDictionary(group => group.Key, group => group.First());
 
-        if (profileResponse.ErrorCode != 1)
+        foreach (var report in reportResults)
         {
-            return BungieProblem("GetProfile", profileResponse);
+            var key = (report.PlayerMembershipId, report.PlatformId);
+            var reportEmblemUrl = report.MostUsedEmblems.FirstOrDefault()?.IconUrl ?? "";
+            var reportResponse = new PlayerSearchResponse(
+                report.DisplayName,
+                report.DisplayCode,
+                report.PlayerMembershipId,
+                report.PlatformId,
+                reportEmblemUrl);
+
+            if (resultsByMembership.TryGetValue(key, out var bungieResult) && string.IsNullOrWhiteSpace(reportEmblemUrl))
+            {
+                reportResponse = reportResponse with { EmblemIconUrl = bungieResult.EmblemIconUrl };
+            }
+
+            resultsByMembership[key] = reportResponse;
         }
 
-        var lastPlayedCharacter = profileResponse.Response.Characters?.Data?.Values
-            .OrderByDescending(character => character.DateLastPlayed)
-            .FirstOrDefault();
-        var displayName = !string.IsNullOrWhiteSpace(searchResult.Result.BungieGlobalDisplayName)
-            ? searchResult.Result.BungieGlobalDisplayName
-            : searchResult.Membership.DisplayName;
-        var response = new PlayerSearchResponse(
-            DisplayName: displayName,
-            DisplayCode: searchResult.Result.BungieGlobalDisplayNameCode,
-            MembershipId: searchResult.Membership.MembershipId,
-            MembershipTypeId: searchResult.Membership.MembershipType,
-            EmblemIconUrl: ToBungieUrl(lastPlayedCharacter?.EmblemPath));
+        return TypedResults.Ok<IReadOnlyList<PlayerSearchResponse>>(
+            resultsByMembership.Values.Take(MaxSearchResults).ToArray());
+    }
 
-        return TypedResults.Ok(response);
+    private static async Task<IReadOnlyList<DestinyReport>> SearchStoredReportsAsync(
+        IMongoCollection<DestinyReport> reports,
+        string displayNamePrefix,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var searchIndexes = await reports.SearchIndexes
+                .ListAsync(FullDisplayNameSearchIndex, aggregateOptions: null, cancellationToken)
+                .ConfigureAwait(false);
+            var index = await searchIndexes.FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (!IsSearchIndexReady(index))
+            {
+                return [];
+            }
+
+            var fullDisplayNameSearch = Builders<DestinyReport>.Search.Autocomplete(
+                report => report.FullDisplayName,
+                displayNamePrefix,
+                SearchAutocompleteTokenOrder.Sequential,
+                new SearchFuzzyOptions { MaxEdits = 2, PrefixLength = 1 });
+            return await reports
+                .Aggregate()
+                .Search(fullDisplayNameSearch, new SearchOptions<DestinyReport> { IndexName = FullDisplayNameSearchIndex })
+                .Limit(MaxSearchResults)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (MongoException exception)
+        {
+            logger.LogWarning(exception, "Stored player search is unavailable; returning Bungie search results only.");
+            return [];
+        }
+    }
+
+    private static bool IsSearchIndexReady(BsonDocument? index)
+    {
+        if (index is null)
+        {
+            return false;
+        }
+
+        if (index.TryGetValue("queryable", out var queryable) && queryable.IsBoolean)
+        {
+            return queryable.AsBoolean;
+        }
+
+        return index.TryGetValue("status", out var status)
+            && status.IsString
+            && string.Equals(status.AsString, "READY", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<PlayerSearchResponse> CreateBungieResponseAsync(
+        UserSearchResponseDetail result,
+        UserInfoCard membership,
+        ID2ReportClient bungieClient,
+        CancellationToken cancellationToken)
+    {
+        var emblemIconUrl = await GetEmblemIconUrlAsync(membership, bungieClient, cancellationToken).ConfigureAwait(false);
+        var displayName = !string.IsNullOrWhiteSpace(result.BungieGlobalDisplayName)
+            ? result.BungieGlobalDisplayName
+            : membership.DisplayName;
+
+        return new PlayerSearchResponse(
+            displayName,
+            result.BungieGlobalDisplayNameCode,
+            membership.MembershipId,
+            membership.MembershipType,
+            emblemIconUrl);
+    }
+
+    private static async Task<string> GetEmblemIconUrlAsync(
+        UserInfoCard membership,
+        ID2ReportClient bungieClient,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var profileResponse = await bungieClient
+                .Destiny2_GetProfileAsync(
+                    [CharactersComponent],
+                    membership.MembershipId,
+                    membership.MembershipType,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (profileResponse.ErrorCode != 1)
+            {
+                return "";
+            }
+
+            var lastPlayedCharacter = profileResponse.Response.Characters?.Data?.Values
+                .OrderByDescending(character => character.DateLastPlayed)
+                .FirstOrDefault();
+            return ToBungieUrl(lastPlayedCharacter?.EmblemPath);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return "";
+        }
     }
 
     private static UserInfoCard? SelectMembership(IEnumerable<UserInfoCard>? memberships)

@@ -52,9 +52,13 @@ public sealed class CrawlerActivityStatsTests
         var dictionaryType = typeof(Dictionary<,>).MakeGenericType(typeof(string), aggregateType);
         var completions = Activator.CreateInstance(dictionaryType)!;
 
-        CrawlerReflection.Invoke("AddCompletion", completions, "King's Fall: Master", true, false, false, false);
-        CrawlerReflection.Invoke("AddCompletion", completions, "King's Fall: Guided Games", false, true, false, false);
-        CrawlerReflection.Invoke("AddCompletion", completions, "Spire of the Watcher", false, false, true, true);
+        CrawlerReflection.Invoke("AddActivity", completions, "King's Fall: Master");
+        CrawlerReflection.Invoke("AddActivity", completions, "King's Fall: Guided Games");
+        CrawlerReflection.Invoke("AddActivity", completions, "King's Fall");
+        CrawlerReflection.Invoke("AddActivity", completions, "Spire of the Watcher");
+        CrawlerReflection.Invoke("AddCompletion", completions, "King's Fall: Master", DateTimeOffset.Parse("2024-01-01Z"), 1L, 3600d, true, false, false, false);
+        CrawlerReflection.Invoke("AddCompletion", completions, "King's Fall: Guided Games", DateTimeOffset.Parse("2024-02-01Z"), 2L, 3000d, false, true, false, false);
+        CrawlerReflection.Invoke("AddCompletion", completions, "Spire of the Watcher", DateTimeOffset.Parse("2024-03-01Z"), 3L, 1800d, false, false, true, true);
 
         var summaries = (List<ActivityCompletionSummary>)CrawlerReflection.Invoke("ToCompletionSummaries", completions)!;
 
@@ -64,7 +68,11 @@ public sealed class CrawlerActivityStatsTests
             {
                 Assert.Equal("King's Fall", summary.ActivityName);
                 Assert.Equal(2, summary.CompletionCount);
-                Assert.Null(summary.FirstCompletion);
+                Assert.Equal(3, summary.ActivityCount);
+                Assert.Equal(2d / 3d, summary.ClearRate, 4);
+                Assert.Equal(1, summary.FirstCompletion!.InstanceId);
+                Assert.Equal(2, summary.LastCompletion!.InstanceId);
+                Assert.Equal(TimeSpan.FromSeconds(3000), summary.FastestCompletion!.Duration);
                 Assert.True(summary.ContestClear);
                 Assert.True(summary.FlawlessClear);
                 Assert.False(summary.SoloClear);
@@ -74,6 +82,7 @@ public sealed class CrawlerActivityStatsTests
             {
                 Assert.Equal("Spire of the Watcher", summary.ActivityName);
                 Assert.Equal(1, summary.CompletionCount);
+                Assert.Equal(1, summary.ActivityCount);
                 Assert.True(summary.SoloClear);
                 Assert.True(summary.SoloFlawlessClear);
             });
@@ -163,12 +172,11 @@ public sealed class CrawlerActivityStatsTests
     }
 
     [Fact]
-    public void AddPgcrPlayerStats_accumulates_kills_and_deaths_from_all_player_entries()
+    public void AddPgcrPlayerStats_accumulates_kills_from_all_player_entries()
     {
         var accumulator = new CrawlAccumulator
         {
-            TotalKills = 100,
-            TotalDeaths = 10
+            TotalKills = 100
         };
         var firstEntry = BungieFixture.Entry(
             4611686018463095984,
@@ -180,7 +188,22 @@ public sealed class CrawlerActivityStatsTests
         CrawlerReflection.Invoke("AddPgcrPlayerStats", accumulator, new[] { firstEntry, secondEntry });
 
         Assert.Equal(132, accumulator.TotalKills);
-        Assert.Equal(15, accumulator.TotalDeaths);
+    }
+
+    [Fact]
+    public void AddDeathsByMode_accumulates_all_player_entry_deaths_under_the_pgcr_mode()
+    {
+        var deaths = new Dictionary<int, long> { [10] = 4 };
+        var pgcr = BungieFixture.Pgcr(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 10, 1);
+        var entries = new[]
+        {
+            BungieFixture.Entry(4611686018463095984, values: BungieFixture.Stats(("deaths", 3))),
+            BungieFixture.Entry(4611686018463095984, values: BungieFixture.Stats(("deaths", 2)))
+        };
+
+        CrawlerReflection.Invoke("AddDeathsByMode", deaths, pgcr, entries);
+
+        Assert.Equal(9, deaths[10]);
     }
 
     [Fact]
