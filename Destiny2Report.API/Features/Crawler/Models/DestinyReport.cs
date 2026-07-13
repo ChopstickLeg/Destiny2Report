@@ -76,6 +76,7 @@ public record DestinyReport
     public List<PvpPlaylistReport> PvpPlaylists { get; set; } = new();
     public List<ActivityCompletionSummary> RaidCompletions { get; set; } = new();
     public List<ActivityCompletionSummary> DungeonCompletions { get; set; } = new();
+    public List<ActivityCompletionSummary> ConquestCompletions { get; set; } = new();
     public List<PlayerEncounterReport> MostPlayedWith
     {
         get => _mostPlayedWith;

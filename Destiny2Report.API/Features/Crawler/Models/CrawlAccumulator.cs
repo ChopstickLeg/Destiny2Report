@@ -20,6 +20,7 @@ public record CrawlAccumulator
     public Dictionary<string, long> PatrolSecondsByPlanet { get; set; } = new();
     public Dictionary<string, ActivityCompletionAccumulator> RaidCompletions { get; set; } = new();
     public Dictionary<string, ActivityCompletionAccumulator> DungeonCompletions { get; set; } = new();
+    public Dictionary<string, ActivityCompletionAccumulator> ConquestCompletions { get; set; } = new();
     public byte[] EncounteredPlayerKeys { get; set; } = [];
     [BsonIgnoreIfDefault]
     public int UniquePlayersPlayedWith { get; set; }

@@ -21,6 +21,7 @@ builder.Services.AddHttpClient<IBungieAuthService, BungieAuthService>(httpClient
     httpClient.BaseAddress = new Uri("https://www.bungie.net/Platform/");
 });
 builder.Services.Configure<ContestModeOptions>(builder.Configuration.GetSection(ContestModeOptions.SectionName));
+builder.Services.Configure<ConquestOptions>(builder.Configuration.GetSection(ConquestOptions.SectionName));
 builder.Services.Configure<ActivityTriumphRecordOptions>(builder.Configuration.GetSection(ActivityTriumphRecordOptions.SectionName));
 builder.Services.Configure<CrawlerOptions>(builder.Configuration.GetSection(CrawlerOptions.SectionName));
 builder.Services.AddSingleton<CrawlerPgcrThrottler>();

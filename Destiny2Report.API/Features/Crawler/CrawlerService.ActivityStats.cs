@@ -102,6 +102,7 @@ public partial class CrawlerService
         var emblemSecondsDeltas = new Dictionary<long, long>();
         var raidCompletions = ToCompletionAggregates(accumulator.RaidCompletions);
         var dungeonCompletions = ToCompletionAggregates(accumulator.DungeonCompletions);
+        var conquestCompletions = ToCompletionAggregates(accumulator.ConquestCompletions);
         var playersSherpaed = new Dictionary<string, int>(accumulator.PlayersSherpaed, StringComparer.OrdinalIgnoreCase);
         var pendingSherpaChecks = new List<SherpaCheck>();
         var completedRaidHistoryByPlayer = new ConcurrentDictionary<(int MembershipType, long MembershipId), Lazy<Task<IReadOnlyCollection<CompletedRaidActivity>?>>>();
@@ -184,6 +185,10 @@ public partial class CrawlerService
             var isFlawless = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && activityPlayerEntries.Length > 0 && activityPlayerEntries.All(entry => GetStat(entry.Values, "deaths") <= 0);
             var isSolo = (isRaid || isDungeon) && playerCompleted && wasStartedFromBeginning && IsSoloActivity(activityPlayerEntries);
             var activityCompletedAt = GetActivityCompletedAt(pgcr, playerEntries);
+            var conquestName = conquests.GetName(
+                pgcr.ActivityDetails.ReferenceId,
+                pgcr.ActivityDetails.DirectorActivityHash,
+                activityCompletedAt);
             var isContest = IsContest(pgcr, activityCompletedAt, isRaid, isDungeon);
             var isSoloFlawless = isSolo && isFlawless;
             var playerActivitySeconds = SumPlayerActivitySeconds(playerEntries);
@@ -211,6 +216,24 @@ public partial class CrawlerService
                 if (playerCompleted)
                 {
                     AddCompletion(dungeonCompletions, activityName, activityCompletedAt, instanceId, playerActivitySeconds, isContest, isFlawless, isSolo, isSoloFlawless);
+                }
+            }
+
+            if (conquestName is not null)
+            {
+                AddActivity(conquestCompletions, conquestName);
+                if (playerCompleted)
+                {
+                    AddCompletion(
+                        conquestCompletions,
+                        conquestName,
+                        activityCompletedAt,
+                        instanceId,
+                        playerActivitySeconds,
+                        contestClear: false,
+                        isFlawless,
+                        isSolo,
+                        isSoloFlawless);
                 }
             }
 
@@ -274,6 +297,7 @@ public partial class CrawlerService
 
         SaveCompletionAggregates(accumulator.RaidCompletions, raidCompletions);
         SaveCompletionAggregates(accumulator.DungeonCompletions, dungeonCompletions);
+        SaveCompletionAggregates(accumulator.ConquestCompletions, conquestCompletions);
         accumulator.PlayersSherpaed = new Dictionary<string, int>(playersSherpaed, StringComparer.OrdinalIgnoreCase);
         SaveEncounteredPlayerKeys(accumulator, encounteredPlayerKeys);
 
@@ -286,6 +310,7 @@ public partial class CrawlerService
         report.GambitMotes = ToGambitMotesReport(accumulator);
         report.RaidCompletions = ToCompletionSummaries(raidCompletions);
         report.DungeonCompletions = ToCompletionSummaries(dungeonCompletions);
+        report.ConquestCompletions = ToCompletionSummaries(conquestCompletions);
         report.PvpPlaylists = ToPvpPlaylistReports(accumulator.PvpPlaylists);
         report.PlayersSherpaed = ToSherpaReports(playersSherpaed);
         await ApplyPlayerEncounterCountsAsync(

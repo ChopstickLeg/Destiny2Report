@@ -18,6 +18,7 @@ public partial class CrawlerService(
     HybridCache cache,
     IHttpClientFactory httpClientFactory,
     IOptions<ContestModeOptions> contestModeOptions,
+    IOptions<ConquestOptions> conquestOptions,
     IOptions<ActivityTriumphRecordOptions> activityTriumphRecordOptions,
     CrawlerPgcrThrottler pgcrThrottler,
     CrawlerSherpaHistoryThrottler sherpaHistoryThrottler,
@@ -156,6 +157,7 @@ public partial class CrawlerService(
         2449714930, 3446541099, 4206123728, 3912437239, 3879860661, 3857338478
     ];
     private readonly ContestModeLookup contestMode = ContestModeLookup.FromOptions(contestModeOptions.Value);
+    private readonly ConquestLookup conquests = ConquestLookup.FromOptions(conquestOptions.Value);
     private readonly ActivityTriumphRecordOptions activityTriumphRecords = activityTriumphRecordOptions.Value;
     private readonly CrawlerOptions crawler = crawlerOptions.Value;
     private static int MaxConcurrentDefinitionRequests => Math.Max(1, Math.Min(8, Environment.ProcessorCount));

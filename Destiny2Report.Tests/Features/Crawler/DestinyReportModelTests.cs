@@ -81,4 +81,26 @@ public sealed class DestinyReportModelTests
 
         Assert.Equal(["Conqueror", "Rivensbane"], report.TriumphSeals.Select(seal => seal.Name));
     }
+
+    [Fact]
+    public void ConquestCompletions_are_included_in_the_report()
+    {
+        var report = new DestinyReport
+        {
+            ConquestCompletions =
+            [
+                new ActivityCompletionSummary
+                {
+                    ActivityName = "Renegades Conquest",
+                    ActivityCount = 2,
+                    CompletionCount = 1
+                }
+            ]
+        };
+
+        var conquest = Assert.Single(report.ConquestCompletions);
+        Assert.Equal("Renegades Conquest", conquest.ActivityName);
+        Assert.Equal(2, conquest.ActivityCount);
+        Assert.Equal(1, conquest.CompletionCount);
+    }
 }
