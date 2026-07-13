@@ -2,6 +2,7 @@ using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
+using MongoDB.Bson;
 using MongoDB.Driver;
 using MongoDB.Driver.Search;
 
@@ -10,6 +11,7 @@ namespace Destiny2Report.API.Features.PlayerSearch;
 public static class PlayerSearchHandlers
 {
     private const int CharactersComponent = 200;
+    private const int MaxSearchResults = 25;
     private const int SearchPage = 0;
     private const string FullDisplayNameSearchIndex = "player-full-display-name";
     private const string BungieNetBaseUrl = "https://www.bungie.net";
@@ -18,6 +20,7 @@ public static class PlayerSearchHandlers
         [FromBody] PlayerSearchRequest request,
         ID2ReportClient bungieClient,
         IMongoDatabase mongoDatabase,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.DisplayNamePrefix))
@@ -53,15 +56,11 @@ public static class PlayerSearchHandlers
             .ToArray()
             ?? [];
 
-        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
-        var fullDisplayNameSearch = Builders<DestinyReport>.Search.Text(
-            report => report.FullDisplayName,
+        var reportSearchTask = SearchStoredReportsAsync(
+            mongoDatabase.GetCollection<DestinyReport>("destiny_reports"),
             displayNamePrefix,
-            new SearchFuzzyOptions { MaxEdits = 2, PrefixLength = 1 });
-        var reportSearchTask = reports
-            .Aggregate()
-            .Search(fullDisplayNameSearch, new SearchOptions<DestinyReport> { IndexName = FullDisplayNameSearchIndex })
-            .ToListAsync(cancellationToken);
+            loggerFactory.CreateLogger(typeof(PlayerSearchHandlers).FullName!),
+            cancellationToken);
         var bungieResultTasks = searchResults
             .Select(result => CreateBungieResponseAsync(result.Result, result.Membership!, bungieClient, cancellationToken))
             .ToArray();
@@ -97,7 +96,61 @@ public static class PlayerSearchHandlers
             resultsByMembership[key] = reportResponse;
         }
 
-        return TypedResults.Ok<IReadOnlyList<PlayerSearchResponse>>(resultsByMembership.Values.ToArray());
+        return TypedResults.Ok<IReadOnlyList<PlayerSearchResponse>>(
+            resultsByMembership.Values.Take(MaxSearchResults).ToArray());
+    }
+
+    private static async Task<IReadOnlyList<DestinyReport>> SearchStoredReportsAsync(
+        IMongoCollection<DestinyReport> reports,
+        string displayNamePrefix,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var searchIndexes = await reports.SearchIndexes
+                .ListAsync(FullDisplayNameSearchIndex, aggregateOptions: null, cancellationToken)
+                .ConfigureAwait(false);
+            var index = await searchIndexes.FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (!IsSearchIndexReady(index))
+            {
+                return [];
+            }
+
+            var fullDisplayNameSearch = Builders<DestinyReport>.Search.Autocomplete(
+                report => report.FullDisplayName,
+                displayNamePrefix,
+                SearchAutocompleteTokenOrder.Sequential,
+                new SearchFuzzyOptions { MaxEdits = 2, PrefixLength = 1 });
+            return await reports
+                .Aggregate()
+                .Search(fullDisplayNameSearch, new SearchOptions<DestinyReport> { IndexName = FullDisplayNameSearchIndex })
+                .Limit(MaxSearchResults)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (MongoException exception)
+        {
+            logger.LogWarning(exception, "Stored player search is unavailable; returning Bungie search results only.");
+            return [];
+        }
+    }
+
+    private static bool IsSearchIndexReady(BsonDocument? index)
+    {
+        if (index is null)
+        {
+            return false;
+        }
+
+        if (index.TryGetValue("queryable", out var queryable) && queryable.IsBoolean)
+        {
+            return queryable.AsBoolean;
+        }
+
+        return index.TryGetValue("status", out var status)
+            && status.IsString
+            && string.Equals(status.AsString, "READY", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<PlayerSearchResponse> CreateBungieResponseAsync(

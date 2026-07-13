@@ -63,7 +63,7 @@ public static class MongoExtensions
                     })
             ],
             cancellationToken);
-        await reports.EnsureFullDisplayNameSearchIndexAsync(cancellationToken);
+        await reports.EnsureFullDisplayNameSearchIndexAsync(app.Logger, cancellationToken);
 
         var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
         var accumulatorIndexKeys = Builders<CrawlAccumulator>.IndexKeys
@@ -184,39 +184,58 @@ public static class MongoExtensions
 
     private static async Task EnsureFullDisplayNameSearchIndexAsync(
         this IMongoCollection<DestinyReport> reports,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
-        using var searchIndexes = await reports.SearchIndexes
-            .ListAsync(PlayerFullDisplayNameSearchIndex, aggregateOptions: null, cancellationToken)
-            .ConfigureAwait(false);
-        var existingSearchIndexes = await searchIndexes.ToListAsync(cancellationToken).ConfigureAwait(false);
-        if (existingSearchIndexes.Count > 0)
+        try
         {
-            return;
-        }
-
-        var definition = new BsonDocument
-        {
+            using var searchIndexes = await reports.SearchIndexes
+                .ListAsync(PlayerFullDisplayNameSearchIndex, aggregateOptions: null, cancellationToken)
+                .ConfigureAwait(false);
+            var existingSearchIndexes = await searchIndexes.ToListAsync(cancellationToken).ConfigureAwait(false);
+            if (existingSearchIndexes.Count > 0)
             {
-                "mappings",
-                new BsonDocument
+                return;
+            }
+
+            var definition = new BsonDocument
+            {
                 {
-                    { "dynamic", false },
+                    "mappings",
+                    new BsonDocument
                     {
-                        "fields",
-                        new BsonDocument
+                        { "dynamic", false },
                         {
-                            { nameof(DestinyReport.FullDisplayName), new BsonDocument("type", "string") }
+                            "fields",
+                            new BsonDocument
+                            {
+                                {
+                                    nameof(DestinyReport.FullDisplayName),
+                                    new BsonDocument
+                                    {
+                                        { "type", "autocomplete" },
+                                        { "analyzer", "lucene.keyword" },
+                                        { "tokenization", "edgeGram" },
+                                        { "minGrams", 2 },
+                                        { "maxGrams", 20 },
+                                        { "foldDiacritics", true }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-            }
-        };
+            };
 
-        await reports.SearchIndexes.CreateOneAsync(
-                new CreateSearchIndexModel(PlayerFullDisplayNameSearchIndex, definition),
-                cancellationToken)
-            .ConfigureAwait(false);
+            await reports.SearchIndexes.CreateOneAsync(
+                    new CreateSearchIndexModel(PlayerFullDisplayNameSearchIndex, definition),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (MongoException exception)
+        {
+            logger.LogWarning(exception, "Player autocomplete index is unavailable; player search will use Bungie results only.");
+        }
     }
 
 }
