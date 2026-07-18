@@ -1,0 +1,107 @@
+/*
+ * Design tokens for Destiny 2 Report.
+ *
+ * Art direction: a warm obsidian foundation with Titan red, Warlock yellow,
+ * and Hunter blue drawn from Destiny's class language. Gold adds a restrained
+ * Monument of Triumph finish without competing with emblem art.
+ *
+ * Rules encoded here:
+ *  - spacing sits on an 8px grid (with a 4px half-step);
+ *  - PvE / PvP / Gambit colors are stable app-wide;
+ *  - statistics render with tabular numerals (see base.css);
+ *  - meaning is never carried by color alone.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* -- Surfaces ---------------------------------------------------------- */
+  --color-bg: #0d0a0b;
+  --color-bg-rgb: 13 10 11;
+  --color-surface: #171112;
+  --color-surface-raised: #211819;
+  --color-surface-sunken: #080607;
+  --color-border: #332426;
+  --color-border-strong: #55383a;
+
+  /* -- Text -------------------------------------------------------------- */
+  --color-text: #f2ece1;
+  --color-text-secondary: #c0b5a5;
+  --color-text-muted: #8f8275;
+  --color-text-inverse: #17100a;
+
+  /* -- Accent (Destiny gold, used sparingly) ----------------------------- */
+  --color-accent: #d7ac4b;
+  --color-accent-strong: #f0cb72;
+  --color-accent-muted: rgb(215 172 75 / 0.16);
+
+  /* -- Guardian classes -------------------------------------------------- */
+  --color-class-titan: #d84a4a;
+  --color-class-warlock: #e7b93e;
+  --color-class-hunter: #3d8fd1;
+  --color-class-unknown: #8d7f75;
+
+  /* Shared page atmosphere: starts immediately below the app header. */
+  --background-atmosphere:
+    radial-gradient(circle at 5% 0%, rgb(216 74 74 / 0.1), transparent 28rem),
+    radial-gradient(circle at 50% -10%, rgb(231 185 62 / 0.07), transparent 32rem),
+    radial-gradient(circle at 95% 0%, rgb(61 143 209 / 0.1), transparent 28rem);
+
+  /* -- Semantic ---------------------------------------------------------- */
+  --color-positive: #70b785;
+  --color-negative: #d8665e;
+  --color-warning: #dfa93d;
+  --color-info: #62a5dc;
+
+  /* -- Activity buckets (stable across every chart and label) ------------ */
+  --color-mode-pve: #4f98d2; /* Vanguard blue   */
+  --color-mode-pvp: #d55353; /* Crucible red    */
+  --color-mode-gambit: #63a66f; /* Drifter green */
+
+  /* -- Data visualization (neutral ramp for ranked bars) ------------------ */
+  --color-bar: #806b63;
+  --color-bar-emphasis: #c69445;
+  --color-bar-track: rgb(242 236 225 / 0.07);
+
+  /* -- Typography --------------------------------------------------------- */
+  --font-ui:
+    'Inter Variable', 'Inter', system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-display: 'Space Grotesk Variable', 'Space Grotesk', var(--font-ui);
+
+  --text-xs: 0.75rem; /* 12px  captions, table meta      */
+  --text-sm: 0.8125rem; /* 13px  secondary UI              */
+  --text-base: 0.9375rem; /* 15px  body                      */
+  --text-md: 1.0625rem; /* 17px  emphasized body           */
+  --text-lg: 1.25rem; /* 20px  section headings          */
+  --text-xl: 1.5rem; /* 24px  page headings             */
+  --text-2xl: 2rem; /* 32px  masthead names            */
+  --text-3xl: 2.75rem; /* 44px  story numerals            */
+
+  /* -- Spacing (8px grid, 4px half-step) ---------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* -- Shape --------------------------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-full: 999px;
+
+  /* -- Layout --------------------------------------------------------------- */
+  --content-width: 68rem; /* 1088px */
+  --content-pad: clamp(1rem, 4vw, 2rem);
+
+  /* -- Motion & focus -------------------------------------------------------- */
+  --transition-fast: 140ms ease;
+  --transition-medium: 200ms ease;
+  --focus-ring: 2px solid var(--color-accent);
+  --focus-offset: 2px;
+
+  /* -- Elevation (used rarely; surfaces shift instead of glow) ---------------- */
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 20px rgb(0 0 0 / 0.25);
+}

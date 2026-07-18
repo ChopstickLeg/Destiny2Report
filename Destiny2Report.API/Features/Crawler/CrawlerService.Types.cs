@@ -296,6 +296,10 @@ public partial class CrawlerService
 
         public Task<IReadOnlyDictionary<string, ManifestDestinationDefinition>> GetDestinationDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestDestinationDefinition>("DestinyDestinationDefinition", cancellationToken);
 
+        public Task<IReadOnlyDictionary<string, ManifestCharacterIdentityDefinition>> GetClassDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestCharacterIdentityDefinition>("DestinyClassDefinition", cancellationToken);
+
+        public Task<IReadOnlyDictionary<string, ManifestCharacterIdentityDefinition>> GetRaceDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestCharacterIdentityDefinition>("DestinyRaceDefinition", cancellationToken);
+
         public async Task<IReadOnlyDictionary<string, TDefinition>> GetTableAsync<TDefinition>(string tableName, CancellationToken cancellationToken)
         {
             var table = await _tables.GetOrAdd(tableName, name => new Lazy<Task<object>>(async () => await service.GetManifestTableAsync<TDefinition>(manifest, name, CancellationToken.None).ConfigureAwait(false)))

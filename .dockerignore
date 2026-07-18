@@ -1,5 +1,6 @@
 .git
 .github
+.agents
 .vs
 .vscode
 
@@ -8,6 +9,16 @@
 **/*.user
 **/*.suo
 
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+destiny-2-report-ui
+Destiny2Report.Tests
+
 Dockerfile
+compose*.yml
+compose*.yaml
 README*
 *.md

@@ -13,6 +13,7 @@ public sealed class ContestModeLookupTests
     [InlineData("King's Fall: Master", "King's Fall")]
     [InlineData("Vow of the Disciple: Contest: Guided Games", "Vow of the Disciple")]
     [InlineData("  Crota's End: Normal  ", "Crota's End")]
+    [InlineData("Pantheon: Calus Resplendent: Customize", "Pantheon: Calus Resplendent")]
     [InlineData("The Shattered Throne", "The Shattered Throne")]
     public void NormalizeActivityName_removes_known_suffixes_repeatedly(string input, string expected)
     {

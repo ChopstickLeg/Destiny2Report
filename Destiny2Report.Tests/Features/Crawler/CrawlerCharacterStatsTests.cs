@@ -1,6 +1,7 @@
 using D2Report.BungieClient;
 using Destiny2Report.Tests.TestSupport;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Newtonsoft.Json.Linq;
 
 namespace Destiny2Report.Tests.Features.Crawler;
@@ -61,6 +62,7 @@ public sealed class CrawlerCharacterStatsTests
                 [22] = "Hunter",
                 [33] = "Bogus"
             },
+            new Dictionary<long, string> { [33] = "Exo" },
             new[]
             {
                 new DestinyCharacterComponent { CharacterId = 11, ClassType = 0, RaceType = 2, MinutesPlayedTotal = 60 },
@@ -70,6 +72,40 @@ public sealed class CrawlerCharacterStatsTests
         Assert.Equal(3, result.Count);
         Assert.Contains(result, item => item.Class == "Titan" && item.Race == "Exo" && !item.IsDeleted && item.Playtime == TimeSpan.FromMinutes(60));
         Assert.Contains(result, item => item.Class == "Hunter" && item.Race == "Awoken" && !item.IsDeleted && item.Playtime == TimeSpan.FromMinutes(30));
-        Assert.Contains(result, item => item.Class == "Unknown" && item.Race == "Unknown" && item.IsDeleted && item.Playtime == TimeSpan.FromMinutes(10));
+        Assert.Contains(result, item => item.Class == "Unknown" && item.Race == "Exo" && item.IsDeleted && item.Playtime == TimeSpan.FromMinutes(10));
+    }
+
+    [Fact]
+    public void ReadCharacterIdentityFromPgcr_uses_matching_player_class_and_manifest_race()
+    {
+        var entry = BungieFixture.Entry(
+            4611686018463095984,
+            characterId: 33,
+            characterClass: "Warlock");
+        entry.Player.RaceHash = unchecked((int)2803282938u);
+        var pgcr = BungieFixture.Pgcr(
+            DateTimeOffset.Parse("2024-06-01T00:00:00Z"),
+            4,
+            100,
+            entry);
+        var raceDefinitions = new Dictionary<string, ManifestCharacterIdentityDefinition>
+        {
+            ["2803282938"] = new()
+            {
+                DisplayProperties = new ManifestDisplayProperties { Name = "Awoken" }
+            }
+        };
+
+        var identity = CrawlerReflection.Invoke(
+            "ReadCharacterIdentityFromPgcr",
+            pgcr,
+            4611686018463095984L,
+            33L,
+            new Dictionary<string, ManifestCharacterIdentityDefinition>(),
+            raceDefinitions);
+
+        Assert.NotNull(identity);
+        Assert.Equal("Warlock", identity.GetType().GetProperty("Class")?.GetValue(identity));
+        Assert.Equal("Awoken", identity.GetType().GetProperty("Race")?.GetValue(identity));
     }
 }

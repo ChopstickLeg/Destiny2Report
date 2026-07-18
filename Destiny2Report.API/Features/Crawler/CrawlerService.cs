@@ -259,6 +259,13 @@ public partial class CrawlerService(
                 : new DateTimeOffset(accumulator.NewestActivityPeriod, TimeSpan.Zero).Subtract(IncrementalCrawlOverlap);
 
             var characterIds = historicalCharacters.Select(character => character.CharacterId).ToArray();
+            var profileCharacters = profile.Characters?.Data?.Values.ToArray() ?? [];
+            var currentCharacterIds = profileCharacters.Select(character => character.CharacterId).ToHashSet();
+            var deletedCharacterIds = historicalCharacters
+                .Where(character => character.Deleted || !currentCharacterIds.Contains(character.CharacterId))
+                .Select(character => character.CharacterId)
+                .Distinct()
+                .ToArray();
 
             if (progress is not null)
             {
@@ -266,8 +273,14 @@ public partial class CrawlerService(
             }
 
             var historicalStatsTask = FetchModeStatsAsync(platformId, playerMembershipId, characterIds, cancellationToken);
+            var deletedCharacterIdentitiesTask = FetchDeletedCharacterIdentitiesAsync(
+                platformId,
+                playerMembershipId,
+                deletedCharacterIds,
+                manifest,
+                cancellationToken);
 
-            await historicalStatsTask.ConfigureAwait(false);
+            await Task.WhenAll(historicalStatsTask, deletedCharacterIdentitiesTask).ConfigureAwait(false);
 
             if (progress is not null)
             {
@@ -278,6 +291,17 @@ public partial class CrawlerService(
                 ? new HashSet<long>()
                 : accumulator.RecentActivityInstanceIds.ToHashSet();
             var characterClassById = BuildCharacterClassMap(historicalCharacters, [], playerMembershipId, characterIds);
+            var recoveredIdentityById = deletedCharacterIdentitiesTask.Result;
+            var recoveredRaceById = recoveredIdentityById.ToDictionary(
+                item => item.Key,
+                item => item.Value.Race);
+            foreach (var (characterId, identity) in recoveredIdentityById)
+            {
+                if (identity.Class != "Unknown")
+                {
+                    characterClassById[characterId] = identity.Class;
+                }
+            }
 
             var now = DateTimeOffset.UtcNow;
             var userInfo = profile.Profile?.Data?.UserInfo;
@@ -301,10 +325,22 @@ public partial class CrawlerService(
                 FullRecrawlReason = ""
             };
 
-            ApplyAccountStats(report, accountStats, historicalCharacters, characterClassById, profile);
+            ApplyAccountStats(
+                report,
+                accountStats,
+                historicalCharacters,
+                characterClassById,
+                recoveredRaceById,
+                profile);
             ApplyProfileStats(report, profile, manifest);
             ApplyModeStats(report, historicalStatsTask.Result);
             await ApplyActivityDerivedStatsAsync(report, accumulator, platformId, playerMembershipId, characterIds, crawlAfter, recentActivityIds, characterClassById, manifest, requiresFullCrawl, progress, cancellationToken).ConfigureAwait(false);
+            // The broader PGCR crawl may recover a class when the one-record lookup could not.
+            report.CharacterPlaytime = BuildCharacterPlaytime(
+                historicalCharacters,
+                characterClassById,
+                recoveredRaceById,
+                profileCharacters);
             if (progress is not null)
             {
                 await progress.StartPhaseAsync("triumphs", "Applying triumphs", cancellationToken: cancellationToken).ConfigureAwait(false);

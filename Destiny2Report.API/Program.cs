@@ -7,6 +7,7 @@ using Destiny2Report.API.Features.Status;
 using Destiny2Report.API.Mongo;
 using Destiny2Report.API.Observability;
 using Destiny2Report.API.RateLimiting;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using StackExchange.Redis;
 using System.Threading.RateLimiting;
 
@@ -48,6 +49,16 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 
     return ConnectionMultiplexer.Connect(CreateRedisConfigurationOptions(connectionString));
 });
+builder.Services.AddOptions<AuthSessionOptions>()
+    .Bind(builder.Configuration.GetSection(AuthSessionOptions.SectionName))
+    .Validate(options => !string.IsNullOrWhiteSpace(options.CookieName), "AuthSession:CookieName is required.")
+    .Validate(options => options.Lifetime > TimeSpan.Zero, "AuthSession:Lifetime must be positive.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<IAuthSessionStore, AuthSessionStore>();
+builder.Services.AddHealthChecks()
+    .AddCheck<MongoHealthCheck>("mongodb", tags: ["ready"])
+    .AddCheck<RedisHealthCheck>("redis", tags: ["ready"]);
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -90,6 +101,11 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseRateLimiter();
+
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = registration => registration.Tags.Contains("ready")
+}).ShortCircuit();
 
 var api = app.MapGroup("/api")
     .RequireRateLimiting(RateLimitPolicies.PublicRead);

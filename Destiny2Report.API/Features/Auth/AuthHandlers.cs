@@ -5,15 +5,26 @@ namespace Destiny2Report.API.Features.Auth;
 
 public static class AuthHandlers
 {
-    public static async Task<Results<Ok<BungieOAuthTokenResponse>, BadRequest<ProblemDetails>, StatusCodeHttpResult>> ExchangeBungieCode(
+    private static readonly TimeSpan RefreshBeforeExpiry = TimeSpan.FromMinutes(1);
+
+    public static async Task<Results<Ok<SignedInPlayerResponse>, BadRequest<ProblemDetails>, StatusCodeHttpResult>> ExchangeBungieCode(
         BungieOAuthCodeRequest request,
+        HttpResponse httpResponse,
         IBungieAuthService authService,
+        IAuthSessionStore sessionStore,
         CancellationToken cancellationToken)
     {
         try
         {
             var response = await authService.ExchangeCodeAsync(request, cancellationToken).ConfigureAwait(false);
-            return TypedResults.Ok(response);
+            var profile = await authService.GetCurrentUserAsync(response.AccessToken, cancellationToken).ConfigureAwait(false);
+            if (!profile.SignedIn)
+            {
+                return TypedResults.StatusCode(StatusCodes.Status502BadGateway);
+            }
+
+            await sessionStore.CreateAsync(httpResponse, response, cancellationToken).ConfigureAwait(false);
+            return TypedResults.Ok(profile);
         }
         catch (BungieAuthException ex) when (ex.Error is "invalid_oauth_request" or "bungie_oauth_exchange_failed")
         {
@@ -26,20 +37,61 @@ public static class AuthHandlers
     }
 
     public static async Task<Results<Ok<SignedInPlayerResponse>, StatusCodeHttpResult>> WhoAmI(
-        HttpRequest request,
+        HttpRequest httpRequest,
+        HttpResponse httpResponse,
         IBungieAuthService authService,
+        IAuthSessionStore sessionStore,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        var accessToken = ReadBearerToken(request);
-        if (string.IsNullOrWhiteSpace(accessToken))
+        var session = await sessionStore.GetAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+        if (session is null)
         {
             return TypedResults.Ok(new SignedInPlayerResponse(false, null, [], null));
         }
 
         try
         {
-            var response = await authService.GetCurrentUserAsync(accessToken, cancellationToken).ConfigureAwait(false);
-            return TypedResults.Ok(response);
+            if (session.AccessTokenExpiresAt <= timeProvider.GetUtcNow().Add(RefreshBeforeExpiry))
+            {
+                session = await RefreshSessionAsync(
+                    httpRequest,
+                    session,
+                    authService,
+                    sessionStore,
+                    timeProvider,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            var profile = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
+            if (profile.SignedIn)
+            {
+                return TypedResults.Ok(profile);
+            }
+
+            session = await RefreshSessionAsync(
+                httpRequest,
+                session,
+                authService,
+                sessionStore,
+                timeProvider,
+                cancellationToken).ConfigureAwait(false);
+            profile = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
+            if (!profile.SignedIn)
+            {
+                await sessionStore.DeleteAsync(httpRequest, httpResponse, cancellationToken).ConfigureAwait(false);
+            }
+
+            return TypedResults.Ok(profile);
+        }
+        catch (BungieAuthException ex) when (
+            ex.Error is "bungie_session_expired"
+            || ex.BungieStatusCode is System.Net.HttpStatusCode.BadRequest
+                or System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+        {
+            await sessionStore.DeleteAsync(httpRequest, httpResponse, cancellationToken).ConfigureAwait(false);
+            return TypedResults.Ok(new SignedInPlayerResponse(false, null, [], null));
         }
         catch (BungieAuthException)
         {
@@ -47,13 +99,57 @@ public static class AuthHandlers
         }
     }
 
-    private static string? ReadBearerToken(HttpRequest request)
+    public static async Task<NoContent> SignOut(
+        HttpRequest request,
+        HttpResponse response,
+        IAuthSessionStore sessionStore,
+        CancellationToken cancellationToken)
     {
-        const string bearerPrefix = "Bearer ";
-        var authorization = request.Headers.Authorization.ToString();
-        return authorization.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase)
-            ? authorization[bearerPrefix.Length..].Trim()
-            : null;
+        await sessionStore.DeleteAsync(request, response, cancellationToken).ConfigureAwait(false);
+        return TypedResults.NoContent();
+    }
+
+    private static async Task<AuthSession> RefreshSessionAsync(
+        HttpRequest request,
+        AuthSession session,
+        IBungieAuthService authService,
+        IAuthSessionStore sessionStore,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(session.RefreshToken))
+        {
+            throw new BungieAuthException("bungie_session_expired", "The Bungie session can no longer be refreshed.");
+        }
+
+        BungieOAuthTokenResponse tokens;
+        try
+        {
+            tokens = await authService.RefreshTokenAsync(session.RefreshToken, cancellationToken).ConfigureAwait(false);
+        }
+        catch (BungieAuthException ex) when (
+            ex.BungieStatusCode is System.Net.HttpStatusCode.BadRequest
+                or System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+        {
+            // Another tab may already have rotated this one-time refresh token.
+            var latest = await sessionStore.GetAsync(request, cancellationToken).ConfigureAwait(false);
+            if (latest is not null && latest.AccessToken != session.AccessToken)
+            {
+                return latest;
+            }
+
+            throw;
+        }
+
+        var refreshed = session with
+        {
+            AccessToken = tokens.AccessToken,
+            RefreshToken = tokens.RefreshToken ?? session.RefreshToken,
+            AccessTokenExpiresAt = timeProvider.GetUtcNow().AddSeconds(tokens.ExpiresIn)
+        };
+        await sessionStore.UpdateAsync(request, refreshed, cancellationToken).ConfigureAwait(false);
+        return refreshed;
     }
 
     private static ProblemDetails ToProblemDetails(BungieAuthException exception, int statusCode)

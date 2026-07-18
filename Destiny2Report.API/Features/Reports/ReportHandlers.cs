@@ -1,19 +1,24 @@
 namespace Destiny2Report.API.Features.Reports;
 
 using D2Report.BungieClient;
+using Destiny2Report.API.Features.Auth;
 using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.Crawler.Models;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
 using StackExchange.Redis;
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 public static class ReportHandlers
 {
     private const int AllMembershipTypes = 254;
+    private const int StoryShareTokenBytes = 32;
     private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromSeconds(5);
     private sealed record QueueAdmission(string StreamEntryId, string Status, DateTimeOffset UpdatedAtUtc);
     private const string QueueCrawlScript = """
@@ -47,6 +52,137 @@ public static class ReportHandlers
         redis.call('EXPIRE', KEYS[2], ARGV[4])
         return { jobId, 'queued', ARGV[3] }
         """;
+
+    public static async Task<Ok<StoryVisualAssetsReport>> GetStoryVisualAssets(
+        ICrawlerService crawlerService,
+        CancellationToken cancellationToken)
+    {
+        var assets = await crawlerService
+            .GetStoryVisualAssetsAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return TypedResults.Ok(assets);
+    }
+
+    public static async Task<Results<Ok<CreateStoryShareResponse>, UnauthorizedHttpResult, NotFound, BadRequest<ProblemDetails>, StatusCodeHttpResult>> CreateStoryShare(
+        CreateStoryShareRequest request,
+        HttpRequest httpRequest,
+        IAuthSessionStore sessionStore,
+        IBungieAuthService authService,
+        IMongoDatabase mongoDatabase,
+        CancellationToken cancellationToken)
+    {
+        if (!TryValidateMembership(request.MembershipTypeId, request.MembershipId, out var problemDetails))
+        {
+            return TypedResults.BadRequest(problemDetails);
+        }
+
+        var session = await sessionStore.GetAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+        if (session is null)
+        {
+            return TypedResults.Unauthorized();
+        }
+
+        SignedInPlayerResponse player;
+        try
+        {
+            player = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
+        }
+        catch (BungieAuthException ex) when (
+            ex.BungieStatusCode is System.Net.HttpStatusCode.BadRequest
+                or System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+        {
+            return TypedResults.Unauthorized();
+        }
+        catch (BungieAuthException)
+        {
+            return TypedResults.StatusCode(StatusCodes.Status502BadGateway);
+        }
+
+        if (!OwnsStoryMembership(player, request.MembershipTypeId, request.MembershipId))
+        {
+            return TypedResults.Unauthorized();
+        }
+
+        var report = await FindReportAsync(
+                mongoDatabase,
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (report is null)
+        {
+            return TypedResults.NotFound();
+        }
+
+        var token = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(StoryShareTokenBytes));
+        var share = new StoryShare
+        {
+            TokenHash = HashStoryShareToken(token),
+            MembershipTypeId = request.MembershipTypeId,
+            MembershipId = request.MembershipId,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        await mongoDatabase.GetCollection<StoryShare>("story_shares")
+            .InsertOneAsync(share, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return TypedResults.Ok(new CreateStoryShareResponse(token));
+    }
+
+    public static async Task<Results<Ok<StoryShareIdentityResponse>, NotFound>> ResolveStoryShare(
+        string token,
+        IMongoDatabase mongoDatabase,
+        CancellationToken cancellationToken)
+    {
+        if (!IsValidStoryShareToken(token))
+        {
+            return TypedResults.NotFound();
+        }
+
+        var shares = mongoDatabase.GetCollection<StoryShare>("story_shares");
+        var share = await shares.Find(item => item.TokenHash == HashStoryShareToken(token))
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return share is null
+            ? TypedResults.NotFound()
+            : TypedResults.Ok(new StoryShareIdentityResponse(share.MembershipTypeId, share.MembershipId));
+    }
+
+    internal static bool IsValidStoryShareToken(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token) || token.Length != 43)
+        {
+            return false;
+        }
+
+        try
+        {
+            return WebEncoders.Base64UrlDecode(token).Length == StoryShareTokenBytes;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    internal static string HashStoryShareToken(string token)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.ASCII.GetBytes(token)));
+    }
+
+    internal static bool OwnsStoryMembership(
+        SignedInPlayerResponse player,
+        int membershipTypeId,
+        long membershipId)
+    {
+        return player.SignedIn && player.DestinyMemberships.Any(membership =>
+            membership.MembershipType == membershipTypeId
+            && membership.MembershipId == membershipId);
+    }
 
     public static async Task<Results<Ok<ReportSummaryResponse>, BadRequest<ProblemDetails>>> GetSummary(
         long membershipId,

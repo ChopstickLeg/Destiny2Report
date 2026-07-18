@@ -27,6 +27,7 @@ internal sealed class ContestModeLookup
         ": Standard",
         ": Prestige",
         ": Contest",
+        ": Customize",
         ": Guided Games"
     ];
 

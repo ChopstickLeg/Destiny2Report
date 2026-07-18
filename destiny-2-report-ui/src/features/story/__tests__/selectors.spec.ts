@@ -1,0 +1,438 @@
+import { describe, expect, it } from 'vitest'
+import { makeReport, veteranReport } from '@/test/fixtures/report'
+import {
+  buildStory,
+  buildStorySlides,
+  fastestEndgameClear,
+  MIN_PLAYLIST_SAMPLE,
+  mostUsedActualWeapon,
+  mostUsedActualWeapons,
+} from '../selectors'
+
+describe('buildStorySlides', () => {
+  it('puts rare earned accomplishments before broad account totals', () => {
+    const slides = buildStorySlides(veteranReport)
+
+    expect(slides[0]?.key).toBe('solo-flawless')
+    expect(slides.findIndex((slide) => slide.key === 'contest')).toBeLessThan(
+      slides.findIndex((slide) => slide.key === 'time'),
+    )
+  })
+
+  it('attaches real report imagery to personal story beats', () => {
+    const slides = buildStorySlides(veteranReport)
+
+    expect(slides.find((slide) => slide.key === 'people')?.imageUrl).toContain('bungie.net')
+    expect(slides.find((slide) => slide.key === 'emblem')?.imageUrl).toContain('bungie.net')
+  })
+
+  it('does not turn an ordinary losing playlist into a highlight', () => {
+    const report = makeReport({
+      pvpPlaylists: [
+        { mode: 73, modeName: 'Control', wins: 8, losses: 12, matches: 20, winRate: 0.4 },
+      ],
+    })
+
+    expect(buildStorySlides(report).map((slide) => slide.key)).not.toContain('competitive')
+  })
+
+  it('never treats the undefined mode-zero playlist as a competitive highlight', () => {
+    const report = makeReport({
+      pvpPlaylists: [
+        { mode: 0, modeName: 'None', wins: 30, losses: 0, matches: 30, winRate: 1 },
+        { mode: 88, modeName: 'Rift', wins: 16, losses: 6, matches: 22, winRate: 0.7273 },
+      ],
+    })
+
+    const slide = buildStorySlides(report).find((item) => item.key === 'competitive')
+    expect(slide?.title).toContain('Rift')
+    expect(slide?.value).toBe('16 wins in 22 matches')
+  })
+
+  it('summarizes long accomplishment lists instead of putting every name in the card', () => {
+    const base = veteranReport.dungeonCompletions[0]!
+    const report = makeReport({
+      dungeonCompletions: Array.from({ length: 11 }, (_, index) => ({
+        ...base,
+        activityName: `Dungeon ${index + 1}`,
+        soloFlawlessClear: true,
+      })),
+    })
+
+    const slide = buildStorySlides(report).find((item) => item.key === 'solo-flawless')
+    expect(slide?.value).toBe('11 dungeons solo flawless')
+    expect(slide?.body).toBe('Dungeon 1, Dungeon 2, Dungeon 3 + 8 more')
+  })
+
+  it('pairs each contest clear with its raid-specific emblem', () => {
+    const base = veteranReport.raidCompletions[0]!
+    const report = makeReport({
+      raidCompletions: [
+        { ...base, activityName: 'Root of Nightmares', contestClear: true },
+        { ...base, activityName: 'The Desert Perpetual: Epic', contestClear: true },
+      ],
+    })
+    const assets = {
+      raidIconUrl: '/raid.png',
+      dungeonIconUrl: '/dungeon.png',
+      crucibleIconUrl: '/crucible.png',
+      guidedGamesIconUrl: '/guide.png',
+      contestRaidEmblems: [
+        {
+          raidName: 'Root of Nightmares',
+          emblemName: "A Good Night's Sleep",
+          iconUrl: '/root-contest.jpg',
+        },
+        {
+          raidName: 'The Desert Perpetual (Epic)',
+          emblemName: 'Fractured Timeline',
+          iconUrl: '/epic-contest.jpg',
+        },
+      ],
+      pantheonEmblems: [],
+      titanIconUrl: '/titan.png',
+      hunterIconUrl: '/hunter.png',
+      warlockIconUrl: '/warlock.png',
+      goodBoyProtocolIconUrl: '/good-boy.png',
+    }
+
+    const slide = buildStorySlides(report, null, assets).find((item) => item.key === 'contest')
+
+    expect(slide?.layout).toBe('contest-gallery')
+    expect(slide?.items).toEqual([
+      {
+        label: 'Root of Nightmares',
+        value: "A Good Night's Sleep",
+        imageUrl: '/root-contest.jpg',
+      },
+      {
+        label: 'The Desert Perpetual: Epic',
+        value: 'Fractured Timeline',
+        imageUrl: '/epic-contest.jpg',
+      },
+    ])
+  })
+
+  it('places completed Pantheon tiers after contest clears and uses canonical activity names', () => {
+    const base = veteranReport.raidCompletions[0]!
+    const report = makeReport({
+      raidCompletions: [
+        { ...base, activityName: 'Root of Nightmares', contestClear: true },
+        { ...base, activityName: 'The Pantheon: Atraks Sovereign', contestClear: false },
+        {
+          ...base,
+          activityName: 'Pantheon: Calus Resplendent: Customize',
+          contestClear: false,
+        },
+        {
+          ...base,
+          activityName: 'Pantheon: Morgeth Surpassing: Customize',
+          completionCount: 0,
+          contestClear: false,
+        },
+      ],
+    })
+    const assets = {
+      raidIconUrl: '/raid.png',
+      dungeonIconUrl: '/dungeon.png',
+      crucibleIconUrl: '/crucible.png',
+      guidedGamesIconUrl: '/guide.png',
+      contestRaidEmblems: [
+        {
+          raidName: 'Root of Nightmares',
+          emblemName: "A Good Night's Sleep",
+          iconUrl: '/root-contest.jpg',
+        },
+      ],
+      pantheonEmblems: [
+        {
+          pantheonName: 'Pantheon: Atraks Sovereign',
+          emblemName: 'Atraks Dethroned',
+          iconUrl: '/atraks.jpg',
+        },
+        {
+          pantheonName: 'Pantheon: Calus Resplendent',
+          emblemName: 'Calus Conquered',
+          iconUrl: '/calus.jpg',
+        },
+        {
+          pantheonName: 'Pantheon: Morgeth Surpassing',
+          emblemName: 'Morgeth Mastered',
+          iconUrl: '/morgeth.jpg',
+        },
+      ],
+      titanIconUrl: '/titan.png',
+      hunterIconUrl: '/hunter.png',
+      warlockIconUrl: '/warlock.png',
+      goodBoyProtocolIconUrl: '/good-boy.png',
+    }
+
+    const slides = buildStorySlides(report, null, assets)
+    const contestIndex = slides.findIndex((slide) => slide.key === 'contest')
+    const pantheonIndex = slides.findIndex((slide) => slide.key === 'pantheon')
+    const pantheon = slides[pantheonIndex]
+
+    expect(pantheonIndex).toBe(contestIndex + 1)
+    expect(pantheon?.layout).toBe('pantheon-gallery')
+    expect(pantheon?.items).toEqual([
+      {
+        label: 'Pantheon: Atraks Sovereign',
+        value: 'Atraks Dethroned',
+        imageUrl: '/atraks.jpg',
+        group: 'Pantheon 1.0',
+      },
+      {
+        label: 'Pantheon: Calus Resplendent',
+        value: 'Calus Conquered',
+        imageUrl: '/calus.jpg',
+        group: 'Pantheon 2.0',
+      },
+    ])
+  })
+
+  it('shows Pantheon completions without contest clears or a loaded emblem catalog', () => {
+    const base = veteranReport.raidCompletions[0]!
+    const report = makeReport({
+      raidCompletions: [
+        {
+          ...base,
+          activityName: 'The Pantheon: Nezarec Sublime',
+          completionCount: 1,
+          contestClear: false,
+        },
+        {
+          ...base,
+          activityName: 'Pantheon: Calus Resplendent: Customize',
+          completionCount: 2,
+          contestClear: false,
+        },
+      ],
+    })
+
+    const slides = buildStorySlides(report, null, null)
+    const pantheon = slides.find((slide) => slide.key === 'pantheon')
+
+    expect(slides.map((slide) => slide.key)).not.toContain('contest')
+    expect(pantheon?.value).toBe('2 tiers conquered')
+    expect(pantheon?.items).toEqual([
+      {
+        label: 'Pantheon: Nezarec Sublime',
+        value: 'Pantheon clear',
+        imageUrl: undefined,
+        group: 'Pantheon 1.0',
+      },
+      {
+        label: 'Pantheon: Calus Resplendent',
+        value: 'Pantheon clear',
+        imageUrl: undefined,
+        group: 'Pantheon 2.0',
+      },
+    ])
+  })
+
+  it('gives raid sherpas their own story card', () => {
+    const slides = buildStorySlides(veteranReport)
+    const sherpas = slides.find((slide) => slide.key === 'sherpas')
+    const endgame = slides.find((slide) => slide.key === 'endgame')
+
+    expect(sherpas?.value).toContain('first-time raiders guided')
+    expect(endgame?.detail).toContain('repeat clears')
+  })
+
+  it('uses purpose-built layouts and never repeats an image inside one card', () => {
+    const slides = buildStorySlides(veteranReport)
+
+    expect(new Set(slides.map((slide) => slide.layout)).size).toBe(slides.length)
+    for (const slide of slides) {
+      const urls = [
+        slide.iconUrl,
+        slide.imageUrl,
+        ...(slide.imageUrls?.map((image) => image.url) ?? []),
+        ...(slide.items?.map((item) => item.imageUrl) ?? []),
+        ...(slide.stats?.map((stat) => stat.iconUrl) ?? []),
+      ].filter(Boolean)
+      expect(new Set(urls).size).toBe(urls.length)
+    }
+  })
+
+  it('returns no highlights when the report has no recorded history', () => {
+    expect(buildStorySlides(makeReport())).toEqual([])
+  })
+})
+
+describe('mostUsedActualWeapon', () => {
+  it('aggregates real weapons while excluding abilities and unknown kills', () => {
+    const weapon = mostUsedActualWeapon({
+      activityMode: 'PvE',
+      classes: [
+        {
+          className: 'Warlock',
+          modes: [
+            {
+              specificActivityMode: 'Raid',
+              categories: [
+                {
+                  categoryKey: 'ABILITIES',
+                  categoryName: 'Abilities',
+                  kills: 50_000,
+                  weapons: [
+                    {
+                      weaponKey: 'GRENADE',
+                      weaponName: 'Grenade',
+                      referenceId: -1,
+                      iconUrl: '',
+                      categoryKey: 'ABILITIES',
+                      categoryName: 'Abilities',
+                      kills: 50_000,
+                    },
+                  ],
+                },
+                {
+                  categoryKey: 'AUTO RIFLE',
+                  categoryName: 'Auto Rifle',
+                  kills: 120,
+                  weapons: [
+                    {
+                      weaponKey: 'TOMMYS MATCHBOOK',
+                      weaponName: "Tommy's Matchbook",
+                      referenceId: 1,
+                      iconUrl: 'https://www.bungie.net/tommy.jpg',
+                      categoryKey: 'AUTO RIFLE',
+                      categoryName: 'Auto Rifle',
+                      kills: 120,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(weapon).toEqual({
+      name: "Tommy's Matchbook",
+      iconUrl: 'https://www.bungie.net/tommy.jpg',
+      kills: 120,
+    })
+  })
+
+  it('returns a descending top-five leaderboard after aggregating characters', () => {
+    const weapons = {
+      activityMode: 'PvE',
+      classes: [
+        {
+          className: 'Titan',
+          modes: [
+            {
+              specificActivityMode: 'Raid',
+              categories: [
+                {
+                  categoryKey: 'TEST',
+                  categoryName: 'Test',
+                  kills: 0,
+                  weapons: Array.from({ length: 7 }, (_, index) => ({
+                    weaponKey: `WEAPON ${index}`,
+                    weaponName: `Weapon ${index}`,
+                    referenceId: index + 1,
+                    iconUrl: `https://www.bungie.net/weapon-${index}.jpg`,
+                    categoryKey: 'TEST',
+                    categoryName: 'Test',
+                    kills: (index + 1) * 100,
+                  })),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+
+    expect(mostUsedActualWeapons(weapons).map((weapon) => weapon.name)).toEqual([
+      'Weapon 6',
+      'Weapon 5',
+      'Weapon 4',
+      'Weapon 3',
+      'Weapon 2',
+    ])
+  })
+})
+
+describe('buildStory', () => {
+  it('produces no chapters for an all-zero report', () => {
+    expect(buildStory(makeReport())).toEqual([])
+  })
+
+  it('numbers chapters sequentially after omissions', () => {
+    const story = buildStory(veteranReport)
+    expect(story.length).toBeGreaterThan(3)
+    story.forEach((chapter, index) => {
+      expect(chapter.kicker).toBe(`Chapter ${index + 1}`)
+    })
+  })
+
+  it('omits chapters whose facts are all absent', () => {
+    const pveOnly = makeReport({ totalKills: 10_000 })
+    const story = buildStory(pveOnly)
+    expect(story.map((c) => c.key)).toEqual(['fight'])
+  })
+
+  it('only calls an emblem favorite when ranked first by playtime', () => {
+    const story = buildStory(veteranReport)
+    const details = story.find((c) => c.key === 'details')
+    const favorite = details?.facts.find((f) => f.label === 'Favorite emblem')
+    expect(favorite?.value).toBe('One Thousand Voices Heard')
+    expect(favorite?.note).toContain('longer than any other')
+  })
+
+  it('requires a real sample before praising a playlist', () => {
+    const story = buildStory(veteranReport)
+    const competitive = story.find((c) => c.key === 'competitive')
+    const strongest = competitive?.facts.find((f) => f.label === 'Strongest playlist')
+    // Trials has a 75% win rate but only 8 matches (< MIN_PLAYLIST_SAMPLE);
+    // Control qualifies with 1,310 matches.
+    expect(MIN_PLAYLIST_SAMPLE).toBeGreaterThan(8)
+    expect(strongest?.value).toBe('Control')
+    expect(strongest?.note).toContain('1,310 matches')
+  })
+
+  it('always includes sample sizes with competitive ratios', () => {
+    const story = buildStory(veteranReport)
+    const competitive = story.find((c) => c.key === 'competitive')
+    for (const fact of competitive?.facts ?? []) {
+      expect(fact.note).toMatch(/matches/)
+    }
+  })
+
+  it('surfaces earned distinctions', () => {
+    const story = buildStory(veteranReport)
+    const challenge = story.find((c) => c.key === 'challenge')
+    const labels = challenge?.facts.map((f) => f.label) ?? []
+    expect(labels).toContain('Solo flawless')
+    expect(labels).toContain('Contest-mode clears')
+  })
+
+  it('never fabricates streaks from single days', () => {
+    const oneDay = makeReport({
+      totalPlaytime: '10:00:00',
+      longestPlaytimeStreak: {
+        startDate: '2026-01-01T00:00:00Z',
+        endDate: '2026-01-01T00:00:00Z',
+      },
+    })
+    const story = buildStory(oneDay)
+    const time = story.find((c) => c.key === 'time')
+    expect(time?.facts.map((f) => f.label)).not.toContain('Longest streak')
+  })
+})
+
+describe('fastestEndgameClear', () => {
+  it('finds the fastest across raids and dungeons', () => {
+    const fastest = fastestEndgameClear(veteranReport)
+    expect(fastest?.activityName).toBe('Shattered Throne')
+  })
+
+  it('returns null when no timed clears exist', () => {
+    expect(fastestEndgameClear(makeReport())).toBeNull()
+  })
+})

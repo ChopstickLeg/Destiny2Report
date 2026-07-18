@@ -224,7 +224,7 @@ public partial class CrawlerService
         {
             while (pending.Count < maxConcurrency && await source.MoveNextAsync())
             {
-                pending.Add(FetchPgcrAsync(source.Current));
+                pending.Add(FetchPgcrWithIdAsync(source.Current));
             }
 
             while (pending.Count > 0)
@@ -234,7 +234,7 @@ public partial class CrawlerService
 
                 if (await source.MoveNextAsync())
                 {
-                    pending.Add(FetchPgcrAsync(source.Current));
+                    pending.Add(FetchPgcrWithIdAsync(source.Current));
                 }
 
                 var result = await completed.ConfigureAwait(false);
@@ -249,20 +249,105 @@ public partial class CrawlerService
             await source.DisposeAsync();
         }
 
-        async Task<(long ActivityInstanceId, DestinyPostGameCarnageReportData Pgcr)> FetchPgcrAsync(
+        async Task<(long ActivityInstanceId, DestinyPostGameCarnageReportData Pgcr)> FetchPgcrWithIdAsync(
             long activityId)
         {
-            var operation = $"GetPostGameCarnageReport:{activityId}";
-            using var lease = await pgcrThrottler.AcquireAsync(cancellationToken).ConfigureAwait(false);
-            var response = await ExecuteBungieOperationAsync(
-                    operation,
-                    () => bungieClient.Destiny2_GetPostGameCarnageReportAsync(activityId, cancellationToken),
-                    cancellationToken)
-                .ConfigureAwait(false);
-            var pgcr = EnsureSuccess(response, item => item.Response, operation);
-
-            return (ActivityInstanceId: activityId, Pgcr: pgcr);
+            return (ActivityInstanceId: activityId, Pgcr: await FetchPgcrAsync(activityId, cancellationToken).ConfigureAwait(false));
         }
+    }
+
+    private async Task<DestinyPostGameCarnageReportData> FetchPgcrAsync(
+        long activityId,
+        CancellationToken cancellationToken)
+    {
+        var operation = $"GetPostGameCarnageReport:{activityId}";
+        using var lease = await pgcrThrottler.AcquireAsync(cancellationToken).ConfigureAwait(false);
+        var response = await ExecuteBungieOperationAsync(
+                operation,
+                () => bungieClient.Destiny2_GetPostGameCarnageReportAsync(activityId, cancellationToken),
+                cancellationToken)
+            .ConfigureAwait(false);
+        return EnsureSuccess(response, item => item.Response, operation);
+    }
+
+    private async Task<Dictionary<long, CharacterIdentity>> FetchDeletedCharacterIdentitiesAsync(
+        int platformId,
+        long playerMembershipId,
+        IReadOnlyCollection<long> deletedCharacterIds,
+        ManifestContext manifest,
+        CancellationToken cancellationToken)
+    {
+        if (deletedCharacterIds.Count == 0)
+        {
+            return [];
+        }
+
+        var classDefinitionsTask = manifest.GetClassDefinitionsAsync(cancellationToken);
+        var raceDefinitionsTask = manifest.GetRaceDefinitionsAsync(cancellationToken);
+        await Task.WhenAll(classDefinitionsTask, raceDefinitionsTask).ConfigureAwait(false);
+
+        var classDefinitions = classDefinitionsTask.Result;
+        var raceDefinitions = raceDefinitionsTask.Result;
+        var identities = new ConcurrentDictionary<long, CharacterIdentity>();
+
+        await Parallel.ForEachAsync(
+            deletedCharacterIds,
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = Math.Min(8, pgcrThrottler.RequestsPerSecond)
+            },
+            async (characterId, ct) =>
+            {
+                try
+                {
+                    var operation = $"GetActivityHistory:CharacterIdentity:{characterId}";
+                    var response = await ExecuteBungieOperationAsync(
+                            operation,
+                            () => bungieClient.Destiny2_GetActivityHistoryAsync(
+                                characterId,
+                                1,
+                                playerMembershipId,
+                                platformId,
+                                null,
+                                0,
+                                ct),
+                            ct)
+                        .ConfigureAwait(false);
+
+                    EnsurePublicActivityHistoryResponse(response, operation);
+                    var activity = EnsureSuccess(response, item => item.Response, operation)
+                        .Activities?
+                        .FirstOrDefault(item => item.ActivityDetails.InstanceId > 0);
+                    if (activity is null)
+                    {
+                        return;
+                    }
+
+                    var pgcr = await FetchPgcrAsync(activity.ActivityDetails.InstanceId, ct).ConfigureAwait(false);
+                    var identity = ReadCharacterIdentityFromPgcr(
+                        pgcr,
+                        playerMembershipId,
+                        characterId,
+                        classDefinitions,
+                        raceDefinitions);
+                    if (identity is not null)
+                    {
+                        identities[characterId] = identity;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogDebug(
+                        ex,
+                        "Could not recover class/race for deleted character {CharacterId} on membership {MembershipType}/{MembershipId}.",
+                        characterId,
+                        platformId,
+                        playerMembershipId);
+                }
+            }).ConfigureAwait(false);
+
+        return identities.ToDictionary(item => item.Key, item => item.Value);
     }
 
     private async Task<IReadOnlyCollection<CompletedRaidActivity>?> FetchCompletedRaidHistoryAsync(

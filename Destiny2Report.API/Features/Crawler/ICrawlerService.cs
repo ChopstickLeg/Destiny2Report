@@ -25,4 +25,6 @@ public interface ICrawlerService
         long membershipId,
         ActivityPlaytimeMode activityMode,
         CancellationToken cancellationToken);
+
+    Task<StoryVisualAssetsReport> GetStoryVisualAssetsAsync(CancellationToken cancellationToken);
 }

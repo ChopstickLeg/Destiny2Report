@@ -14,9 +14,6 @@ public sealed class ManifestDisplayProperties
 
     [JsonProperty("icon")]
     public string? Icon { get; init; }
-
-    [JsonProperty("secondaryIcon")]
-    public string? SecondaryIcon { get; init; }
 }
 
 public sealed class ManifestActivityDefinition
@@ -41,6 +38,12 @@ public sealed class ManifestActivityModeDefinition
 }
 
 public sealed class ManifestDestinationDefinition
+{
+    [JsonProperty("displayProperties")]
+    public ManifestDisplayProperties? DisplayProperties { get; init; }
+}
+
+public sealed class ManifestCharacterIdentityDefinition
 {
     [JsonProperty("displayProperties")]
     public ManifestDisplayProperties? DisplayProperties { get; init; }

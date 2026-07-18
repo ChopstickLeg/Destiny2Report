@@ -254,7 +254,7 @@ public sealed class CrawlerActivityStatsTests
     }
 
     [Fact]
-    public void ToEmblemDefinitionSummary_maps_secondary_icon_to_background_url()
+    public void ToEmblemDefinitionSummary_maps_top_level_secondary_icon_to_background_url()
     {
         var definition = new DestinyDefinition
         {
@@ -265,10 +265,10 @@ public sealed class CrawlerActivityStatsTests
                     """
                     {
                       "name": "A Good Emblem",
-                      "icon": "/common/destiny2_content/icons/emblem_icon.jpg",
-                      "secondaryIcon": "/common/destiny2_content/icons/emblem_background.jpg"
+                      "icon": "/common/destiny2_content/icons/emblem_icon.jpg"
                     }
-                    """)
+                    """),
+                ["secondaryIcon"] = "/common/destiny2_content/icons/emblem_background.jpg"
             }
         };
 

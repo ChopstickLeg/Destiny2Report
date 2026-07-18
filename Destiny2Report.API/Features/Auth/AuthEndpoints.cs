@@ -16,7 +16,12 @@ public static class AuthEndpoints
 
         auth.MapGet("/whoami", AuthHandlers.WhoAmI)
             .WithName("WhoAmI")
-            .WithSummary("Returns the signed-in Bungie player for a bearer token, or signedIn=false.");
+            .WithSummary("Returns the signed-in Bungie player for the session cookie, or signedIn=false.");
+
+        auth.MapPost("/signout", AuthHandlers.SignOut)
+            .WithName("SignOut")
+            .WithSummary("Deletes the current signed-in session.")
+            .RequireRateLimiting(RateLimitPolicies.PublicWrite);
 
         return api;
     }

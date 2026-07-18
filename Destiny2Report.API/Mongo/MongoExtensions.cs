@@ -1,14 +1,11 @@
 using Destiny2Report.API.Features.Crawler.Models;
-using MongoDB.Bson;
+using Destiny2Report.API.Features.Reports;
 using MongoDB.Driver;
-using MongoDB.Driver.Search;
 
 namespace Destiny2Report.API.Mongo;
 
 public static class MongoExtensions
 {
-    private const string PlayerFullDisplayNameSearchIndex = "player-full-display-name";
-
     public static IServiceCollection AddMongo(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton<IMongoClient>(_ =>
@@ -63,7 +60,29 @@ public static class MongoExtensions
                     })
             ],
             cancellationToken);
-        await reports.EnsureFullDisplayNameSearchIndexAsync(app.Logger, cancellationToken);
+
+        var storyShares = mongoDatabase.GetCollection<StoryShare>("story_shares");
+        var storyShareTokenIndexKeys = Builders<StoryShare>.IndexKeys
+            .Ascending(share => share.TokenHash);
+        var storyShareOwnerIndexKeys = Builders<StoryShare>.IndexKeys
+            .Ascending(share => share.MembershipTypeId)
+            .Ascending(share => share.MembershipId)
+            .Descending(share => share.CreatedAtUtc);
+
+        await storyShares.EnsureIndexesAsync(
+            [
+                new CreateIndexModel<StoryShare>(
+                    storyShareTokenIndexKeys,
+                    new CreateIndexOptions
+                    {
+                        Name = "ux_story_shares_token_hash",
+                        Unique = true
+                    }),
+                new CreateIndexModel<StoryShare>(
+                    storyShareOwnerIndexKeys,
+                    new CreateIndexOptions { Name = "ix_story_shares_owner_created" })
+            ],
+            cancellationToken);
 
         var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
         var accumulatorIndexKeys = Builders<CrawlAccumulator>.IndexKeys
@@ -179,62 +198,6 @@ public static class MongoExtensions
         if (missingIndexModels.Length > 0)
         {
             await collection.Indexes.CreateManyAsync(missingIndexModels, cancellationToken);
-        }
-    }
-
-    private static async Task EnsureFullDisplayNameSearchIndexAsync(
-        this IMongoCollection<DestinyReport> reports,
-        ILogger logger,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var searchIndexes = await reports.SearchIndexes
-                .ListAsync(PlayerFullDisplayNameSearchIndex, aggregateOptions: null, cancellationToken)
-                .ConfigureAwait(false);
-            var existingSearchIndexes = await searchIndexes.ToListAsync(cancellationToken).ConfigureAwait(false);
-            if (existingSearchIndexes.Count > 0)
-            {
-                return;
-            }
-
-            var definition = new BsonDocument
-            {
-                {
-                    "mappings",
-                    new BsonDocument
-                    {
-                        { "dynamic", false },
-                        {
-                            "fields",
-                            new BsonDocument
-                            {
-                                {
-                                    nameof(DestinyReport.FullDisplayName),
-                                    new BsonDocument
-                                    {
-                                        { "type", "autocomplete" },
-                                        { "analyzer", "lucene.keyword" },
-                                        { "tokenization", "edgeGram" },
-                                        { "minGrams", 2 },
-                                        { "maxGrams", 20 },
-                                        { "foldDiacritics", true }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            };
-
-            await reports.SearchIndexes.CreateOneAsync(
-                    new CreateSearchIndexModel(PlayerFullDisplayNameSearchIndex, definition),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (MongoException exception)
-        {
-            logger.LogWarning(exception, "Player autocomplete index is unavailable; player search will use Bungie results only.");
         }
     }
 
