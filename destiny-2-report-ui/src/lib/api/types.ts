@@ -349,4 +349,36 @@ export interface SignedInPlayerResponse {
   bungieNetUser: BungieNetUser | null
   destinyMemberships: DestinyMembership[]
   primaryDestinyMembership: DestinyMembership | null
+  isAdmin: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Admin
+// ---------------------------------------------------------------------------
+
+export interface AdminActiveCrawl {
+  membershipTypeId: number
+  membershipId: string
+  displayName: string
+  queuedAtUtc: string | null
+  startedAtUtc: string | null
+  leaseExpiresAtUtc: string | null
+  leaseOwner: string
+  queuedInRedis: boolean
+}
+
+export interface AdminQueueStatusCount {
+  status: CrawlState
+  count: number
+}
+
+export interface AdminOverview {
+  updatedAtUtc: string
+  activeCrawls: AdminActiveCrawl[]
+  statusCounts: AdminQueueStatusCount[]
+}
+
+export interface AdminMutationResponse {
+  affectedPlayers: number
+  message: string
 }

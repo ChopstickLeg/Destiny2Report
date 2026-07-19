@@ -1,5 +1,6 @@
 using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Features.Reports;
+using Destiny2Report.API.Features.PushNotifications;
 using MongoDB.Driver;
 
 namespace Destiny2Report.API.Mongo;
@@ -81,6 +82,34 @@ public static class MongoExtensions
                 new CreateIndexModel<StoryShare>(
                     storyShareOwnerIndexKeys,
                     new CreateIndexOptions { Name = "ix_story_shares_owner_created" })
+            ],
+            cancellationToken);
+
+        var pushSubscriptions = mongoDatabase.GetCollection<ReportPushSubscription>(
+            ReportPushNotificationService.CollectionName);
+        var pushSubscriptionIdentityIndexKeys = Builders<ReportPushSubscription>.IndexKeys
+            .Ascending(subscription => subscription.EndpointHash)
+            .Ascending(subscription => subscription.MembershipTypeId)
+            .Ascending(subscription => subscription.MembershipId);
+        var pushSubscriptionExpiryIndexKeys = Builders<ReportPushSubscription>.IndexKeys
+            .Ascending(subscription => subscription.ExpiresAtUtc);
+
+        await pushSubscriptions.EnsureIndexesAsync(
+            [
+                new CreateIndexModel<ReportPushSubscription>(
+                    pushSubscriptionIdentityIndexKeys,
+                    new CreateIndexOptions
+                    {
+                        Name = "ux_report_push_endpoint_player",
+                        Unique = true
+                    }),
+                new CreateIndexModel<ReportPushSubscription>(
+                    pushSubscriptionExpiryIndexKeys,
+                    new CreateIndexOptions
+                    {
+                        Name = "ttl_report_push_expiry",
+                        ExpireAfter = TimeSpan.Zero
+                    })
             ],
             cancellationToken);
 

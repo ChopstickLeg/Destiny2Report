@@ -259,6 +259,7 @@ export function buildStorySlides(
       eyebrow: 'Contest raid clears',
       title: 'You were there before the difficulty came down.',
       value: `${formatInteger(contest.length)} ${contest.length === 1 ? 'raid' : 'raids'} cleared on contest`,
+      body: 'Cleared while each raid’s contest modifier was active.',
       tone: 'solar',
       items: contest.map((raidName) => {
         const emblem = contestEmblems.get(raidAssetKey(raidName))

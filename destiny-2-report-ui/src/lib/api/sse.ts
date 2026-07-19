@@ -125,7 +125,7 @@ async function streamOnce(
 ): Promise<boolean> {
   const response = await fetch(
     `${API_BASE_URL}/reports/${identity.membershipTypeId}/${identity.membershipId}/queue`,
-    { headers: { Accept: 'text/event-stream' }, signal },
+    { headers: { Accept: 'text/event-stream' }, credentials: 'include', signal },
   )
 
   if (!response.ok || !response.body) {

@@ -1,7 +1,9 @@
 using Destiny2Report.API.Bungie;
 using Destiny2Report.API.Features.Auth;
+using Destiny2Report.API.Features.Admin;
 using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.PlayerSearch;
+using Destiny2Report.API.Features.PushNotifications;
 using Destiny2Report.API.Features.Reports;
 using Destiny2Report.API.Features.Status;
 using Destiny2Report.API.Mongo;
@@ -10,6 +12,15 @@ using Destiny2Report.API.RateLimiting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using StackExchange.Redis;
 using System.Threading.RateLimiting;
+using WebPush;
+
+if (args.Contains("--generate-vapid-keys", StringComparer.Ordinal))
+{
+    var keys = VapidHelper.GenerateVapidKeys();
+    Console.WriteLine($"WEB_PUSH_PUBLIC_KEY={keys.PublicKey}");
+    Console.WriteLine($"WEB_PUSH_PRIVATE_KEY={keys.PrivateKey}");
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +36,16 @@ builder.Services.Configure<ContestModeOptions>(builder.Configuration.GetSection(
 builder.Services.Configure<ConquestOptions>(builder.Configuration.GetSection(ConquestOptions.SectionName));
 builder.Services.Configure<ActivityTriumphRecordOptions>(builder.Configuration.GetSection(ActivityTriumphRecordOptions.SectionName));
 builder.Services.Configure<CrawlerOptions>(builder.Configuration.GetSection(CrawlerOptions.SectionName));
+builder.Services.AddOptions<WebPushOptions>()
+    .Bind(builder.Configuration.GetSection(WebPushOptions.SectionName))
+    .Validate(options =>
+        (string.IsNullOrWhiteSpace(options.Subject)
+            && string.IsNullOrWhiteSpace(options.PublicKey)
+            && string.IsNullOrWhiteSpace(options.PrivateKey))
+        || options.Enabled,
+        "WebPush must specify Subject, PublicKey, and PrivateKey together.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<IReportPushNotificationService, ReportPushNotificationService>();
 builder.Services.AddSingleton<CrawlerPgcrThrottler>();
 builder.Services.AddSingleton<CrawlerSherpaHistoryThrottler>();
 builder.Services.AddStackExchangeRedisCache(options =>
@@ -56,6 +77,9 @@ builder.Services.AddOptions<AuthSessionOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IAuthSessionStore, AuthSessionStore>();
+builder.Services.AddOptions<AdminOptions>()
+    .Bind(builder.Configuration.GetSection(AdminOptions.SectionName));
+builder.Services.AddScoped<AdminAuthorizationFilter>();
 builder.Services.AddHealthChecks()
     .AddCheck<MongoHealthCheck>("mongodb", tags: ["ready"])
     .AddCheck<RedisHealthCheck>("redis", tags: ["ready"]);
@@ -112,8 +136,10 @@ var api = app.MapGroup("/api")
 
 api.MapStatusEndpoints();
 api.MapAuthEndpoints();
+api.MapAdminEndpoints();
 api.MapPlayerSearchEndpoints();
 api.MapReportEndpoints();
+api.MapPushNotificationEndpoints();
 
 app.Run();
 

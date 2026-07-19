@@ -10,6 +10,7 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import App from './App.vue'
 import router from './router'
 import { isApiError } from '@/lib/api/http'
+import { canUseWebPush, ensurePushServiceWorker } from '@/lib/push-service-worker'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,3 +27,9 @@ const queryClient = new QueryClient({
 })
 
 createApp(App).use(createPinia()).use(router).use(VueQueryPlugin, { queryClient }).mount('#app')
+
+if (canUseWebPush()) {
+  void ensurePushServiceWorker().catch(() => {
+    // The opt-in control surfaces registration errors if the user chooses notifications.
+  })
+}

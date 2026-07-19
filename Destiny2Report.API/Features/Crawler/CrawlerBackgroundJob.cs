@@ -1,5 +1,6 @@
 using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Observability;
+using Destiny2Report.API.Features.PushNotifications;
 using MongoDB.Driver;
 using StackExchange.Redis;
 using System.Diagnostics;
@@ -19,18 +20,21 @@ public class CrawlerBackgroundJob : BackgroundService
     private readonly IServiceProvider _serviceProvider;
     private readonly IConnectionMultiplexer _redis;
     private readonly IMongoDatabase _mongoDatabase;
+    private readonly IReportPushNotificationService _pushNotifications;
     private readonly string _consumerName = $"{Environment.MachineName}-{Guid.NewGuid():N}";
 
     public CrawlerBackgroundJob(
         ILogger<CrawlerBackgroundJob> logger,
         IServiceProvider serviceProvider,
         IConnectionMultiplexer redis,
-        IMongoDatabase mongoDatabase)
+        IMongoDatabase mongoDatabase,
+        IReportPushNotificationService pushNotifications)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
         _redis = redis;
         _mongoDatabase = mongoDatabase;
+        _pushNotifications = pushNotifications;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -178,6 +182,14 @@ public class CrawlerBackgroundJob : BackgroundService
                         .ConfigureAwait(false);
                     await UpdateJobStatusAsync(redisDatabase, membershipTypeId, membershipId, entry.Id, finalStatus, finalReportState?.CrawlError, progress.Snapshot)
                         .ConfigureAwait(false);
+                    if (finalStatus == DestinyReport.CrawlStateCompleted)
+                    {
+                        await TryNotifyReportCompletedAsync(
+                                membershipTypeId,
+                                membershipId,
+                                stoppingToken)
+                            .ConfigureAwait(false);
+                    }
                     activity?.SetStatus(ActivityStatusCode.Ok);
 
                     _logger.LogInformation("Completed crawler stream entry {EntryId} with status {CrawlState}.", entry.Id, finalStatus);
@@ -310,6 +322,14 @@ public class CrawlerBackgroundJob : BackgroundService
                     var finalStatus = finalReportState?.CrawlState ?? DestinyReport.CrawlStateCompleted;
                     await UpdateJobStatusAsync(redisDatabase, job.PlatformId, job.PlayerMembershipId, RedisValue.Null, finalStatus, finalReportState?.CrawlError, progress.Snapshot)
                         .ConfigureAwait(false);
+                    if (finalStatus == DestinyReport.CrawlStateCompleted)
+                    {
+                        await TryNotifyReportCompletedAsync(
+                                job.PlatformId,
+                                job.PlayerMembershipId,
+                                stoppingToken)
+                            .ConfigureAwait(false);
+                    }
                     activity?.SetStatus(ActivityStatusCode.Ok);
 
                     _logger.LogInformation(
@@ -392,6 +412,33 @@ public class CrawlerBackgroundJob : BackgroundService
                     job.PlatformId,
                     job.PlayerMembershipId);
             }
+        }
+    }
+
+    private async Task TryNotifyReportCompletedAsync(
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _pushNotifications.NotifyReportCompletedAsync(
+                    membershipTypeId,
+                    membershipId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Report {MembershipTypeId}/{MembershipId} completed, but its push notifications could not be processed.",
+                membershipTypeId,
+                membershipId);
         }
     }
 

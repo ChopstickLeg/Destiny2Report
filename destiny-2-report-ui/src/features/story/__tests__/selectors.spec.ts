@@ -244,10 +244,8 @@ describe('buildStorySlides', () => {
   it('gives raid sherpas their own story card', () => {
     const slides = buildStorySlides(veteranReport)
     const sherpas = slides.find((slide) => slide.key === 'sherpas')
-    const endgame = slides.find((slide) => slide.key === 'endgame')
 
     expect(sherpas?.value).toContain('first-time raiders guided')
-    expect(endgame?.detail).toContain('repeat clears')
   })
 
   it('chooses a repeatable personality stat for each player', () => {

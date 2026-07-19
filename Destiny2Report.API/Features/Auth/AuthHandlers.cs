@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
+using Destiny2Report.API.Features.Admin;
+using Microsoft.Extensions.Options;
 
 namespace Destiny2Report.API.Features.Auth;
 
@@ -12,6 +14,7 @@ public static class AuthHandlers
         HttpResponse httpResponse,
         IBungieAuthService authService,
         IAuthSessionStore sessionStore,
+        IOptions<AdminOptions> adminOptions,
         CancellationToken cancellationToken)
     {
         try
@@ -24,7 +27,7 @@ public static class AuthHandlers
             }
 
             await sessionStore.CreateAsync(httpResponse, response, cancellationToken).ConfigureAwait(false);
-            return TypedResults.Ok(profile);
+            return TypedResults.Ok(AdminAccess.WithAdminAccess(profile, adminOptions.Value));
         }
         catch (BungieAuthException ex) when (ex.Error is "invalid_oauth_request" or "bungie_oauth_exchange_failed")
         {
@@ -42,6 +45,7 @@ public static class AuthHandlers
         IBungieAuthService authService,
         IAuthSessionStore sessionStore,
         TimeProvider timeProvider,
+        IOptions<AdminOptions> adminOptions,
         CancellationToken cancellationToken)
     {
         var session = await sessionStore.GetAsync(httpRequest, cancellationToken).ConfigureAwait(false);
@@ -66,7 +70,7 @@ public static class AuthHandlers
             var profile = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
             if (profile.SignedIn)
             {
-                return TypedResults.Ok(profile);
+                return TypedResults.Ok(AdminAccess.WithAdminAccess(profile, adminOptions.Value));
             }
 
             session = await RefreshSessionAsync(
@@ -82,7 +86,7 @@ public static class AuthHandlers
                 await sessionStore.DeleteAsync(httpRequest, httpResponse, cancellationToken).ConfigureAwait(false);
             }
 
-            return TypedResults.Ok(profile);
+            return TypedResults.Ok(AdminAccess.WithAdminAccess(profile, adminOptions.Value));
         }
         catch (BungieAuthException ex) when (
             ex.Error is "bungie_session_expired"

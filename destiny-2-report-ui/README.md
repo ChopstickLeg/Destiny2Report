@@ -27,6 +27,19 @@ single origin (the intended production shape). By default it targets
 `http://localhost:5063` (the API's `launchSettings.json` HTTP profile); override
 with `VITE_DEV_API_PROXY` in `.env.local`.
 
+Report-completion notifications use the browser Push API and a service worker.
+The backend only advertises the opt-in control when all three `WebPush` settings
+are configured. Generate a VAPID key pair once, keep the private key server-side,
+and add the values to the workspace `.env`:
+
+```sh
+dotnet run --project Destiny2Report.API -- --generate-vapid-keys
+```
+
+Set `WEB_PUSH_SUBJECT` to a `mailto:` address or an HTTPS URL that identifies the
+site operator. The same VAPID key pair must be retained across deployments or
+existing browser subscriptions will stop working.
+
 ### Environment variables
 
 Copy `.env.example` to `.env.local` and adjust as needed:

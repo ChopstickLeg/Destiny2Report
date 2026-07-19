@@ -34,6 +34,7 @@ export const useSessionStore = defineStore('session', {
 
   getters: {
     isSignedIn: (state) => state.status === 'signed-in',
+    isAdmin: (state) => state.status === 'signed-in' && state.profile?.isAdmin === true,
     signInAvailable: () => Boolean(CLIENT_ID),
 
     displayName(state): string | null {

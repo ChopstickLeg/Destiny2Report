@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vue-router'
+import { useSessionStore } from '@/stores/session'
 
 const APP_NAME = 'Destiny 2 Report'
 
@@ -98,6 +99,17 @@ const router = createRouter({
       name: 'status',
       component: () => import('@/features/status/StatusView.vue'),
       meta: { title: 'Service status' },
+    },
+    {
+      path: '/admin',
+      name: 'admin',
+      component: () => import('@/features/admin/AdminView.vue'),
+      meta: { title: 'Crawl operations' },
+      async beforeEnter() {
+        const session = useSessionStore()
+        await session.bootstrap()
+        return session.isAdmin ? true : { name: 'home' }
+      },
     },
     {
       path: '/:pathMatch(.*)*',

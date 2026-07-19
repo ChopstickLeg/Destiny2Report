@@ -62,7 +62,6 @@ function signOut() {
   close()
   session.signOut()
 }
-
 </script>
 
 <template>
@@ -112,6 +111,15 @@ function signOut() {
         </RouterLink>
         <RouterLink class="menu-item" role="menuitem" :to="{ name: 'story' }" @click="close">
           Your Story
+        </RouterLink>
+        <RouterLink
+          v-if="session.isAdmin"
+          class="menu-item"
+          role="menuitem"
+          :to="{ name: 'admin' }"
+          @click="close"
+        >
+          Crawl operations
         </RouterLink>
 
         <div class="menu-rule" role="presentation" />

@@ -5,6 +5,7 @@ import ErrorState from '@/components/base/ErrorState.vue'
 import type { ReportIdentity } from '@/lib/api/reports'
 import type { CrawlState } from '@/lib/api/types'
 import CrawlProgressPanel from './CrawlProgressPanel.vue'
+import ReportReadyNotification from './ReportReadyNotification.vue'
 import { useQueueWatcher } from './useQueueWatcher'
 
 const props = defineProps<{
@@ -92,6 +93,7 @@ const heading = computed(() => {
           :reconnect-attempt="watcher.reconnectAttempt.value"
           :started-at="watcher.startedAt.value"
         />
+        <ReportReadyNotification :identity="identity" />
       </template>
 
       <template v-else-if="panel === 'failed'">

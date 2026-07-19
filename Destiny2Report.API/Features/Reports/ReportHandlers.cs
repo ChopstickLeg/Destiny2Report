@@ -717,7 +717,7 @@ public static class ReportHandlers
             ? parsedUpdatedAtUtc
             : DateTimeOffset.UtcNow;
 
-        return BuildQueueStatus(
+        var storedStatus = BuildQueueStatus(
             membershipTypeId,
             membershipId,
             status,
@@ -727,6 +727,29 @@ public static class ReportHandlers
             0,
             updatedAtUtc,
             progress);
+
+        if (status != DestinyReport.CrawlStateQueued)
+        {
+            return storedStatus;
+        }
+
+        var entries = await redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName).ConfigureAwait(false);
+        for (var index = 0; index < entries.Length; index++)
+        {
+            var entry = entries[index];
+            if ((!string.IsNullOrWhiteSpace(streamEntryId) && entry.Id.ToString() == streamEntryId)
+                || MatchesCrawlerJob(entry, membershipTypeId, membershipId))
+            {
+                return storedStatus with
+                {
+                    StreamEntryId = entry.Id.ToString(),
+                    Position = index + 1,
+                    QueueLength = entries.Length
+                };
+            }
+        }
+
+        return storedStatus;
     }
 
     private static ReportQueueStatusResponse BuildQueueStatus(

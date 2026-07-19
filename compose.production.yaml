@@ -11,6 +11,11 @@ services:
       Bungie__ApiKey: ${BUNGIE_API_KEY:?BUNGIE_API_KEY is required}
       Bungie__ClientId: ${BUNGIE_CLIENT_ID:?BUNGIE_CLIENT_ID is required}
       Bungie__ClientSecret: ${BUNGIE_CLIENT_SECRET:?BUNGIE_CLIENT_SECRET is required}
+      Admin__MembershipTypeId: ${ADMIN_MEMBERSHIP_TYPE_ID:?ADMIN_MEMBERSHIP_TYPE_ID is required}
+      Admin__MembershipId: ${ADMIN_MEMBERSHIP_ID:?ADMIN_MEMBERSHIP_ID is required}
+      WebPush__Subject: ${WEB_PUSH_SUBJECT:?WEB_PUSH_SUBJECT is required}
+      WebPush__PublicKey: ${WEB_PUSH_PUBLIC_KEY:?WEB_PUSH_PUBLIC_KEY is required}
+      WebPush__PrivateKey: ${WEB_PUSH_PRIVATE_KEY:?WEB_PUSH_PRIVATE_KEY is required}
       ConnectionStrings__MongoDb: mongodb://${MONGO_USERNAME:?MONGO_USERNAME is required}:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@mongo:27017/?authSource=admin
       ConnectionStrings__Redis: redis:6379,password=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       OpenTelemetry__Endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT is required}

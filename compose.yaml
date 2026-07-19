@@ -10,6 +10,11 @@ services:
       Bungie__ApiKey: ${BUNGIE_API_KEY:-}
       Bungie__ClientId: ${BUNGIE_CLIENT_ID:-}
       Bungie__ClientSecret: ${BUNGIE_CLIENT_SECRET:-}
+      Admin__MembershipTypeId: ${ADMIN_MEMBERSHIP_TYPE_ID:-0}
+      Admin__MembershipId: ${ADMIN_MEMBERSHIP_ID:-0}
+      WebPush__Subject: ${WEB_PUSH_SUBJECT:-}
+      WebPush__PublicKey: ${WEB_PUSH_PUBLIC_KEY:-}
+      WebPush__PrivateKey: ${WEB_PUSH_PRIVATE_KEY:-}
       ConnectionStrings__MongoDb: mongodb://mongo:27017
       ConnectionStrings__Redis: redis:6379
       OpenTelemetry__Endpoint: http://jaeger:4317
