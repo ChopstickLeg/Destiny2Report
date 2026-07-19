@@ -111,13 +111,13 @@ function remember(result: PlayerSearchResult) {
       <EmptyState
         v-else-if="results.length === 0"
         title="No players matched"
-        :description="`Nothing came back for “${parsed.prefix}”. Check the spelling — Bungie names match from the start of the name.`"
+        :description="`Nothing came back for “${parsed.prefix}”. Check the spelling. Bungie names match from the start of the name.`"
       />
 
       <template v-else>
         <p class="result-count" role="status">
           {{ results.length }} {{ results.length === 1 ? 'player' : 'players' }} found. A result
-          here doesn't mean a report exists yet — you can generate one from their page.
+          here doesn't mean a report exists yet. You can generate one from their page.
         </p>
         <ul class="result-list">
           <li v-for="result in results" :key="`${result.membershipTypeId}-${result.membershipId}`">

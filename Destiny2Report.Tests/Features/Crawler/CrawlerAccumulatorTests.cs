@@ -91,8 +91,27 @@ public sealed class CrawlerAccumulatorTests
         Assert.False(accumulator.NeedsFullRecrawl);
         Assert.Empty(accumulator.FullRecrawlReason);
         Assert.Equal(DateTime.Parse("2024-01-03T00:00:00Z").ToUniversalTime(), accumulator.NewestActivityPeriod);
+        Assert.Equal(DateTime.Parse("2024-01-02T00:00:00Z").ToUniversalTime(), accumulator.FirstActivityAtUtc);
         Assert.Equal([4, 2, 5, 1, 3], accumulator.RecentActivityInstanceIds);
         Assert.True(accumulator.LastSuccessfulCrawlAt > DateTime.MinValue);
+    }
+
+    [Fact]
+    public void UpdateAccumulatorCrawlState_keeps_the_earliest_activity_across_crawls()
+    {
+        var accumulator = new CrawlAccumulator
+        {
+            FirstActivityAtUtc = DateTime.Parse("2018-01-01T00:00:00Z").ToUniversalTime()
+        };
+        var fetchedActivities = new[]
+        {
+            BungieFixture.Activity(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 7, 1, 100, 100),
+            BungieFixture.Activity(DateTimeOffset.Parse("2017-09-06T17:00:00Z"), 7, 2, 100, 100)
+        };
+
+        CrawlerReflection.Invoke("UpdateAccumulatorCrawlState", accumulator, fetchedActivities, Array.Empty<long>());
+
+        Assert.Equal(DateTime.Parse("2017-09-06T17:00:00Z").ToUniversalTime(), accumulator.FirstActivityAtUtc);
     }
 
     [Theory]

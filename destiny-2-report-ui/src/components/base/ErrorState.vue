@@ -16,8 +16,8 @@ const message = computed(() => {
     if (props.error.isRateLimited) {
       const wait = props.error.retryAfterSeconds
       return wait
-        ? `Too many requests right now — try again in about ${wait} seconds.`
-        : 'Too many requests right now — give it a minute and try again.'
+        ? `Too many requests right now. Try again in about ${wait} seconds.`
+        : 'Too many requests right now. Give it a minute and try again.'
     }
     if (props.error.status >= 500) {
       return 'The service hit a problem answering this request.'

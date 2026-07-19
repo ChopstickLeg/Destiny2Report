@@ -27,6 +27,7 @@ public record DestinyReport
         init { }
     }
     public DateTime CrawledAt { get; init; } = DateTime.UtcNow;
+    public DateTime? FirstActivityAtUtc { get; set; }
     [BsonDefaultValue(CrawlStateCompleted)]
     [BsonIgnoreIfDefault]
     public string CrawlState { get; set; } = CrawlStateCompleted;

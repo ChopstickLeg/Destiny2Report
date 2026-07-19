@@ -71,7 +71,7 @@ const heading = computed(() => {
         <h1 class="generation-title">No report yet</h1>
         <p class="generation-copy">
           {{ heading }} hasn't been crawled. Generating a report walks their entire public Destiny 2
-          history — every activity, weapon, and teammate — and stores it for anyone to view.
+          history, including every activity, weapon, and teammate, and stores it for anyone to view.
         </p>
         <ErrorState
           v-if="watcher.submitError.value"
@@ -97,7 +97,7 @@ const heading = computed(() => {
       <template v-else-if="panel === 'failed'">
         <h1 class="generation-title">The crawl failed</h1>
         <p class="generation-copy">
-          Something went wrong while walking this player's history. This is usually temporary —
+          Something went wrong while walking this player's history. This is usually temporary.
           Bungie's API may have been unavailable partway through.
         </p>
         <p v-if="failureDetail" class="generation-detail">{{ failureDetail }}</p>
@@ -116,7 +116,7 @@ const heading = computed(() => {
         </p>
         <div class="generation-actions">
           <AppButton variant="secondary" @click="watcher.submitAndWatch()">
-            I've updated my settings — try again
+            I've updated my settings. Try again
           </AppButton>
         </div>
       </template>

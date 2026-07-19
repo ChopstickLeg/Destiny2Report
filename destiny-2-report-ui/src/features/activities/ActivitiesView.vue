@@ -115,7 +115,7 @@ const modeBars = computed(() =>
               {{ bucket.mode }}
             </dt>
             <dd class="bucket-value tnum">
-              <template v-if="bucket.query.isError">—</template>
+              <template v-if="bucket.query.isError">N/A</template>
               <template v-else>{{ formatHours(bucket.totalSeconds ?? 0) }}</template>
             </dd>
           </div>

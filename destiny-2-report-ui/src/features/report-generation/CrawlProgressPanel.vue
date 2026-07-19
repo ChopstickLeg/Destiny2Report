@@ -32,10 +32,10 @@ const statusLine = computed(() => {
   if (status.status === 'queued') {
     if (status.position !== null && status.position > 0) {
       return status.queueLength > 0
-        ? `Queued — position ${formatInteger(Number(status.position))} of ${formatInteger(Number(status.queueLength))}`
-        : `Queued — position ${formatInteger(Number(status.position))}`
+        ? `Queued at position ${formatInteger(Number(status.position))} of ${formatInteger(Number(status.queueLength))}`
+        : `Queued at position ${formatInteger(Number(status.position))}`
     }
-    return 'Queued — waiting for a crawler'
+    return 'Queued and waiting for a crawler'
   }
   if (status.status === 'running') {
     return status.progress?.label ? status.progress.label : 'Crawling activity history…'
@@ -85,12 +85,12 @@ const progressDetail = computed(() => {
     <div class="progress-meta">
       <span v-if="elapsed" class="tnum">Elapsed {{ elapsed }}</span>
       <span v-if="reconnectAttempt > 0" class="progress-reconnect">
-        Connection interrupted — retrying ({{ reconnectAttempt }})…
+        Connection interrupted. Retrying ({{ reconnectAttempt }})…
       </span>
     </div>
 
     <p class="progress-note">
-      A full history crawl can take a while for veteran accounts. You can keep this page open — the
+      A full history crawl can take a while for veteran accounts. You can keep this page open. The
       report appears automatically when it's ready.
     </p>
   </div>

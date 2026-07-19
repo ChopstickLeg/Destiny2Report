@@ -144,6 +144,7 @@ export interface DestinyReport {
   displayCode: number
   fullDisplayName: string
   crawledAt: string
+  firstActivityAtUtc: string | null
   crawlState: CrawlState
   queuedInRedis: boolean
   queuedAtUtc: string | null

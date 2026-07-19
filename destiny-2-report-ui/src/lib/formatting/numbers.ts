@@ -1,7 +1,7 @@
 /**
  * Number formatting used across statistics.
  * The backend already rounds rate fields (`clearRate`, `winRate`) to four
- * decimal places as fractions of 1 — they are multiplied by 100 exactly
+ * decimal places as fractions of 1. They are multiplied by 100 exactly
  * once, here.
  */
 
@@ -26,10 +26,10 @@ export function formatRatio(value: number): string {
 }
 
 /**
- * Share of a total as a percentage string; empty totals return "—" instead
+ * Share of a total as a percentage string; empty totals return "N/A" instead
  * of implying a measured zero.
  */
 export function formatShare(part: number, total: number, fractionDigits = 1): string {
-  if (total <= 0) return '—'
+  if (total <= 0) return 'N/A'
   return formatPercent(part / total, fractionDigits)
 }

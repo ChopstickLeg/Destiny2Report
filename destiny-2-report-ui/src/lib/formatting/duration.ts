@@ -12,7 +12,7 @@ const TIMESPAN_PATTERN = /^(-)?(?:(\d+)\.)?(\d{1,2}):([0-5]?\d):([0-5]?\d)(?:\.(
 
 /**
  * Parse a .NET TimeSpan string into total seconds.
- * Returns `null` for missing or malformed input — callers decide how to
+ * Returns `null` for missing or malformed input. Callers decide how to
  * treat absence; missing data is never silently converted to zero.
  */
 export function parseTimeSpan(value: string | null | undefined): number | null {

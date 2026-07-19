@@ -14,6 +14,7 @@ export function makeReport(overrides: Partial<DestinyReport> = {}): DestinyRepor
     displayCode: 7,
     fullDisplayName: 'NewLight#0007',
     crawledAt: '2026-07-01T12:00:00Z',
+    firstActivityAtUtc: null,
     crawlState: 'completed',
     queuedInRedis: false,
     queuedAtUtc: null,
@@ -67,6 +68,7 @@ export const veteranReport: DestinyReport = makeReport({
   displayName: 'Saint-14Enjoyer',
   displayCode: 1234,
   fullDisplayName: 'Saint-14Enjoyer#1234',
+  firstActivityAtUtc: '2017-09-06T17:00:00Z',
   totalPlaytime: '124.10:03:22', // 124 days+
   totalActivityTime: '100.01:00:00',
   characterPlaytime: [

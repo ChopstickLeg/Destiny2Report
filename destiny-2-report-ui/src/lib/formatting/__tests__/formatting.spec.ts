@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { formatInteger, formatPercent, formatRatio, formatShare } from '../numbers'
-import { formatRelative, parseApiDate } from '../dates'
+import { completeYearsSince, formatRelative, parseApiDate } from '../dates'
 
 describe('formatPercent', () => {
   it('multiplies a backend fraction by 100 exactly once', () => {
@@ -25,7 +25,7 @@ describe('formatInteger', () => {
 
 describe('formatShare', () => {
   it('returns a dash rather than implying measured zero on empty totals', () => {
-    expect(formatShare(5, 0)).toBe('—')
+    expect(formatShare(5, 0)).toBe('N/A')
     expect(formatShare(1, 4, 0)).toBe('25%')
   })
 })
@@ -54,5 +54,18 @@ describe('formatRelative', () => {
     expect(formatRelative(new Date('2026-07-10T00:00:00Z'), now)).toBe('3 days ago')
     expect(formatRelative(new Date('2026-07-12T22:00:00Z'), now)).toBe('2 hours ago')
     expect(formatRelative(new Date('2026-07-12T23:59:40Z'), now)).toBe('just now')
+  })
+})
+
+describe('completeYearsSince', () => {
+  const started = new Date('2017-09-06T17:00:00Z')
+
+  it('counts only completed calendar years', () => {
+    expect(completeYearsSince(started, new Date('2026-09-05T23:59:59Z'))).toBe(8)
+    expect(completeYearsSince(started, new Date('2026-09-06T00:00:00Z'))).toBe(9)
+  })
+
+  it('does not return a negative tenure for future dates', () => {
+    expect(completeYearsSince(new Date('2027-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'))).toBe(0)
   })
 })

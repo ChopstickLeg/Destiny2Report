@@ -87,7 +87,7 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
   <ReportSection
     id="competitive"
     title="Competitive record"
-    subtitle="Ratios come straight from match history — KD is kills per death, KDA credits assists"
+    subtitle="Ratios come straight from match history. KD is kills per death; KDA credits assists"
   >
     <div class="arena-grid">
       <article v-if="crucible" class="arena">
@@ -177,7 +177,7 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
               <span
                 v-if="playlist.matches < 10"
                 class="small-sample"
-                title="Fewer than 10 matches — treat this rate with caution"
+                title="Fewer than 10 matches. Treat this rate with caution"
               >
                 low sample
               </span>
@@ -204,7 +204,7 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
           Averages per match:
           <strong class="tnum">{{ report.gambitMotes.averageMotesBanked }}</strong> banked,
           <strong class="tnum">{{ report.gambitMotes.averageMotesLost }}</strong> lost. Banked,
-          lost, and denied are independent counts — not shares of one total.
+          lost, and denied are independent counts, not shares of one total.
         </p>
         <table class="playlist-table">
           <thead>

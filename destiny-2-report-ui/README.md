@@ -11,7 +11,7 @@ signed-in "Your Story" retrospective. The product and architecture plan lives in
 - [TanStack Query](https://tanstack.com/query) for all server state (caching,
   cancellation, retries, invalidation after crawl completion)
 - Pinia only for durable client state (the Bungie session)
-- Project-owned chart components (`src/components/charts/`) — ranked bars, split
+- Project-owned chart components (`src/components/charts/`) for ranked bars, split
   bars, and one small donut; no chart framework
 - A small token-based design system (`src/styles/tokens.css`); no UI framework
 
@@ -35,10 +35,10 @@ Copy `.env.example` to `.env.local` and adjust as needed:
 | --- | --- | --- |
 | `VITE_API_BASE_URL` | API base path used by the fetch client | `/api` (same origin) |
 | `VITE_DEV_API_PROXY` | Dev-only proxy target for `/api` | `http://localhost:5063` |
-| `VITE_BUNGIE_CLIENT_ID` | Public Bungie OAuth client id; sign-in is hidden when unset | — |
+| `VITE_BUNGIE_CLIENT_ID` | Public Bungie OAuth client id; sign-in is hidden when unset | Not set |
 | `VITE_BUNGIE_AUTHORIZE_URL` | Bungie authorization endpoint override | `https://www.bungie.net/en/OAuth/Authorize` |
-| `DEV_HTTPS_PFX_PATH` | Optional localhost PFX used to serve Vite over trusted HTTPS | — |
-| `DEV_HTTPS_PFX_PASSWORD` | Password for `DEV_HTTPS_PFX_PATH`; kept server-side by Vite | — |
+| `DEV_HTTPS_PFX_PATH` | Optional localhost PFX used to serve Vite over trusted HTTPS | Not set |
+| `DEV_HTTPS_PFX_PASSWORD` | Password for `DEV_HTTPS_PFX_PATH`; kept server-side by Vite | Not set |
 
 During local development, the UI also falls back to `BUNGIE_CLIENT_ID` from the
 workspace root `.env`. This keeps the public client id aligned with the backend

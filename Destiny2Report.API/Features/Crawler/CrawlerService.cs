@@ -249,6 +249,7 @@ public partial class CrawlerService(
             var existingReport = existingReportTask.Result;
             var existingAccumulator = existingAccumulatorTask.Result;
             var requiresFullCrawl = existingAccumulator is null
+                || !existingAccumulator.FirstActivityDiscoveryCompleted
                 || existingAccumulator.NeedsFullRecrawl
                 || existingReport?.NeedsFullRecrawl == true;
             var accumulator = requiresFullCrawl

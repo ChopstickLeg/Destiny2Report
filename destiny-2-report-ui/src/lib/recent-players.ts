@@ -44,6 +44,6 @@ export function rememberPlayer(player: Omit<RecentPlayer, 'viewedAt'>): void {
     const next = [{ ...player, viewedAt: Date.now() }, ...existing].slice(0, LIMIT)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
   } catch {
-    // Storage unavailable (private mode, quota) — recents are optional.
+    // Storage may be unavailable in private mode or when the quota is full. Recents are optional.
   }
 }

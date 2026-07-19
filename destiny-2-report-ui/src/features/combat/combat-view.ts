@@ -122,7 +122,7 @@ export interface DonutShare {
 }
 
 /**
- * Top five category shares plus "Other" — true parts of one whole, the
+ * Top five category shares plus "Other." These are true parts of one whole; the
  * only place a donut is justified.
  */
 export function categoryShares(categories: CategoryTotal[], top = 5): DonutShare[] {

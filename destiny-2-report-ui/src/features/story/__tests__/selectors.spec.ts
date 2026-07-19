@@ -26,6 +26,17 @@ describe('buildStorySlides', () => {
     expect(slides.find((slide) => slide.key === 'emblem')?.imageUrl).toContain('bungie.net')
   })
 
+  it('uses the shared Guardian class colors for the playtime breakdown', () => {
+    const time = buildStorySlides(veteranReport).find((slide) => slide.key === 'time')
+    const colors = Object.fromEntries(time?.stats?.map((stat) => [stat.label, stat.color]) ?? [])
+
+    expect(colors).toEqual({
+      Titan: 'var(--color-class-titan)',
+      Warlock: 'var(--color-class-warlock)',
+      Hunter: 'var(--color-class-hunter)',
+    })
+  })
+
   it('does not turn an ordinary losing playlist into a highlight', () => {
     const report = makeReport({
       pvpPlaylists: [
@@ -237,6 +248,45 @@ describe('buildStorySlides', () => {
 
     expect(sherpas?.value).toContain('first-time raiders guided')
     expect(endgame?.detail).toContain('repeat clears')
+  })
+
+  it('chooses a repeatable personality stat for each player', () => {
+    const report = makeReport({
+      goodBoyProtocol: 42,
+      fishCaught: 317,
+      misadventures: 89,
+    })
+
+    const first = buildStorySlides(report).find((slide) => slide.key === 'personality')
+    const second = buildStorySlides({ ...report }).find((slide) => slide.key === 'personality')
+
+    expect(first).toEqual(second)
+  })
+
+  it('only chooses personality stats with a value above zero', () => {
+    const personality = buildStorySlides(
+      makeReport({ goodBoyProtocol: 0, fishCaught: 317, misadventures: 0 }),
+    ).find((slide) => slide.key === 'personality')
+
+    expect(personality?.eyebrow).toBe('Fish caught')
+    expect(personality?.value).toBe('317')
+  })
+
+  it('distributes personality stats between different players', () => {
+    const selections = Array.from({ length: 30 }, (_, index) =>
+      buildStorySlides(
+        makeReport({
+          playerMembershipId: String(10_000 + index),
+          goodBoyProtocol: 42,
+          fishCaught: 317,
+          misadventures: 89,
+        }),
+      ).find((slide) => slide.key === 'personality')?.eyebrow,
+    )
+
+    expect(new Set(selections)).toEqual(
+      new Set(['Good Boy Protocol', 'Fish caught', 'Misadventures']),
+    )
   })
 
   it('uses purpose-built layouts and never repeats an image inside one card', () => {

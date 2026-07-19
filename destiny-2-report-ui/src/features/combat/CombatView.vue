@@ -313,7 +313,7 @@ const deathBars = computed(() =>
       <EmptyState
         v-else-if="deathBars.length === 0"
         title="No deaths recorded"
-        :description="`A spotless record in ${bucket} — or no activity at all.`"
+        :description="`A spotless record in ${bucket}, or no activity at all.`"
       />
 
       <BarList v-else :items="deathBars" unit="deaths" />

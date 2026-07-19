@@ -6,6 +6,7 @@ import AppButton from '@/components/base/AppButton.vue'
 import SkeletonBlock from '@/components/base/SkeletonBlock.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
 import { bungieUrl } from '@/lib/api/bungie'
+import { completeYearsSince, formatDate, parseApiDate } from '@/lib/formatting/dates'
 import {
   fetchReport,
   fetchStoryVisualAssets,
@@ -101,6 +102,20 @@ const slides = computed(() =>
     : [],
 )
 const coverEmblem = computed(() => bungieUrl(report.value?.mostUsedEmblems[0]?.backgroundUrl))
+const firstActivityDate = computed(() => parseApiDate(report.value?.firstActivityAtUtc))
+const firstActivityLabel = computed(() =>
+  firstActivityDate.value ? formatDate(firstActivityDate.value) : null,
+)
+const yearsPlayed = computed(() => {
+  const firstActivity = firstActivityDate.value
+  if (!firstActivity) return null
+  return completeYearsSince(firstActivity)
+})
+const yearsPlayedLabel = computed(() => {
+  if (yearsPlayed.value === null) return null
+  if (yearsPlayed.value < 1) return 'Your first year in the making'
+  return `${yearsPlayed.value} ${yearsPlayed.value === 1 ? 'year' : 'years'} in the making`
+})
 
 const reportRoute = computed(() =>
   identity.value
@@ -248,7 +263,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <div v-else-if="!session.isSignedIn && !hasRouteIdentity" class="container story-gate">
       <h1 class="gate-title display">Your Story</h1>
       <p class="gate-copy">
-        The clears, people, and strange little details that made your Destiny 2 history yours—told
+        The clears, people, and strange little details that made your Destiny 2 history yours, told
         one moment at a time. Sign in with Bungie to begin.
       </p>
       <AppButton v-if="session.signInAvailable" variant="primary" @click="signIn">
@@ -280,8 +295,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <div v-else-if="!reportReady" class="container story-gate">
       <h1 class="gate-title display">Your Story needs a report first</h1>
       <p class="gate-copy">
-        Your story is built from your generated report. Create it once and come back—it only takes a
-        few minutes.
+        Your story is built from your generated report. Create it once, then come back. It only takes
+        a few minutes.
       </p>
       <AppButton v-if="reportRoute" variant="primary" :to="reportRoute">
         Generate my report
@@ -340,8 +355,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 {{ report.displayName
                 }}<span class="cover-code">#{{ String(report.displayCode).padStart(4, '0') }}</span>
               </h1>
-              <p class="cover-intro">
-                Not every number deserves a spotlight. These are the ones that tell your story.
+              <p v-if="firstActivityLabel" class="cover-history">
+                <span>Your journey began</span>
+                <strong class="display">{{ firstActivityLabel }}</strong>
+                <span>{{ yearsPlayedLabel }}</span>
               </p>
               <AppButton variant="primary" @click="next">Begin my story</AppButton>
               <p class="interaction-hint">
@@ -470,9 +487,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <p class="highlight-body">{{ currentSlide.detail }}</p>
               </header>
               <div class="tally-grid">
-                <article v-for="stat in currentSlide.stats" :key="stat.label">
-                  <strong class="display">{{ stat.value }}</strong><span>{{ stat.label }}</span>
-                  <i :style="{ width: `${(stat.share ?? 0) * 100}%` }" />
+                <article
+                  v-for="stat in currentSlide.stats"
+                  :key="stat.label"
+                  :style="{ '--tally-share': `${(stat.share ?? 0) * 100}%` }"
+                >
+                  <div class="tally-ring">
+                    <strong class="display">{{ stat.value }}</strong>
+                    <span>{{ stat.label }}</span>
+                  </div>
+                  <p class="tally-share">{{ Math.round((stat.share ?? 0) * 100) }}% of clears</p>
                 </article>
               </div>
               <p class="tally-total display">{{ currentSlide.value }}</p>
@@ -503,7 +527,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               <div class="class-bars">
                 <article v-for="stat in currentSlide.stats" :key="stat.label">
                   <img v-if="bungieUrl(stat.iconUrl)" :src="bungieUrl(stat.iconUrl)!" alt="" @error="hideBrokenImage" />
-                  <div><p><strong>{{ stat.label }}</strong><span>{{ stat.value }}</span></p><i><b :style="{ width: `${(stat.share ?? 0) * 100}%` }" /></i></div>
+                  <div><p><strong>{{ stat.label }}</strong><span>{{ stat.value }}</span></p><i><b :style="{ width: `${(stat.share ?? 0) * 100}%`, backgroundColor: stat.color }" /></i></div>
                 </article>
                 <p class="breakdown-note">{{ currentSlide.detail }}</p>
               </div>
@@ -795,11 +819,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   font-weight: 400;
 }
 
-.cover-intro {
+.cover-history {
+  display: grid;
+  gap: 0.2rem;
   max-width: 33rem;
   margin-bottom: var(--space-5);
   color: var(--color-text-secondary);
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
+  letter-spacing: 0.035em;
+}
+
+.cover-history strong {
+  color: var(--story-accent);
+  font-size: clamp(1.55rem, 3.5vw, 2.35rem);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
 }
 
 .interaction-hint {
@@ -1150,19 +1185,30 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 
 .panel--split-tally {
+  --story-accent: #e0a62f;
+  --story-accent-soft: rgb(224 166 47 / 0.1);
+  --endgame-raid: #e05a32;
+  --endgame-dungeon: #3f94b5;
   display: grid;
   grid-template-columns: 0.9fr 1.1fr;
   grid-template-rows: 1fr auto;
   gap: var(--space-6) var(--space-8);
   align-items: center;
+  background:
+    radial-gradient(circle at 82% 28%, rgb(30 107 139 / 0.12), transparent 25rem),
+    linear-gradient(125deg, rgb(151 51 25 / 0.1), transparent 46%),
+    var(--color-surface);
 }
 
-.tally-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-3); }
-.tally-grid article { padding: var(--space-5); background: var(--story-accent-soft); border-top: 3px solid var(--story-accent); }
-.tally-grid strong { display: block; font-size: clamp(2.5rem, 6vw, 5rem); color: var(--story-accent); }
-.tally-grid span { color: var(--color-text-secondary); }
-.tally-grid i { display: block; height: 3px; margin-top: var(--space-4); background: var(--color-border); }
-.tally-grid i::before { content: ''; display: block; width: inherit; height: 100%; background: var(--story-accent); }
+.tally-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(var(--space-3), 3vw, var(--space-7)); align-items: start; }
+.tally-grid article { --tally-color: var(--endgame-raid); display: grid; justify-items: center; gap: var(--space-3); min-width: 0; }
+.tally-grid article:nth-child(2) { --tally-color: var(--endgame-dungeon); }
+.tally-ring { position: relative; display: grid; place-items: center; align-content: center; width: clamp(8.25rem, 16vw, 12rem); max-width: 100%; aspect-ratio: 1; padding: var(--space-4); overflow: hidden; border-radius: 50%; background: conic-gradient(from 0deg, var(--tally-color) 0 var(--tally-share), rgb(242 236 225 / 0.08) var(--tally-share) 100%); isolation: isolate; filter: drop-shadow(0 1rem 1.5rem rgb(0 0 0 / 0.22)); }
+.tally-grid article:nth-child(2) .tally-ring { background: conic-gradient(from 0deg, rgb(242 236 225 / 0.08) 0 calc(100% - var(--tally-share)), var(--tally-color) calc(100% - var(--tally-share)) 100%); }
+.tally-ring::after { content: ''; position: absolute; inset: clamp(0.45rem, 1vw, 0.7rem); z-index: -1; border: 1px solid rgb(255 255 255 / 0.05); border-radius: inherit; background: var(--color-surface); }
+.tally-ring strong { display: block; color: var(--color-text); font-size: clamp(2.35rem, 5vw, 4.5rem); line-height: 0.85; text-align: center; }
+.tally-ring span { margin-top: var(--space-2); color: var(--tally-color); font-size: var(--text-xs); font-weight: 650; letter-spacing: 0.09em; text-align: center; text-transform: uppercase; }
+.tally-share { color: var(--color-text-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
 .tally-total { grid-column: 1 / -1; padding-top: var(--space-4); border-top: 1px solid var(--color-border); text-align: right; font-size: clamp(2rem, 5vw, 4rem); }
 
 .panel--sherpa-spotlight,

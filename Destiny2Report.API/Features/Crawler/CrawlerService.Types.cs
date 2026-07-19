@@ -54,6 +54,7 @@ public partial class CrawlerService
         private readonly List<ActivityReference> _recentActivities = [];
 
         public DateTimeOffset NewestActivityPeriod { get; private set; }
+        public DateTimeOffset? EarliestActivityPeriod { get; private set; }
 
         public IReadOnlyCollection<ActivityReference> RecentActivities => _recentActivities;
 
@@ -76,6 +77,11 @@ public partial class CrawlerService
             if (activity.Period > NewestActivityPeriod)
             {
                 NewestActivityPeriod = activity.Period;
+            }
+
+            if (EarliestActivityPeriod is null || activity.Period < EarliestActivityPeriod)
+            {
+                EarliestActivityPeriod = activity.Period;
             }
 
             _recentActivities.Add(new ActivityReference(instanceId, activity.Period));
@@ -138,6 +144,16 @@ public partial class CrawlerService
             accumulator.NewestActivityPeriod = newestFetchedActivity.Period.UtcDateTime;
         }
 
+        var earliestFetchedActivity = fetchedActivities
+            .OrderBy(activity => activity.Period)
+            .FirstOrDefault();
+        if (earliestFetchedActivity is not null
+            && (accumulator.FirstActivityAtUtc is null
+                || earliestFetchedActivity.Period.UtcDateTime < accumulator.FirstActivityAtUtc.Value))
+        {
+            accumulator.FirstActivityAtUtc = earliestFetchedActivity.Period.UtcDateTime;
+        }
+
         accumulator.RecentActivityInstanceIds = fetchedActivities
             .Where(activity => activity.ActivityDetails.InstanceId > 0)
             .OrderByDescending(activity => activity.Period)
@@ -152,7 +168,8 @@ public partial class CrawlerService
     private static void UpdateAccumulatorCrawlStateFromState(
         CrawlAccumulator accumulator,
         ActivityCrawlState crawlState,
-        IEnumerable<long> processedActivityIds)
+        IEnumerable<long> processedActivityIds,
+        bool completedFullActivityDiscovery)
     {
         accumulator.LastSuccessfulCrawlAt = DateTime.UtcNow;
         accumulator.NeedsFullRecrawl = false;
@@ -161,6 +178,18 @@ public partial class CrawlerService
         if (crawlState.NewestActivityPeriod > accumulator.NewestActivityPeriod)
         {
             accumulator.NewestActivityPeriod = crawlState.NewestActivityPeriod.UtcDateTime;
+        }
+
+        if (crawlState.EarliestActivityPeriod is not null
+            && (accumulator.FirstActivityAtUtc is null
+                || crawlState.EarliestActivityPeriod.Value.UtcDateTime < accumulator.FirstActivityAtUtc.Value))
+        {
+            accumulator.FirstActivityAtUtc = crawlState.EarliestActivityPeriod.Value.UtcDateTime;
+        }
+
+        if (completedFullActivityDiscovery)
+        {
+            accumulator.FirstActivityDiscoveryCompleted = true;
         }
 
         accumulator.RecentActivityInstanceIds = crawlState.RecentActivities

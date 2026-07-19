@@ -19,7 +19,7 @@ export interface StoryShareResponse {
 }
 
 /**
- * `null` means no report has been generated yet — a legitimate state that
+ * `null` means no report has been generated yet. This is a legitimate state that
  * drives the "Generate report" experience, distinct from request failure.
  */
 export async function fetchReport(

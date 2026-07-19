@@ -67,6 +67,7 @@ export interface StoryStat {
   value: string
   share?: number
   iconUrl?: string
+  color?: string
 }
 
 export interface StoryRankedItem {
@@ -163,6 +164,11 @@ function classBreakdown(
     Hunter: assets?.hunterIconUrl,
     Warlock: assets?.warlockIconUrl,
   }
+  const colors: Record<string, string> = {
+    Titan: 'var(--color-class-titan)',
+    Hunter: 'var(--color-class-hunter)',
+    Warlock: 'var(--color-class-warlock)',
+  }
   return [...totals.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([label, seconds]) => ({
@@ -170,6 +176,7 @@ function classBreakdown(
       value: formatHours(seconds),
       share: total > 0 ? seconds / total : 0,
       iconUrl: icons[label],
+      color: colors[label],
     }))
 }
 
@@ -177,6 +184,16 @@ function boundedNames(names: string[], visible = 3): string {
   const shown = names.slice(0, visible).join(', ')
   const remaining = names.length - visible
   return remaining > 0 ? `${shown} + ${formatInteger(remaining)} more` : shown
+}
+
+/** Stable FNV-1a hash used to make per-player editorial choices repeatable. */
+function stableHash(value: string): number {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return hash >>> 0
 }
 
 function raidAssetKey(name: string): string {
@@ -339,7 +356,6 @@ export function buildStorySlides(
       title: 'You kept going back to the endgame.',
       value: `${formatInteger(endgameClears)} total clears`,
       body: `${formatInteger(raidClears)} raid clears + ${formatInteger(dungeonClears)} dungeon clears.`,
-      detail: 'Counts recorded completed activity instances, including repeat clears.',
       tone: 'void',
       stats: [
         {
@@ -478,41 +494,54 @@ export function buildStorySlides(
       eyebrow: 'Most-used emblem',
       title: 'This was the emblem behind your name most often.',
       value: emblem.name,
-      body: `${formatHours(emblem.seconds)} of character playtime—more than any other emblem in your report.`,
+      body: `${formatHours(emblem.seconds)} of character playtime, more than any other emblem in your report.`,
       tone: 'neutral',
       imageUrl: emblem.backgroundUrl || emblem.iconUrl,
       imageAlt: `${emblem.name} emblem`,
     })
   }
 
+  const personalityCandidates = [
+    {
+      count: report.goodBoyProtocol,
+      eyebrow: 'Good Boy Protocol',
+      value: formatInteger(report.goodBoyProtocol),
+      title: 'Good Boy Protocol was successfully executed.',
+      body: 'Recorded interactions with the best boy in the Tower.',
+      iconUrl: assets?.goodBoyProtocolIconUrl,
+    },
+    {
+      count: report.fishCaught,
+      eyebrow: 'Fish caught',
+      value: formatInteger(report.fishCaught),
+      title: 'Not every victory needed a weapon.',
+      body: 'Fish caught between universe-ending emergencies. A Guardian contains multitudes.',
+    },
+    {
+      count: report.misadventures,
+      eyebrow: 'Misadventures',
+      value: formatInteger(report.misadventures),
+      title: 'The Architects remember you too.',
+      body: 'Misadventures with nobody else to blame. Every legend needs a few rough landings.',
+    },
+  ].filter((candidate) => candidate.count > 0)
   const personality =
-    report.goodBoyProtocol > 0
-      ? {
-          value: formatInteger(report.goodBoyProtocol),
-          title: 'Good Boy Protocol was successfully executed.',
-          body: 'Recorded interactions with the best boy in the Tower.',
-        }
-      : report.fishCaught > 0
-        ? {
-            value: formatInteger(report.fishCaught),
-            title: 'Not every victory needed a weapon.',
-            body: 'Fish caught between universe-ending emergencies. A Guardian contains multitudes.',
-          }
-        : report.misadventures > 0
-          ? {
-              value: formatInteger(report.misadventures),
-              title: 'The Architects remember you too.',
-              body: 'Misadventures with nobody else to blame. Every legend needs a few rough landings.',
-            }
-          : null
+    personalityCandidates.length > 0
+      ? personalityCandidates[
+          stableHash(`${report.platformId}:${report.playerMembershipId}`) %
+            personalityCandidates.length
+        ]
+      : undefined
   if (personality) {
     slides.push({
       key: 'personality',
       layout: 'personality-number',
-      eyebrow: report.goodBoyProtocol > 0 ? 'Good Boy Protocol' : 'One last account detail',
-      ...personality,
+      eyebrow: personality.eyebrow,
+      value: personality.value,
+      title: personality.title,
+      body: personality.body,
       tone: 'gold',
-      iconUrl: report.goodBoyProtocol > 0 ? assets?.goodBoyProtocolIconUrl : undefined,
+      iconUrl: personality.iconUrl,
     })
   }
 
@@ -552,7 +581,7 @@ function timeChapter(report: DestinyReport): StoryChapter | null {
     facts.push({
       label: 'Most-played character',
       value: topCharacter.label,
-      note: `${formatHours(topCharacter.seconds)} of playtime — more than any other character.`,
+      note: `${formatHours(topCharacter.seconds)} of playtime, more than any other character.`,
     })
   }
 
@@ -569,7 +598,7 @@ function timeChapter(report: DestinyReport): StoryChapter | null {
     facts.push({
       label: 'Most-patrolled destination',
       value: topPatrol.label,
-      note: `${formatHours(topPatrol.seconds)} on patrol — your most-visited destination.`,
+      note: `${formatHours(topPatrol.seconds)} on patrol at your most-visited destination.`,
     })
   }
 
@@ -577,7 +606,7 @@ function timeChapter(report: DestinyReport): StoryChapter | null {
     key: 'time',
     kicker: '',
     title: 'The time you gave',
-    lead: 'Across your whole Destiny 2 history — every character, every destination.',
+    lead: 'Your whole Destiny 2 history, across every character and destination.',
     facts,
   }
 }
@@ -648,7 +677,7 @@ function challengeChapter(report: DestinyReport): StoryChapter | null {
       value: formatInteger(raidClears),
       note:
         topRaid && topRaid.completionCount > 0
-          ? `${topRaid.activityName} most of all — ${formatInteger(topRaid.completionCount)} clears.`
+          ? `${topRaid.activityName} led the way with ${formatInteger(topRaid.completionCount)} clears.`
           : undefined,
     })
   }
@@ -756,7 +785,7 @@ function peopleChapter(report: DestinyReport): StoryChapter | null {
     facts.push({
       label: 'Most frequent teammate',
       value: topTeammate.player.displayName,
-      note: `${formatInteger(topTeammate.encounterCount)} activities together — more than anyone else.`,
+      note: `${formatInteger(topTeammate.encounterCount)} activities together, more than anyone else.`,
     })
   }
 
@@ -788,7 +817,7 @@ function detailsChapter(report: DestinyReport): StoryChapter | null {
     facts.push({
       label: 'Favorite emblem',
       value: favoriteEmblem.name,
-      note: `Worn for ${formatHours(favoriteEmblem.seconds)} — longer than any other.`,
+      note: `Worn for ${formatHours(favoriteEmblem.seconds)}, longer than any other.`,
     })
   }
 

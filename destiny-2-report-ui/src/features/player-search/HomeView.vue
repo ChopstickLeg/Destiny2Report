@@ -17,8 +17,8 @@ onMounted(() => {
     <div class="hero">
       <h1 class="hero-title display">See the story behind a Guardian's history.</h1>
       <p class="hero-copy">
-        Destiny 2 Report crawls a player's full activity history — every raid, Crucible match, and
-        patrol hour — and turns it into one honest, shareable report.
+        Destiny 2 Report crawls every raid, Crucible match, and patrol hour in a player's full
+        activity history, then turns it into one honest, shareable report.
       </p>
       <GlobalSearch size="large" class="hero-search" />
       <p class="hero-hint">Search any public Bungie name. Partial names work too.</p>
@@ -59,8 +59,8 @@ onMounted(() => {
       <div class="explain-item">
         <h2 class="explain-title">Combat, itemized</h2>
         <p class="explain-copy">
-          Weapon and ability kills layered by class, mode, and category — with deaths and
-          competitive records kept separate and labeled.
+          Weapon and ability kills layered by class, mode, and category. Deaths and competitive
+          records stay separate and clearly labeled.
         </p>
       </div>
       <div class="explain-item">

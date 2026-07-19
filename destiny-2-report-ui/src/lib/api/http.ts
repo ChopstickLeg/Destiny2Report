@@ -53,7 +53,7 @@ export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? '/api'
  * the raw response text before parsing; the transport types declare them as
  * `string`.
  *
- * Request bodies may send the values back as strings — ASP.NET Core's web
+ * Request bodies may send the values back as strings. ASP.NET Core's web
  * JSON defaults (`NumberHandling.AllowReadingFromString`) accept that.
  */
 const BIG_INT_KEY_PATTERN =

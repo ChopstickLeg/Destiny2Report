@@ -126,7 +126,7 @@ export interface Distinction {
   label: string
 }
 
-/** Earned facts only — never decorative chips. */
+/** Earned facts only; never decorative chips. */
 export function distinctions(summary: ActivityCompletionSummary): Distinction[] {
   const earned: Distinction[] = []
   if (summary.contestClear) earned.push({ key: 'contest', label: 'Contest' })
@@ -177,7 +177,7 @@ export function rankByMode(byMode: Record<string, number>, limit = 8): RankedCou
 }
 
 // ---------------------------------------------------------------------------
-// Section presence — sections collapse entirely instead of showing zeroes.
+// Section presence: sections collapse entirely instead of showing zeroes.
 // ---------------------------------------------------------------------------
 
 export function hasTimeData(report: DestinyReport): boolean {

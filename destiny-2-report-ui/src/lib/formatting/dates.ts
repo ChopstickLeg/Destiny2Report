@@ -34,6 +34,16 @@ export function formatDateTime(date: Date): string {
   return DATE_TIME_FORMAT.format(date)
 }
 
+/** Number of complete UTC calendar years elapsed since a date. */
+export function completeYearsSince(date: Date, now: Date = new Date()): number {
+  let years = now.getUTCFullYear() - date.getUTCFullYear()
+  const anniversary = new Date(
+    Date.UTC(now.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  )
+  if (now < anniversary) years--
+  return Math.max(0, years)
+}
+
 const RELATIVE_STEPS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
   ['year', 365 * 86_400],
   ['month', 30 * 86_400],

@@ -289,7 +289,7 @@ public partial class CrawlerService
         }
 
         await ApplySherpaChecksAsync(cancellationToken).ConfigureAwait(false);
-        UpdateAccumulatorCrawlStateFromState(accumulator, crawlState, []);
+        UpdateAccumulatorCrawlStateFromState(accumulator, crawlState, [], resetDerivedAggregates);
 
         var persistedPlayerEncounterCounts = playerEncounterCounts
             .Where(item => IsPersistablePlayerEncounter(item.Key.MembershipType, item.Key.MembershipId, item.Value))
@@ -366,6 +366,7 @@ public partial class CrawlerService
             .ConfigureAwait(false);
 
         report.TotalActivityTime = TimeSpan.FromSeconds(accumulator.TotalActivitySeconds);
+        report.FirstActivityAtUtc = accumulator.FirstActivityAtUtc;
         report.LongestPlaytimeStreak = GetLongestPlaytimeStreak(accumulator.PlayDates);
         report.CurrentPlaytimeStreak = GetCurrentPlaytimeStreak(accumulator.PlayDates, DateTime.UtcNow.Date);
 
