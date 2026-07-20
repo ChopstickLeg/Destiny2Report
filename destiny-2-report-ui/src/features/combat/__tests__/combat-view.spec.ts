@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { WeaponActivityModeAggregateReport } from '@/lib/api/types'
 import {
   ALL,
+  CATEGORY_COLOR,
   availableClasses,
   availableModes,
+  categoryColor,
   categoryShares,
   flattenWeapons,
 } from '../combat-view'
@@ -120,7 +122,7 @@ describe('availableClasses / availableModes', () => {
 })
 
 describe('categoryShares', () => {
-  it('groups the long tail into Other', () => {
+  it('keeps every long-tail category visible', () => {
     const categories = [
       { key: 'a', name: 'A', kills: 50 },
       { key: 'b', name: 'B', kills: 40 },
@@ -131,8 +133,9 @@ describe('categoryShares', () => {
       { key: 'g', name: 'G', kills: 5 },
     ]
     const shares = categoryShares(categories)
-    expect(shares).toHaveLength(6)
-    expect(shares[5]).toEqual({ label: 'Other', value: 10 })
+    expect(shares).toHaveLength(7)
+    expect(shares[5]).toEqual({ key: 'f', label: 'F', value: 5 })
+    expect(shares[6]).toEqual({ key: 'g', label: 'G', value: 5 })
   })
 
   it('drops zero-kill categories', () => {
@@ -141,5 +144,41 @@ describe('categoryShares', () => {
       { key: 'b', name: 'B', kills: 0 },
     ])
     expect(shares).toHaveLength(1)
+  })
+})
+
+describe('categoryColor', () => {
+  it('assigns a unique permanent color to every current API category', () => {
+    expect(Object.keys(CATEGORY_COLOR).sort()).toEqual([
+      'ABILITIES',
+      'AUTO RIFLE',
+      'COMBAT BOW',
+      'FUSION RIFLE',
+      'GLAIVE',
+      'GRENADE LAUNCHER',
+      'HAND CANNON',
+      'LINEAR FUSION RIFLE',
+      'MACHINE GUN',
+      'PULSE RIFLE',
+      'ROCKET LAUNCHER',
+      'SCOUT RIFLE',
+      'SHOTGUN',
+      'SIDEARM',
+      'SNIPER RIFLE',
+      'SUBMACHINE GUN',
+      'SWORD',
+      'TRACE RIFLE',
+      'UNKNOWN',
+    ])
+    const colors = Object.values(CATEGORY_COLOR)
+    expect(colors).toHaveLength(19)
+    expect(new Set(colors)).toHaveLength(19)
+    expect(categoryColor('HAND CANNON')).toBe(CATEGORY_COLOR['HAND CANNON'])
+    expect(categoryColor('HAND CANNON')).not.toBe(categoryColor('AUTO RIFLE'))
+  })
+
+  it('gives future category keys a deterministic fallback', () => {
+    expect(categoryColor('FUTURE WEAPON')).toBe(categoryColor('FUTURE WEAPON'))
+    expect(categoryColor('FUTURE WEAPON')).toMatch(/^hsl\(\d+ 58% 60%\)$/)
   })
 })

@@ -28,7 +28,10 @@ internal sealed class ContestModeLookup
         ": Prestige",
         ": Contest",
         ": Customize",
-        ": Guided Games"
+        ": Guided Games",
+        ": Legend",
+        ": Expert",
+        ": Challenge Mode"
     ];
 
     private ContestModeLookup(

@@ -492,7 +492,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   :key="stat.label"
                   :style="{ '--tally-share': `${(stat.share ?? 0) * 100}%` }"
                 >
-                  <div class="tally-ring">
+                  <div
+                    class="tally-ring"
+                    :class="{ 'tally-ring--compact': (stat.numericValue ?? 0) >= 1_000 }"
+                  >
                     <strong class="display">{{ stat.value }}</strong>
                     <span>{{ stat.label }}</span>
                   </div>
@@ -1207,6 +1210,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .tally-grid article:nth-child(2) .tally-ring { background: conic-gradient(from 0deg, rgb(242 236 225 / 0.08) 0 calc(100% - var(--tally-share)), var(--tally-color) calc(100% - var(--tally-share)) 100%); }
 .tally-ring::after { content: ''; position: absolute; inset: clamp(0.45rem, 1vw, 0.7rem); z-index: -1; border: 1px solid rgb(255 255 255 / 0.05); border-radius: inherit; background: var(--color-surface); }
 .tally-ring strong { display: block; color: var(--color-text); font-size: clamp(2.35rem, 5vw, 4.5rem); line-height: 0.85; text-align: center; }
+.tally-ring--compact strong { font-size: clamp(2rem, 4vw, 3.5rem); }
 .tally-ring span { margin-top: var(--space-2); color: var(--tally-color); font-size: var(--text-xs); font-weight: 650; letter-spacing: 0.09em; text-align: center; text-transform: uppercase; }
 .tally-share { color: var(--color-text-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
 .tally-total { grid-column: 1 / -1; padding-top: var(--space-4); border-top: 1px solid var(--color-border); text-align: right; font-size: clamp(2rem, 5vw, 4rem); }

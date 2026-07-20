@@ -116,38 +116,65 @@ export function flattenWeapons(
   }
 }
 
-export interface DonutShare {
+export interface CategoryShare {
+  key: string
   label: string
   value: number
 }
 
 /**
- * Top five category shares plus "Other." These are true parts of one whole; the
- * only place a donut is justified.
+ * Every positive category as its own part of the whole. The combat view uses
+ * the ranked bars as the legend, so the long tail can remain honest without a
+ * large second legend or an opaque "Other" bucket.
  */
-export function categoryShares(categories: CategoryTotal[], top = 5): DonutShare[] {
-  const positive = categories.filter((category) => category.kills > 0)
-  const head = positive.slice(0, top).map((c) => ({ label: c.name, value: c.kills }))
-  const tail = positive.slice(top)
-  if (tail.length > 0) {
-    head.push({ label: 'Other', value: tail.reduce((sum, c) => sum + c.kills, 0) })
-  }
-  return head
+export function categoryShares(categories: CategoryTotal[]): CategoryShare[] {
+  return categories
+    .filter((category) => category.kills > 0)
+    .map((category) => ({ key: category.key, label: category.name, value: category.kills }))
 }
 
-/** Stable per-bucket colors (see tokens.css). */
+/** Stable per-bucket colors shared by activity-level charts. */
 export const MODE_COLOR: Record<ActivityModeParam, string> = {
   PvE: 'var(--color-mode-pve)',
   PvP: 'var(--color-mode-pvp)',
   Gambit: 'var(--color-mode-gambit)',
 }
 
-/** Triumph palette for donut segments; order-stable, not random per render. */
-export const DONUT_COLORS = [
-  'var(--color-class-titan)',
-  'var(--color-class-warlock)',
-  'var(--color-class-hunter)',
-  'var(--color-mode-gambit)',
-  'var(--color-info)',
-  'var(--color-bar-emphasis)',
-] as const
+/** Permanent colors for the 19 category keys currently emitted by the API. */
+export const CATEGORY_COLOR: Readonly<Record<string, string>> = {
+  ABILITIES: '#b36bd4',
+  'AUTO RIFLE': '#4f98d2',
+  'COMBAT BOW': '#42b9b1',
+  'FUSION RIFLE': '#9b72cf',
+  GLAIVE: '#d56f9e',
+  'GRENADE LAUNCHER': '#dd7f42',
+  'HAND CANNON': '#d55353',
+  'LINEAR FUSION RIFLE': '#8276d1',
+  'MACHINE GUN': '#8f9edb',
+  'PULSE RIFLE': '#e7b93e',
+  'ROCKET LAUNCHER': '#e16f55',
+  'SCOUT RIFLE': '#63a66f',
+  SHOTGUN: '#c69445',
+  SIDEARM: '#50b7a7',
+  'SNIPER RIFLE': '#5f83cc',
+  'SUBMACHINE GUN': '#a8b957',
+  SWORD: '#d66892',
+  'TRACE RIFLE': '#62a5dc',
+  UNKNOWN: '#8d7f75',
+}
+
+/**
+ * Keep future API categories stable as well. Known categories use the curated
+ * palette above; an unfamiliar key receives a deterministic HSL fallback.
+ */
+export function categoryColor(categoryKey: string): string {
+  const knownColor = CATEGORY_COLOR[categoryKey]
+  if (knownColor) return knownColor
+
+  let hash = 0
+  for (const character of categoryKey) {
+    hash = Math.imul(hash, 31) + character.charCodeAt(0)
+  }
+  const hue = ((hash % 360) + 360) % 360
+  return `hsl(${hue} 58% 60%)`
+}

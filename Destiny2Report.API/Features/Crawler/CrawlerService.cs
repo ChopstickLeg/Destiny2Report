@@ -245,6 +245,22 @@ public partial class CrawlerService(
 
             var profile = EnsureSuccess(profileTask.Result, response => response.Response, "GetProfile");
             var accountStats = EnsureSuccess(accountStatsTask.Result, response => response.Response, "GetHistoricalStatsForAccount");
+            var userInfo = profile.Profile?.Data?.UserInfo;
+            var displayName = !string.IsNullOrWhiteSpace(userInfo?.BungieGlobalDisplayName)
+                ? userInfo.BungieGlobalDisplayName
+                : userInfo?.DisplayName ?? existingReportTask.Result?.DisplayName ?? "";
+            var displayCode = userInfo?.BungieGlobalDisplayNameCode
+                ?? existingReportTask.Result?.DisplayCode
+                ?? 0;
+
+            // Make the authoritative Bungie identity available while the longer
+            // activity-history portion of the crawl is still in progress.
+            var identityUpdate = Builders<DestinyReport>.Update
+                .Set(report => report.DisplayName, displayName)
+                .Set(report => report.DisplayCode, displayCode);
+            await reports.UpdateOneAsync(filter, identityUpdate, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
             var historicalCharacters = accountStats.Characters?.ToArray() ?? [];
             var existingReport = existingReportTask.Result;
             var existingAccumulator = existingAccumulatorTask.Result;
@@ -305,15 +321,12 @@ public partial class CrawlerService(
             }
 
             var now = DateTimeOffset.UtcNow;
-            var userInfo = profile.Profile?.Data?.UserInfo;
             var report = new DestinyReport
             {
                 PlatformId = platformId,
                 PlayerMembershipId = playerMembershipId,
-                DisplayName = !string.IsNullOrWhiteSpace(userInfo?.BungieGlobalDisplayName)
-                    ? userInfo.BungieGlobalDisplayName
-                    : userInfo?.DisplayName ?? "",
-                DisplayCode = userInfo?.BungieGlobalDisplayNameCode ?? 0,
+                DisplayName = displayName,
+                DisplayCode = displayCode,
                 CrawlState = DestinyReport.CrawlStateCompleted,
                 QueuedInRedis = false,
                 QueuedAtUtc = existingReport?.QueuedAtUtc,

@@ -359,7 +359,7 @@ export interface SignedInPlayerResponse {
 export interface AdminActiveCrawl {
   membershipTypeId: number
   membershipId: string
-  displayName: string
+  displayName: string | null
   queuedAtUtc: string | null
   startedAtUtc: string | null
   leaseExpiresAtUtc: string | null

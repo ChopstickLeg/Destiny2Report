@@ -8,7 +8,6 @@ import ErrorState from '@/components/base/ErrorState.vue'
 import EmptyState from '@/components/base/EmptyState.vue'
 import SkeletonBlock from '@/components/base/SkeletonBlock.vue'
 import BarList from '@/components/charts/BarList.vue'
-import DonutChart from '@/components/charts/DonutChart.vue'
 import AppButton from '@/components/base/AppButton.vue'
 import ExplainedLabel from '@/components/base/ExplainedLabel.vue'
 import AbilityKillIcon from './AbilityKillIcon.vue'
@@ -25,10 +24,9 @@ import {
 } from '@/lib/stat-explanations'
 import {
   ALL,
-  MODE_COLOR,
-  DONUT_COLORS,
   availableClasses,
   availableModes,
+  categoryColor,
   categoryShares,
   flattenWeapons,
 } from './combat-view'
@@ -110,24 +108,35 @@ const flattened = computed(() => {
   return flattenWeapons(report, { className: classFilter.value, specificMode: modeFilter.value })
 })
 
-const categoryBars = computed(() =>
-  (flattened.value?.categories ?? []).map((category) => ({
+const categoryBars = computed(() => {
+  const total = flattened.value?.totalKills ?? 0
+  return (flattened.value?.categories ?? []).map((category) => ({
     key: category.key,
     label: category.name,
     value: category.kills,
-    display: formatInteger(category.kills),
-    color: MODE_COLOR[bucket.value],
+    display: `${formatInteger(category.kills)} · ${total > 0 ? ((category.kills / total) * 100).toFixed(1) : '0.0'}%`,
+    color: categoryColor(category.key),
     tooltip: isUnknownKillCategory(category.name) ? UNKNOWN_KILLS_EXPLANATION : undefined,
+  }))
+})
+
+const categorySegments = computed(() =>
+  categoryShares(flattened.value?.categories ?? []).map((share) => ({
+    key: share.key,
+    label: share.label,
+    value: share.value,
+    color: categoryColor(share.key),
+    percentage:
+      (flattened.value?.totalKills ?? 0) > 0
+        ? (share.value / flattened.value!.totalKills) * 100
+        : 0,
   })),
 )
 
-const donutSegments = computed(() =>
-  categoryShares(flattened.value?.categories ?? []).map((share, index) => ({
-    label: share.label,
-    value: share.value,
-    color: DONUT_COLORS[index % DONUT_COLORS.length] as string,
-    tooltip: isUnknownKillCategory(share.label) ? UNKNOWN_KILLS_EXPLANATION : undefined,
-  })),
+const categoryMixLabel = computed(() =>
+  categorySegments.value
+    .map((segment) => `${segment.label} ${segment.percentage.toFixed(1)}%`)
+    .join(', '),
 )
 
 const WEAPON_PAGE = 25
@@ -199,7 +208,7 @@ const deathBars = computed(() =>
       title="Weapon & ability kills"
       :subtitle="
         flattened && flattened.totalKills > 0
-          ? `${formatInteger(flattened.totalKills)} kills in the current selection`
+          ? `${formatInteger(flattened.totalKills)} total kills recorded in ${bucket}`
           : undefined
       "
     >
@@ -221,15 +230,36 @@ const deathBars = computed(() =>
       />
 
       <template v-else>
-        <div class="weapons-layout">
-          <div class="category-block">
-            <h3 class="block-title">By category</h3>
-            <BarList :items="categoryBars" unit="kills" />
+        <div v-if="categorySegments.length > 1" class="category-mix-block">
+          <div class="category-mix-heading">
+            <h3 class="block-title">Kill distribution</h3>
+            <span class="category-count tnum">{{ categorySegments.length }} categories</span>
           </div>
-          <div v-if="donutSegments.length > 1" class="donut-block">
-            <h3 class="block-title">Category share</h3>
-            <DonutChart :segments="donutSegments" unit="kills" />
+          <div
+            class="category-mix"
+            role="img"
+            :aria-label="`Share of kills by category: ${categoryMixLabel}`"
+          >
+            <span
+              v-for="segment in categorySegments"
+              :key="segment.key"
+              class="category-mix-segment"
+              :style="{ flexBasis: `${segment.percentage}%`, background: segment.color }"
+              :title="`${segment.label}: ${segment.percentage.toFixed(1)}%`"
+            />
           </div>
+          <p v-if="categorySegments[0]" class="category-mix-note">
+            <strong>
+              {{ categorySegments[0].label }} leads with
+              {{ categorySegments[0].percentage.toFixed(1) }}%.
+            </strong>
+            Colors match the ranked categories below.
+          </p>
+        </div>
+
+        <div class="category-block">
+          <h3 class="block-title">By category</h3>
+          <BarList :items="categoryBars" unit="kills" />
         </div>
 
         <div class="weapon-table-block">
@@ -400,16 +430,51 @@ const deathBars = computed(() =>
   margin-bottom: var(--space-3);
 }
 
-.weapons-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  gap: var(--space-6);
+.category-mix-block {
+  margin-bottom: var(--space-6);
 }
 
-@media (max-width: 52rem) {
-  .weapons-layout {
-    grid-template-columns: 1fr;
-  }
+.category-mix-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.category-count {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.category-mix {
+  display: flex;
+  width: 100%;
+  height: 1.5rem;
+  overflow: hidden;
+  background: var(--color-bar-track);
+  border-radius: var(--radius-md);
+}
+
+.category-mix-segment {
+  min-width: 1px;
+  flex-grow: 0;
+  flex-shrink: 1;
+  border-right: 1px solid rgb(var(--color-bg-rgb) / 0.55);
+}
+
+.category-mix-segment:last-child {
+  border-right: 0;
+}
+
+.category-mix-note {
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.category-mix-note strong {
+  color: var(--color-text-secondary);
+  font-weight: 550;
 }
 
 .weapon-table-block {

@@ -94,8 +94,13 @@ function remember(result: PlayerSearchResult) {
       Type at least two characters of a Bungie display name.
     </p>
 
-    <div v-else class="search-results" aria-live="polite">
-      <template v-if="query.isPending.value">
+    <div
+      v-else
+      class="search-results"
+      aria-live="polite"
+      :aria-busy="query.isFetching.value"
+    >
+      <template v-if="query.isFetching.value">
         <div class="result-skeletons">
           <SkeletonBlock v-for="n in 4" :key="n" height="3.5rem" radius="var(--radius-md)" />
         </div>

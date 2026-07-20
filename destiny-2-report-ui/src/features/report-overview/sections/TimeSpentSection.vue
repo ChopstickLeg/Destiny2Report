@@ -99,22 +99,24 @@ const currentStreak = computed(() => summarizeStreak(props.report.currentPlaytim
       </div>
     </div>
 
-    <div v-if="activityTime || longestStreak || currentStreak" class="time-facts">
-      <p v-if="activityTime" class="time-fact">
-        <span class="fact-value tnum">{{ formatHours(activityTime) }}</span>
-        <span class="fact-label">inside recorded activities</span>
-      </p>
-      <p v-if="longestStreak" class="time-fact">
-        <span class="fact-value tnum">{{ longestStreak.days }} consecutive days</span>
-        <span class="fact-label">
-          longest play streak · {{ formatDate(longestStreak.start) }} –
-          {{ formatDate(longestStreak.end) }}
-        </span>
-      </p>
-      <p v-if="currentStreak && currentStreak.days > 1" class="time-fact">
-        <span class="fact-value tnum">{{ currentStreak.days }} days</span>
-        <span class="fact-label">current streak, still running</span>
-      </p>
+    <div v-if="activityTime || longestStreak || currentStreak" class="time-stats">
+      <div v-if="activityTime" class="time-stat">
+        <h3 class="stat-label">Non-orbit time</h3>
+        <p class="stat-value tnum">{{ formatHours(activityTime) }}</p>
+        <p class="stat-detail">Time spent playing activities</p>
+      </div>
+      <div v-if="longestStreak" class="time-stat">
+        <h3 class="stat-label">Longest play streak</h3>
+        <p class="stat-value tnum">{{ longestStreak.days }} days in a row</p>
+        <p class="stat-detail">
+          {{ formatDate(longestStreak.start) }} – {{ formatDate(longestStreak.end) }}
+        </p>
+      </div>
+      <div v-if="currentStreak && currentStreak.days > 1" class="time-stat">
+        <h3 class="stat-label">Current play streak</h3>
+        <p class="stat-value tnum">{{ currentStreak.days }} days in a row</p>
+        <p class="stat-detail">Still going</p>
+      </div>
     </div>
   </ReportSection>
 </template>
@@ -139,26 +141,65 @@ const currentStreak = computed(() => summarizeStreak(props.report.currentPlaytim
   margin-top: var(--space-3);
 }
 
-.time-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-5);
-  margin-top: var(--space-5);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--color-border);
+.time-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
+  margin-top: var(--space-6);
+  border-block: 1px solid var(--color-border);
 }
 
-.time-fact {
-  display: flex;
-  flex-direction: column;
+.time-stat {
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
 }
 
-.fact-value {
-  font-weight: 600;
+.time-stat:first-child {
+  padding-left: 0;
 }
 
-.fact-label {
-  font-size: var(--text-xs);
+.time-stat:last-child {
+  padding-right: 0;
+}
+
+.time-stat + .time-stat {
+  border-left: 1px solid var(--color-border);
+}
+
+.stat-label {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 550;
+}
+
+.stat-value {
+  margin-top: var(--space-2);
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-size: clamp(var(--text-xl), 3vw, var(--text-2xl));
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+.stat-detail {
+  margin-top: var(--space-1);
   color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 42rem) {
+  .time-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .time-stat,
+  .time-stat:first-child,
+  .time-stat:last-child {
+    padding: var(--space-4) 0;
+  }
+
+  .time-stat + .time-stat {
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
+  }
 }
 </style>

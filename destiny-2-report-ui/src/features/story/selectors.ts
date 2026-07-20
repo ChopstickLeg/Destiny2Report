@@ -65,6 +65,7 @@ export type StoryLayout =
 export interface StoryStat {
   label: string
   value: string
+  numericValue?: number
   share?: number
   iconUrl?: string
   color?: string
@@ -323,9 +324,7 @@ export function buildStorySlides(
       layout: 'seal-gallery',
       eyebrow: 'Completed titles',
       title:
-        completedSeals.length === 1
-          ? 'You earned a title.'
-          : 'You collected titles across Destiny.',
+        completedSeals.length === 1 ? 'You earned a title.' : 'You collected titles across Sol.',
       value:
         completedSeals.length === 1
           ? featured.name
@@ -362,11 +361,13 @@ export function buildStorySlides(
         {
           label: 'Raid clears',
           value: formatInteger(raidClears),
+          numericValue: raidClears,
           share: raidClears / endgameClears,
         },
         {
           label: 'Dungeon clears',
           value: formatInteger(dungeonClears),
+          numericValue: dungeonClears,
           share: dungeonClears / endgameClears,
         },
       ],

@@ -46,8 +46,8 @@ function formatTimestamp(value: string | null): string {
   }).format(new Date(value))
 }
 
-function playerLabel(displayName: string, membershipId: string): string {
-  return displayName.trim() || membershipId
+function playerLabel(displayName: string | null, membershipId: string): string {
+  return displayName?.trim() || membershipId
 }
 
 async function runAction(

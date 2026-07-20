@@ -184,11 +184,11 @@ public static class AdminHandlers
         var activeCrawls = activeTask.Result.Select(report => new AdminActiveCrawlResponse(
             report.MembershipTypeId,
             report.MembershipId,
-            report.DisplayName,
+            report.DisplayName ?? "",
             ToDateTimeOffset(report.QueuedAtUtc),
             ToDateTimeOffset(report.StartedAtUtc),
             ToDateTimeOffset(report.LeaseExpiresAtUtc),
-            report.LeaseOwner,
+            report.LeaseOwner ?? "",
             report.QueuedInRedis)).ToArray();
 
         var countsByStatus = countTask.Result
@@ -214,10 +214,10 @@ public static class AdminHandlers
     private sealed record ActiveCrawlProjection(
         int MembershipTypeId,
         long MembershipId,
-        string DisplayName,
+        string? DisplayName,
         DateTime? QueuedAtUtc,
         DateTime? StartedAtUtc,
         DateTime? LeaseExpiresAtUtc,
-        string LeaseOwner,
+        string? LeaseOwner,
         bool QueuedInRedis);
 }
