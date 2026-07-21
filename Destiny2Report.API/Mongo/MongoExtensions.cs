@@ -1,14 +1,13 @@
 using Destiny2Report.API.Features.Crawler.Models;
-using MongoDB.Bson;
+using Destiny2Report.API.Features.Reports;
+using Destiny2Report.API.Features.PushNotifications;
+using Destiny2Report.API.Features.Leaderboards;
 using MongoDB.Driver;
-using MongoDB.Driver.Search;
 
 namespace Destiny2Report.API.Mongo;
 
 public static class MongoExtensions
 {
-    private const string PlayerFullDisplayNameSearchIndex = "player-full-display-name";
-
     public static IServiceCollection AddMongo(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton<IMongoClient>(_ =>
@@ -63,7 +62,72 @@ public static class MongoExtensions
                     })
             ],
             cancellationToken);
-        await reports.EnsureFullDisplayNameSearchIndexAsync(app.Logger, cancellationToken);
+
+        var completedLeaderboardIndexKeys = Builders<DestinyReport>.IndexKeys
+            .Ascending(report => report.HasCompletedCrawl)
+            .Ascending(report => report.CrawlState);
+        await reports.EnsureIndexesAsync(
+            [new CreateIndexModel<DestinyReport>(completedLeaderboardIndexKeys, new CreateIndexOptions { Name = "ix_destiny_reports_leaderboard_completion" })],
+            cancellationToken);
+
+        var leaderboardBoards = mongoDatabase.GetCollection<LeaderboardBoard>("leaderboard_boards");
+        var leaderboardPlayerIndexKeys = Builders<LeaderboardBoard>.IndexKeys
+            .Ascending("Entries.MembershipTypeId")
+            .Ascending("Entries.MembershipId");
+        await leaderboardBoards.EnsureIndexesAsync(
+            [new CreateIndexModel<LeaderboardBoard>(leaderboardPlayerIndexKeys, new CreateIndexOptions { Name = "ix_leaderboard_boards_player" })],
+            cancellationToken);
+
+        var storyShares = mongoDatabase.GetCollection<StoryShare>("story_shares");
+        var storyShareTokenIndexKeys = Builders<StoryShare>.IndexKeys
+            .Ascending(share => share.TokenHash);
+        var storyShareOwnerIndexKeys = Builders<StoryShare>.IndexKeys
+            .Ascending(share => share.MembershipTypeId)
+            .Ascending(share => share.MembershipId)
+            .Descending(share => share.CreatedAtUtc);
+
+        await storyShares.EnsureIndexesAsync(
+            [
+                new CreateIndexModel<StoryShare>(
+                    storyShareTokenIndexKeys,
+                    new CreateIndexOptions
+                    {
+                        Name = "ux_story_shares_token_hash",
+                        Unique = true
+                    }),
+                new CreateIndexModel<StoryShare>(
+                    storyShareOwnerIndexKeys,
+                    new CreateIndexOptions { Name = "ix_story_shares_owner_created" })
+            ],
+            cancellationToken);
+
+        var pushSubscriptions = mongoDatabase.GetCollection<ReportPushSubscription>(
+            ReportPushNotificationService.CollectionName);
+        var pushSubscriptionIdentityIndexKeys = Builders<ReportPushSubscription>.IndexKeys
+            .Ascending(subscription => subscription.EndpointHash)
+            .Ascending(subscription => subscription.MembershipTypeId)
+            .Ascending(subscription => subscription.MembershipId);
+        var pushSubscriptionExpiryIndexKeys = Builders<ReportPushSubscription>.IndexKeys
+            .Ascending(subscription => subscription.ExpiresAtUtc);
+
+        await pushSubscriptions.EnsureIndexesAsync(
+            [
+                new CreateIndexModel<ReportPushSubscription>(
+                    pushSubscriptionIdentityIndexKeys,
+                    new CreateIndexOptions
+                    {
+                        Name = "ux_report_push_endpoint_player",
+                        Unique = true
+                    }),
+                new CreateIndexModel<ReportPushSubscription>(
+                    pushSubscriptionExpiryIndexKeys,
+                    new CreateIndexOptions
+                    {
+                        Name = "ttl_report_push_expiry",
+                        ExpireAfter = TimeSpan.Zero
+                    })
+            ],
+            cancellationToken);
 
         var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
         var accumulatorIndexKeys = Builders<CrawlAccumulator>.IndexKeys
@@ -179,62 +243,6 @@ public static class MongoExtensions
         if (missingIndexModels.Length > 0)
         {
             await collection.Indexes.CreateManyAsync(missingIndexModels, cancellationToken);
-        }
-    }
-
-    private static async Task EnsureFullDisplayNameSearchIndexAsync(
-        this IMongoCollection<DestinyReport> reports,
-        ILogger logger,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var searchIndexes = await reports.SearchIndexes
-                .ListAsync(PlayerFullDisplayNameSearchIndex, aggregateOptions: null, cancellationToken)
-                .ConfigureAwait(false);
-            var existingSearchIndexes = await searchIndexes.ToListAsync(cancellationToken).ConfigureAwait(false);
-            if (existingSearchIndexes.Count > 0)
-            {
-                return;
-            }
-
-            var definition = new BsonDocument
-            {
-                {
-                    "mappings",
-                    new BsonDocument
-                    {
-                        { "dynamic", false },
-                        {
-                            "fields",
-                            new BsonDocument
-                            {
-                                {
-                                    nameof(DestinyReport.FullDisplayName),
-                                    new BsonDocument
-                                    {
-                                        { "type", "autocomplete" },
-                                        { "analyzer", "lucene.keyword" },
-                                        { "tokenization", "edgeGram" },
-                                        { "minGrams", 2 },
-                                        { "maxGrams", 20 },
-                                        { "foldDiacritics", true }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            };
-
-            await reports.SearchIndexes.CreateOneAsync(
-                    new CreateSearchIndexModel(PlayerFullDisplayNameSearchIndex, definition),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (MongoException exception)
-        {
-            logger.LogWarning(exception, "Player autocomplete index is unavailable; player search will use Bungie results only.");
         }
     }
 

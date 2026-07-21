@@ -46,12 +46,21 @@ public partial class CrawlerService
 
             report.TriumphSeals.Add(new DestinyTriumphSeal
             {
-                Name = definition.DisplayProperties?.Name ?? "",
-                Description = definition.DisplayProperties?.Description ?? "",
+                Name = FirstNonBlank(
+                    definition.DisplayProperties?.Name,
+                    sealNode?.DisplayProperties?.Name),
+                Description = FirstNonBlank(
+                    definition.DisplayProperties?.Description,
+                    sealNode?.DisplayProperties?.Description),
                 IconUrl = BungieUrl(sealNode?.DisplayProperties?.Icon),
                 IsCompleted = true
             });
         }
+    }
+
+    private static string FirstNonBlank(string? preferred, string? fallback)
+    {
+        return !string.IsNullOrWhiteSpace(preferred) ? preferred : fallback ?? "";
     }
 
     private void ApplyActivityTriumphRecords(DestinyReport report, DestinyProfileResponse profile)

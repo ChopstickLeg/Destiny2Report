@@ -1,14 +1,27 @@
 using Destiny2Report.API.Bungie;
 using Destiny2Report.API.Features.Auth;
+using Destiny2Report.API.Features.Admin;
 using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.PlayerSearch;
+using Destiny2Report.API.Features.PushNotifications;
 using Destiny2Report.API.Features.Reports;
+using Destiny2Report.API.Features.Leaderboards;
 using Destiny2Report.API.Features.Status;
 using Destiny2Report.API.Mongo;
 using Destiny2Report.API.Observability;
 using Destiny2Report.API.RateLimiting;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using StackExchange.Redis;
 using System.Threading.RateLimiting;
+using WebPush;
+
+if (args.Contains("--generate-vapid-keys", StringComparer.Ordinal))
+{
+    var keys = VapidHelper.GenerateVapidKeys();
+    Console.WriteLine($"WEB_PUSH_PUBLIC_KEY={keys.PublicKey}");
+    Console.WriteLine($"WEB_PUSH_PRIVATE_KEY={keys.PrivateKey}");
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,6 +37,22 @@ builder.Services.Configure<ContestModeOptions>(builder.Configuration.GetSection(
 builder.Services.Configure<ConquestOptions>(builder.Configuration.GetSection(ConquestOptions.SectionName));
 builder.Services.Configure<ActivityTriumphRecordOptions>(builder.Configuration.GetSection(ActivityTriumphRecordOptions.SectionName));
 builder.Services.Configure<CrawlerOptions>(builder.Configuration.GetSection(CrawlerOptions.SectionName));
+builder.Services.AddOptions<LeaderboardsOptions>()
+    .Bind(builder.Configuration.GetSection(LeaderboardsOptions.SectionName))
+    .Validate(options => options.MinimumCompletedPlayers >= 0, "Leaderboards:MinimumCompletedPlayers cannot be negative.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<ILeaderboardService, LeaderboardService>();
+builder.Services.AddHostedService<LeaderboardRepairBackgroundService>();
+builder.Services.AddOptions<WebPushOptions>()
+    .Bind(builder.Configuration.GetSection(WebPushOptions.SectionName))
+    .Validate(options =>
+        (string.IsNullOrWhiteSpace(options.Subject)
+            && string.IsNullOrWhiteSpace(options.PublicKey)
+            && string.IsNullOrWhiteSpace(options.PrivateKey))
+        || options.Enabled,
+        "WebPush must specify Subject, PublicKey, and PrivateKey together.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<IReportPushNotificationService, ReportPushNotificationService>();
 builder.Services.AddSingleton<CrawlerPgcrThrottler>();
 builder.Services.AddSingleton<CrawlerSherpaHistoryThrottler>();
 builder.Services.AddStackExchangeRedisCache(options =>
@@ -48,6 +77,19 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 
     return ConnectionMultiplexer.Connect(CreateRedisConfigurationOptions(connectionString));
 });
+builder.Services.AddOptions<AuthSessionOptions>()
+    .Bind(builder.Configuration.GetSection(AuthSessionOptions.SectionName))
+    .Validate(options => !string.IsNullOrWhiteSpace(options.CookieName), "AuthSession:CookieName is required.")
+    .Validate(options => options.Lifetime > TimeSpan.Zero, "AuthSession:Lifetime must be positive.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<IAuthSessionStore, AuthSessionStore>();
+builder.Services.AddOptions<AdminOptions>()
+    .Bind(builder.Configuration.GetSection(AdminOptions.SectionName));
+builder.Services.AddScoped<AdminAuthorizationFilter>();
+builder.Services.AddHealthChecks()
+    .AddCheck<MongoHealthCheck>("mongodb", tags: ["ready"])
+    .AddCheck<RedisHealthCheck>("redis", tags: ["ready"]);
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -91,13 +133,21 @@ using (var scope = app.Services.CreateScope())
 
 app.UseRateLimiter();
 
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = registration => registration.Tags.Contains("ready")
+}).ShortCircuit();
+
 var api = app.MapGroup("/api")
     .RequireRateLimiting(RateLimitPolicies.PublicRead);
 
 api.MapStatusEndpoints();
 api.MapAuthEndpoints();
+api.MapAdminEndpoints();
 api.MapPlayerSearchEndpoints();
 api.MapReportEndpoints();
+api.MapLeaderboardEndpoints();
+api.MapPushNotificationEndpoints();
 
 app.Run();
 

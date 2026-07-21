@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
@@ -13,6 +14,8 @@ namespace Destiny2Report.API.Features.Crawler;
 
 public partial class CrawlerService
 {
+    private sealed record CharacterIdentity(string Class, string Race);
+
     private static Dictionary<long, string> BuildCharacterClassMap(
         IEnumerable<DestinyHistoricalStatsPerCharacter> historicalCharacters,
         IEnumerable<DestinyPostGameCarnageReportData> pgcrs,
@@ -116,6 +119,7 @@ public partial class CrawlerService
     private static List<CharacterPlaytimeReport> BuildCharacterPlaytime(
         IEnumerable<DestinyHistoricalStatsPerCharacter> historicalCharacters,
         IReadOnlyDictionary<long, string> characterClassById,
+        IReadOnlyDictionary<long, string> recoveredRaceById,
         IEnumerable<DestinyCharacterComponent> profileCharacters)
     {
         var normalizedClassById = NormalizeCharacterClassMap(characterClassById);
@@ -132,7 +136,7 @@ public partial class CrawlerService
                     : TimeSpan.FromSeconds(GetStat(history?.Merged?.AllTime, "secondsPlayed"));
                 return new CharacterPlaytimeReport
                 {
-                    Race = current is null ? "Unknown" : RaceName(current.RaceType),
+                    Race = current is null ? recoveredRaceById.GetValueOrDefault(characterId, "Unknown") : RaceName(current.RaceType),
                     Class = current is null ? normalizedClassById.GetValueOrDefault(characterId, "Unknown") : ClassName(current.ClassType),
                     IsDeleted = current is null || history?.Deleted == true,
                     Playtime = playtime
@@ -149,4 +153,54 @@ public partial class CrawlerService
         2 => "Exo",
         _ => "Unknown"
     };
+
+    private static string RaceName(string raceName)
+    {
+        if (raceName.Equals("Human", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Human";
+        }
+
+        if (raceName.Equals("Awoken", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Awoken";
+        }
+
+        if (raceName.Equals("Exo", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Exo";
+        }
+
+        return "Unknown";
+    }
+
+    private static CharacterIdentity? ReadCharacterIdentityFromPgcr(
+        DestinyPostGameCarnageReportData pgcr,
+        long playerMembershipId,
+        long characterId,
+        IReadOnlyDictionary<string, ManifestCharacterIdentityDefinition> classDefinitions,
+        IReadOnlyDictionary<string, ManifestCharacterIdentityDefinition> raceDefinitions)
+    {
+        var entry = (pgcr.Entries ?? [])
+            .FirstOrDefault(item =>
+                item.CharacterId == characterId
+                && item.Player?.DestinyUserInfo?.MembershipId == playerMembershipId);
+        if (entry?.Player is null)
+        {
+            return null;
+        }
+
+        var className = ClassName(entry.Player.CharacterClass ?? "");
+        if (className == "Unknown")
+        {
+            var classDefinition = GetDefinition(classDefinitions, entry.Player.ClassHash);
+            className = ClassName(classDefinition?.DisplayProperties?.Name ?? "");
+        }
+
+        var raceDefinition = GetDefinition(raceDefinitions, entry.Player.RaceHash);
+        var raceName = RaceName(raceDefinition?.DisplayProperties?.Name ?? "");
+        return className == "Unknown" && raceName == "Unknown"
+            ? null
+            : new CharacterIdentity(className, raceName);
+    }
 }

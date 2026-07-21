@@ -9,6 +9,19 @@ public static class ReportEndpoints
         var reports = api.MapGroup("/reports")
             .WithTags("Reports");
 
+        reports.MapGet("/story-assets", ReportHandlers.GetStoryVisualAssets)
+            .WithName("GetStoryVisualAssets")
+            .WithSummary("Returns official Bungie activity-mode icons used by the story experience.");
+
+        reports.MapPost("/story-shares", ReportHandlers.CreateStoryShare)
+            .WithName("CreateStoryShare")
+            .WithSummary("Creates an unguessable story link for a membership owned by the signed-in player.")
+            .RequireRateLimiting(RateLimitPolicies.PublicWrite);
+
+        reports.MapGet("/story-shares/{token}", ReportHandlers.ResolveStoryShare)
+            .WithName("ResolveStoryShare")
+            .WithSummary("Resolves an unguessable story link to its report identity.");
+
         reports.MapGet("/{membershipTypeId:int}/{membershipId:long}", ReportHandlers.GetReport)
             .WithName("GetReport")
             .WithSummary("Returns a crawled Destiny player report from MongoDB.");

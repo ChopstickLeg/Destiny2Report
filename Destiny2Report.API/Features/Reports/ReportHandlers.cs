@@ -1,29 +1,46 @@
 namespace Destiny2Report.API.Features.Reports;
 
 using D2Report.BungieClient;
+using Destiny2Report.API.Features.Auth;
 using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.Crawler.Models;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
 using StackExchange.Redis;
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 public static class ReportHandlers
 {
     private const int AllMembershipTypes = 254;
+    private const int StoryShareTokenBytes = 32;
+    private static readonly TimeSpan ForegroundCrawlCooldown = TimeSpan.FromHours(6);
     private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromSeconds(5);
     private sealed record QueueAdmission(string StreamEntryId, string Status, DateTimeOffset UpdatedAtUtc);
     private const string QueueCrawlScript = """
         local currentStatus = redis.call('HGET', KEYS[2], 'status')
-        if currentStatus == 'queued' or currentStatus == 'running' then
+        if currentStatus == 'running' then
             return {
                 redis.call('HGET', KEYS[2], 'streamEntryId'),
                 currentStatus,
                 redis.call('HGET', KEYS[2], 'updatedAtUtc')
             }
+        end
+
+        if currentStatus == 'queued' then
+            local currentJobId = redis.call('HGET', KEYS[2], 'streamEntryId')
+            if currentJobId and #redis.call('XRANGE', KEYS[1], currentJobId, currentJobId, 'COUNT', 1) > 0 then
+                return {
+                    currentJobId,
+                    currentStatus,
+                    redis.call('HGET', KEYS[2], 'updatedAtUtc')
+                }
+            end
         end
 
         local jobId = redis.call('XADD', KEYS[1], '*',
@@ -47,6 +64,165 @@ public static class ReportHandlers
         redis.call('EXPIRE', KEYS[2], ARGV[4])
         return { jobId, 'queued', ARGV[3] }
         """;
+
+    public static async Task<Ok<StoryVisualAssetsReport>> GetStoryVisualAssets(
+        ICrawlerService crawlerService,
+        CancellationToken cancellationToken)
+    {
+        var assets = await crawlerService
+            .GetStoryVisualAssetsAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return TypedResults.Ok(assets);
+    }
+
+    public static async Task<Results<Ok<CreateStoryShareResponse>, UnauthorizedHttpResult, NotFound, BadRequest<ProblemDetails>, StatusCodeHttpResult>> CreateStoryShare(
+        CreateStoryShareRequest request,
+        HttpRequest httpRequest,
+        IAuthSessionStore sessionStore,
+        IBungieAuthService authService,
+        TimeProvider timeProvider,
+        IMongoDatabase mongoDatabase,
+        CancellationToken cancellationToken)
+    {
+        if (!TryValidateMembership(request.MembershipTypeId, request.MembershipId, out var problemDetails))
+        {
+            return TypedResults.BadRequest(problemDetails);
+        }
+
+        var session = await sessionStore.GetAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+        if (session is null)
+        {
+            return TypedResults.Unauthorized();
+        }
+
+        SignedInPlayerResponse player;
+        try
+        {
+            var refreshedSession = false;
+            if (AuthSessionRefresh.IsRequired(session, timeProvider))
+            {
+                session = await AuthSessionRefresh.RefreshAsync(
+                        httpRequest,
+                        session,
+                        authService,
+                        sessionStore,
+                        timeProvider,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                refreshedSession = true;
+            }
+
+            player = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
+            if (!player.SignedIn && !refreshedSession)
+            {
+                session = await AuthSessionRefresh.RefreshAsync(
+                        httpRequest,
+                        session,
+                        authService,
+                        sessionStore,
+                        timeProvider,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                player = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (BungieAuthException ex) when (
+            ex.Error is "invalid_oauth_request" or "bungie_session_expired"
+            || ex.BungieStatusCode is System.Net.HttpStatusCode.BadRequest
+                or System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+        {
+            return TypedResults.Unauthorized();
+        }
+        catch (BungieAuthException)
+        {
+            return TypedResults.StatusCode(StatusCodes.Status502BadGateway);
+        }
+
+        if (!OwnsStoryMembership(player, request.MembershipTypeId, request.MembershipId))
+        {
+            return TypedResults.Unauthorized();
+        }
+
+        var report = await FindReportAsync(
+                mongoDatabase,
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (report is null)
+        {
+            return TypedResults.NotFound();
+        }
+
+        var token = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(StoryShareTokenBytes));
+        var share = new StoryShare
+        {
+            TokenHash = HashStoryShareToken(token),
+            MembershipTypeId = request.MembershipTypeId,
+            MembershipId = request.MembershipId,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        await mongoDatabase.GetCollection<StoryShare>("story_shares")
+            .InsertOneAsync(share, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return TypedResults.Ok(new CreateStoryShareResponse(token));
+    }
+
+    public static async Task<Results<Ok<StoryShareIdentityResponse>, NotFound>> ResolveStoryShare(
+        string token,
+        IMongoDatabase mongoDatabase,
+        CancellationToken cancellationToken)
+    {
+        if (!IsValidStoryShareToken(token))
+        {
+            return TypedResults.NotFound();
+        }
+
+        var shares = mongoDatabase.GetCollection<StoryShare>("story_shares");
+        var share = await shares.Find(item => item.TokenHash == HashStoryShareToken(token))
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return share is null
+            ? TypedResults.NotFound()
+            : TypedResults.Ok(new StoryShareIdentityResponse(share.MembershipTypeId, share.MembershipId));
+    }
+
+    internal static bool IsValidStoryShareToken(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token) || token.Length != 43)
+        {
+            return false;
+        }
+
+        try
+        {
+            return WebEncoders.Base64UrlDecode(token).Length == StoryShareTokenBytes;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    internal static string HashStoryShareToken(string token)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.ASCII.GetBytes(token)));
+    }
+
+    internal static bool OwnsStoryMembership(
+        SignedInPlayerResponse player,
+        int membershipTypeId,
+        long membershipId)
+    {
+        return player.SignedIn && player.DestinyMemberships.Any(membership =>
+            membership.MembershipType == membershipTypeId
+            && membership.MembershipId == membershipId);
+    }
 
     public static async Task<Results<Ok<ReportSummaryResponse>, BadRequest<ProblemDetails>>> GetSummary(
         long membershipId,
@@ -160,10 +336,11 @@ public static class ReportHandlers
         return response is null ? TypedResults.NotFound() : TypedResults.Ok(response);
     }
 
-    public static async Task<Results<Accepted<IReadOnlyList<ReportQueueResponse>>, BadRequest<ProblemDetails>>> QueueCrawl(
+    public static async Task<IResult> QueueCrawl(
         IReadOnlyList<ReportQueueRequest> requests,
         IConnectionMultiplexer redis,
         IMongoDatabase mongoDatabase,
+        HttpResponse httpResponse,
         CancellationToken cancellationToken)
     {
         if (!TryValidateQueueRequests(requests, out var memberships, out var problemDetails))
@@ -174,6 +351,20 @@ public static class ReportHandlers
         System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", memberships.Count);
 
         var redisDatabase = redis.GetDatabase();
+        foreach (var (membershipTypeId, membershipId) in memberships)
+        {
+            var retryAfter = await GetBatchCrawlRetryAfterAsync(
+                    mongoDatabase,
+                    membershipTypeId,
+                    membershipId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (retryAfter is not null)
+            {
+                return BuildCrawlCooldownResponse(httpResponse, retryAfter.Value);
+            }
+        }
+
         var responses = new List<ReportQueueResponse>(memberships.Count);
         foreach (var (membershipTypeId, membershipId) in memberships)
         {
@@ -201,8 +392,22 @@ public static class ReportHandlers
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (existingStatus is not null && existingStatus.Status is DestinyReport.CrawlStateQueued or DestinyReport.CrawlStateRunning)
+        if (existingStatus is not null && existingStatus.Status == DestinyReport.CrawlStateRunning)
         {
+            return new ReportQueueResponse(
+                JobId: existingStatus.StreamEntryId ?? "",
+                MembershipTypeId: existingStatus.MembershipTypeId,
+                MembershipId: existingStatus.MembershipId,
+                Status: existingStatus.Status,
+                QueuedAtUtc: existingStatus.UpdatedAtUtc);
+        }
+
+        if (existingStatus is not null
+            && existingStatus.Status == DestinyReport.CrawlStateQueued
+            && existingStatus.Position is not null)
+        {
+            await MarkReportAsForegroundQueuedAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
+                .ConfigureAwait(false);
             return new ReportQueueResponse(
                 JobId: existingStatus.StreamEntryId ?? "",
                 MembershipTypeId: existingStatus.MembershipTypeId,
@@ -256,6 +461,77 @@ public static class ReportHandlers
             QueuedAtUtc: admission.UpdatedAtUtc);
 
         return response;
+    }
+
+    private static async Task<TimeSpan?> GetBatchCrawlRetryAfterAsync(
+        IMongoDatabase mongoDatabase,
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var existingReport = await FindReportAsync(
+                mongoDatabase,
+                membershipTypeId,
+                membershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (existingReport?.CrawlState is DestinyReport.CrawlStateQueued or DestinyReport.CrawlStateRunning)
+        {
+            return null;
+        }
+
+        var lastCrawledAtUtc = existingReport?.LastCrawledAtUtc;
+        if (lastCrawledAtUtc is null && existingReport?.CrawlState == DestinyReport.CrawlStateCompleted)
+        {
+            lastCrawledAtUtc = existingReport.CrawledAt;
+        }
+
+        return GetForegroundCrawlRetryAfter(
+            lastCrawledAtUtc,
+            existingReport?.NeedsFullRecrawl == true,
+            DateTimeOffset.UtcNow);
+    }
+
+    private static IResult BuildCrawlCooldownResponse(HttpResponse httpResponse, TimeSpan retryAfter)
+    {
+        var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+        httpResponse.Headers.RetryAfter = retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return TypedResults.Problem(
+            title: "Report crawl cooldown",
+            detail: $"This profile was crawled recently. Try again in {FormatCooldown(retryAfter)}.",
+            statusCode: StatusCodes.Status429TooManyRequests,
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = "crawl_cooldown",
+                ["retryAfterSeconds"] = retryAfterSeconds
+            });
+    }
+
+    private static TimeSpan? GetForegroundCrawlRetryAfter(
+        DateTime? lastCrawledAtUtc,
+        bool needsFullRecrawl,
+        DateTimeOffset now)
+    {
+        if (lastCrawledAtUtc is null || needsFullRecrawl)
+        {
+            return null;
+        }
+
+        var lastCrawled = new DateTimeOffset(DateTime.SpecifyKind(lastCrawledAtUtc.Value, DateTimeKind.Utc));
+        var retryAfter = lastCrawled.Add(ForegroundCrawlCooldown) - now;
+        return retryAfter > TimeSpan.Zero ? retryAfter : null;
+    }
+
+    private static string FormatCooldown(TimeSpan retryAfter)
+    {
+        if (retryAfter.TotalHours >= 1)
+        {
+            var hours = (int)Math.Floor(retryAfter.TotalHours);
+            var minutes = retryAfter.Minutes;
+            return minutes > 0 ? $"{hours}h {minutes}m" : $"{hours}h";
+        }
+
+        return $"{Math.Max(1, (int)Math.Ceiling(retryAfter.TotalMinutes))}m";
     }
 
     public static async Task<IResult> StreamQueuePosition(
@@ -485,6 +761,21 @@ public static class ReportHandlers
         await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task MarkReportAsForegroundQueuedAsync(
+        IMongoDatabase mongoDatabase,
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, membershipTypeId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, membershipId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.CrawlState, DestinyReport.CrawlStateQueued);
+        var update = Builders<DestinyReport>.Update.Set(item => item.QueuedInRedis, true);
+
+        await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
     private static ReportQueueStatusResponse BuildQueueStatusFromReport(DestinyReport report)
     {
         var status = string.IsNullOrWhiteSpace(report.CrawlState)
@@ -581,7 +872,7 @@ public static class ReportHandlers
             ? parsedUpdatedAtUtc
             : DateTimeOffset.UtcNow;
 
-        return BuildQueueStatus(
+        var storedStatus = BuildQueueStatus(
             membershipTypeId,
             membershipId,
             status,
@@ -591,6 +882,29 @@ public static class ReportHandlers
             0,
             updatedAtUtc,
             progress);
+
+        if (status != DestinyReport.CrawlStateQueued)
+        {
+            return storedStatus;
+        }
+
+        var entries = await redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName).ConfigureAwait(false);
+        for (var index = 0; index < entries.Length; index++)
+        {
+            var entry = entries[index];
+            if ((!string.IsNullOrWhiteSpace(streamEntryId) && entry.Id.ToString() == streamEntryId)
+                || MatchesCrawlerJob(entry, membershipTypeId, membershipId))
+            {
+                return storedStatus with
+                {
+                    StreamEntryId = entry.Id.ToString(),
+                    Position = index + 1,
+                    QueueLength = entries.Length
+                };
+            }
+        }
+
+        return storedStatus;
     }
 
     private static ReportQueueStatusResponse BuildQueueStatus(

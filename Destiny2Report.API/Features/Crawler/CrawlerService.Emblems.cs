@@ -226,6 +226,6 @@ public partial class CrawlerService
         return new EmblemDefinitionSummary(
             displayProperties?.Name ?? ToUnsignedHashIdentifier(definition.Hash),
             BungieUrl(displayProperties?.Icon),
-            BungieUrl(displayProperties?.SecondaryIcon));
+            BungieUrl(GetDefinitionString(definition.AdditionalProperties, "secondaryIcon")));
     }
 }

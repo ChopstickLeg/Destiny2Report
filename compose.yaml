@@ -1,0 +1,77 @@
+name: destiny2report-backend
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+      Bungie__ApiKey: ${BUNGIE_API_KEY:-}
+      Bungie__ClientId: ${BUNGIE_CLIENT_ID:-}
+      Bungie__ClientSecret: ${BUNGIE_CLIENT_SECRET:-}
+      Admin__MembershipTypeId: ${ADMIN_MEMBERSHIP_TYPE_ID:-0}
+      Admin__MembershipId: ${ADMIN_MEMBERSHIP_ID:-0}
+      WebPush__Subject: ${WEB_PUSH_SUBJECT:-}
+      WebPush__PublicKey: ${WEB_PUSH_PUBLIC_KEY:-}
+      WebPush__PrivateKey: ${WEB_PUSH_PRIVATE_KEY:-}
+      ConnectionStrings__MongoDb: mongodb://mongo:27017
+      ConnectionStrings__Redis: redis:6379
+      OpenTelemetry__Endpoint: http://jaeger:4317
+      OpenTelemetry__Protocol: Grpc
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.19.0
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:8.3
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test:
+        ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+  redis-data:

@@ -9,6 +9,7 @@ using MongoDB.Driver;
 using System.Diagnostics;
 using BungiePlayer = D2Report.BungieClient.DestinyPlayer;
 using ReportPlayer = Destiny2Report.API.Features.Crawler.Models.DestinyPlayer;
+using Destiny2Report.API.Features.Leaderboards;
 
 namespace Destiny2Report.API.Features.Crawler;
 
@@ -71,7 +72,8 @@ public partial class CrawlerService
             seconds = GetStat(activity.Values, "activityDurationSeconds");
         }
 
-        accumulator.PatrolSecondsByPlanet[destinationName] = accumulator.PatrolSecondsByPlanet.GetValueOrDefault(destinationName) + (long)seconds;
+        if (!DestinyDisplayNames.TryCanonicalPatrolDestination(destinationName, out var canonicalDestination)) return;
+        accumulator.PatrolSecondsByPlanet[canonicalDestination] = accumulator.PatrolSecondsByPlanet.GetValueOrDefault(canonicalDestination) + (long)seconds;
     }
 
     private async Task ApplyPgcrAggregatesAsync(
@@ -289,7 +291,7 @@ public partial class CrawlerService
         }
 
         await ApplySherpaChecksAsync(cancellationToken).ConfigureAwait(false);
-        UpdateAccumulatorCrawlStateFromState(accumulator, crawlState, []);
+        UpdateAccumulatorCrawlStateFromState(accumulator, crawlState, [], resetDerivedAggregates);
 
         var persistedPlayerEncounterCounts = playerEncounterCounts
             .Where(item => IsPersistablePlayerEncounter(item.Key.MembershipType, item.Key.MembershipId, item.Value))
@@ -366,6 +368,7 @@ public partial class CrawlerService
             .ConfigureAwait(false);
 
         report.TotalActivityTime = TimeSpan.FromSeconds(accumulator.TotalActivitySeconds);
+        report.FirstActivityAtUtc = accumulator.FirstActivityAtUtc;
         report.LongestPlaytimeStreak = GetLongestPlaytimeStreak(accumulator.PlayDates);
         report.CurrentPlaytimeStreak = GetCurrentPlaytimeStreak(accumulator.PlayDates, DateTime.UtcNow.Date);
 

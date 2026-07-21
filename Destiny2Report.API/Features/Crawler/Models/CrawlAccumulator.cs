@@ -9,6 +9,9 @@ public record CrawlAccumulator
     public long PlayerMembershipId { get; set; }
     public DateTime LastSuccessfulCrawlAt { get; set; }
     public DateTime NewestActivityPeriod { get; set; }
+    public DateTime? FirstActivityAtUtc { get; set; }
+    [BsonIgnoreIfDefault]
+    public bool FirstActivityDiscoveryCompleted { get; set; }
     public List<long> RecentActivityInstanceIds { get; set; } = new();
     [BsonIgnoreIfDefault]
     public bool NeedsFullRecrawl { get; set; }

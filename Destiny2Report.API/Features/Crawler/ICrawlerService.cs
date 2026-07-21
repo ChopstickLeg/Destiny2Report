@@ -1,4 +1,5 @@
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Leaderboards;
 
 namespace Destiny2Report.API.Features.Crawler;
 
@@ -25,4 +26,8 @@ public interface ICrawlerService
         long membershipId,
         ActivityPlaytimeMode activityMode,
         CancellationToken cancellationToken);
+
+    Task<StoryVisualAssetsReport> GetStoryVisualAssetsAsync(CancellationToken cancellationToken);
+
+    Task<IReadOnlyCollection<LeaderboardMetric>> GetLeaderboardMetricsAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken);
 }

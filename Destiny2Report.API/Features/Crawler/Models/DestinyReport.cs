@@ -27,6 +27,7 @@ public record DestinyReport
         init { }
     }
     public DateTime CrawledAt { get; init; } = DateTime.UtcNow;
+    public DateTime? FirstActivityAtUtc { get; set; }
     [BsonDefaultValue(CrawlStateCompleted)]
     [BsonIgnoreIfDefault]
     public string CrawlState { get; set; } = CrawlStateCompleted;
@@ -34,6 +35,7 @@ public record DestinyReport
     public DateTime? QueuedAtUtc { get; set; }
     public DateTime? StartedAtUtc { get; set; }
     public DateTime? LastCrawledAtUtc { get; set; }
+    [BsonIgnoreIfDefault] public bool HasCompletedCrawl { get; set; }
     public DateTime? LeaseExpiresAtUtc { get; set; }
     [BsonDefaultValue("")]
     [BsonIgnoreIfDefault]
@@ -61,6 +63,7 @@ public record DestinyReport
     [BsonIgnoreIfDefault] public int GambitMatchesPlayed { get; set; }
     [BsonIgnoreIfDefault] public int CrucibleWins { get; set; }
     [BsonIgnoreIfDefault] public int GambitWins { get; set; }
+    public List<PvpPlaylistReport> GambitPlaylists { get; set; } = new();
     public CrucibleKillsReport CrucibleKills { get; set; } = new();
     public GambitMotesReport GambitMotes { get; set; } = new();
     public List<DestinyTriumphSeal> TriumphSeals

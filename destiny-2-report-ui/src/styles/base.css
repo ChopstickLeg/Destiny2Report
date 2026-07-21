@@ -1,0 +1,197 @@
+/*
+ * Base styles: a small reset plus element defaults.
+ * Component-specific styling lives in scoped SFC styles.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Scroll chrome follows the warm obsidian and gold UI palette. */
+@supports (-moz-appearance: none) {
+  * {
+    scrollbar-color: var(--color-border-strong) var(--color-surface-sunken);
+    scrollbar-width: thin;
+  }
+}
+
+*::-webkit-scrollbar {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--color-surface-sunken);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  background: var(--color-border-strong);
+  border: 3px solid var(--color-surface-sunken);
+  border-radius: var(--radius-full);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-accent-strong);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: var(--color-accent);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--color-surface-sunken);
+}
+
+body {
+  background: var(--color-bg);
+  background-image: var(--background-atmosphere);
+  background-attachment: fixed;
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 600;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--color-accent-strong);
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+/* Keep native dropdown popups in the app palette on Windows and Chromium. */
+select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  color: var(--color-text);
+  background-color: var(--color-surface-raised);
+}
+
+select option:hover,
+select option:focus,
+select option:checked {
+  color: var(--color-text-inverse);
+  background-color: var(--color-accent);
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--color-accent-muted);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+}
+
+/* Statistics always align in columns. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Visually hidden but available to assistive technology. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Shared page container. */
+.container {
+  width: 100%;
+  max-width: var(--content-width);
+  margin-inline: auto;
+  padding-inline: var(--content-pad);
+}
+
+/* One display face for player names and major numbers. */
+.display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

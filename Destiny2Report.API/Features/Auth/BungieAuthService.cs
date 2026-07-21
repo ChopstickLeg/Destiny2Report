@@ -13,6 +13,10 @@ public interface IBungieAuthService
         BungieOAuthCodeRequest request,
         CancellationToken cancellationToken);
 
+    Task<BungieOAuthTokenResponse> RefreshTokenAsync(
+        string refreshToken,
+        CancellationToken cancellationToken);
+
     Task<SignedInPlayerResponse> GetCurrentUserAsync(
         string accessToken,
         CancellationToken cancellationToken);
@@ -49,7 +53,47 @@ public sealed class BungieAuthService(
                 "Bungie:ClientId and Bungie:ClientSecret must be configured.");
         }
 
-        using var formContent = new FormUrlEncodedContent(BuildTokenRequestForm(request, bungieOptions.ClientId));
+        return await RequestTokensAsync(
+            BuildTokenRequestForm(request, bungieOptions.ClientId),
+            bungieOptions,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<BungieOAuthTokenResponse> RefreshTokenAsync(
+        string refreshToken,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(refreshToken))
+        {
+            throw new BungieAuthException("invalid_oauth_request", "The OAuth refresh token is required.");
+        }
+
+        var bungieOptions = options.Value;
+        if (string.IsNullOrWhiteSpace(bungieOptions.ClientId)
+            || string.IsNullOrWhiteSpace(bungieOptions.ClientSecret))
+        {
+            throw new BungieAuthException(
+                "bungie_oauth_not_configured",
+                "Bungie:ClientId and Bungie:ClientSecret must be configured.");
+        }
+
+        return await RequestTokensAsync(
+            new Dictionary<string, string>
+            {
+                ["grant_type"] = "refresh_token",
+                ["refresh_token"] = refreshToken,
+                ["client_id"] = bungieOptions.ClientId
+            },
+            bungieOptions,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<BungieOAuthTokenResponse> RequestTokensAsync(
+        Dictionary<string, string> form,
+        BungieClientOptions bungieOptions,
+        CancellationToken cancellationToken)
+    {
+        using var formContent = new FormUrlEncodedContent(form);
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint)
         {
             Content = formContent

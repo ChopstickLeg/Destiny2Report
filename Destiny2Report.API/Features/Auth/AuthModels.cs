@@ -18,7 +18,8 @@ public sealed record SignedInPlayerResponse(
     bool SignedIn,
     BungieNetUserResponse? BungieNetUser,
     IReadOnlyCollection<DestinyMembershipResponse> DestinyMemberships,
-    DestinyMembershipResponse? PrimaryDestinyMembership);
+    DestinyMembershipResponse? PrimaryDestinyMembership,
+    bool IsAdmin = false);
 
 public sealed record BungieNetUserResponse(
     long MembershipId,

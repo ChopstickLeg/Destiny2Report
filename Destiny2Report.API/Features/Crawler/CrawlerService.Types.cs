@@ -54,6 +54,7 @@ public partial class CrawlerService
         private readonly List<ActivityReference> _recentActivities = [];
 
         public DateTimeOffset NewestActivityPeriod { get; private set; }
+        public DateTimeOffset? EarliestActivityPeriod { get; private set; }
 
         public IReadOnlyCollection<ActivityReference> RecentActivities => _recentActivities;
 
@@ -78,6 +79,11 @@ public partial class CrawlerService
                 NewestActivityPeriod = activity.Period;
             }
 
+            if (EarliestActivityPeriod is null || activity.Period < EarliestActivityPeriod)
+            {
+                EarliestActivityPeriod = activity.Period;
+            }
+
             _recentActivities.Add(new ActivityReference(instanceId, activity.Period));
         }
     }
@@ -85,7 +91,11 @@ public partial class CrawlerService
     private sealed class PrivatePlayerUnavailableException(string operation, string resource, BungieResponse response)
         : InvalidOperationException($"{operation} failed because the Destiny {resource} is not public. Bungie error code {response.ErrorCode}: {response.Message}");
 
-    private sealed record WeaponDefinitionSummary(string Name, string IconUrl, string CategoryName, string CategoryKey);
+    private sealed record WeaponDefinitionSummary(string Name, string IconUrl, string CategoryName, string CategoryKey)
+    {
+        public int TierType { get; init; }
+        public int DamageType { get; init; }
+    }
 
     private sealed record EmblemDefinitionSummary(string Name, string IconUrl, string BackgroundUrl);
 
@@ -138,6 +148,16 @@ public partial class CrawlerService
             accumulator.NewestActivityPeriod = newestFetchedActivity.Period.UtcDateTime;
         }
 
+        var earliestFetchedActivity = fetchedActivities
+            .OrderBy(activity => activity.Period)
+            .FirstOrDefault();
+        if (earliestFetchedActivity is not null
+            && (accumulator.FirstActivityAtUtc is null
+                || earliestFetchedActivity.Period.UtcDateTime < accumulator.FirstActivityAtUtc.Value))
+        {
+            accumulator.FirstActivityAtUtc = earliestFetchedActivity.Period.UtcDateTime;
+        }
+
         accumulator.RecentActivityInstanceIds = fetchedActivities
             .Where(activity => activity.ActivityDetails.InstanceId > 0)
             .OrderByDescending(activity => activity.Period)
@@ -152,7 +172,8 @@ public partial class CrawlerService
     private static void UpdateAccumulatorCrawlStateFromState(
         CrawlAccumulator accumulator,
         ActivityCrawlState crawlState,
-        IEnumerable<long> processedActivityIds)
+        IEnumerable<long> processedActivityIds,
+        bool completedFullActivityDiscovery)
     {
         accumulator.LastSuccessfulCrawlAt = DateTime.UtcNow;
         accumulator.NeedsFullRecrawl = false;
@@ -161,6 +182,18 @@ public partial class CrawlerService
         if (crawlState.NewestActivityPeriod > accumulator.NewestActivityPeriod)
         {
             accumulator.NewestActivityPeriod = crawlState.NewestActivityPeriod.UtcDateTime;
+        }
+
+        if (crawlState.EarliestActivityPeriod is not null
+            && (accumulator.FirstActivityAtUtc is null
+                || crawlState.EarliestActivityPeriod.Value.UtcDateTime < accumulator.FirstActivityAtUtc.Value))
+        {
+            accumulator.FirstActivityAtUtc = crawlState.EarliestActivityPeriod.Value.UtcDateTime;
+        }
+
+        if (completedFullActivityDiscovery)
+        {
+            accumulator.FirstActivityDiscoveryCompleted = true;
         }
 
         accumulator.RecentActivityInstanceIds = crawlState.RecentActivities
@@ -295,6 +328,10 @@ public partial class CrawlerService
         public Task<IReadOnlyDictionary<string, ManifestActivityModeDefinition>> GetActivityModeDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestActivityModeDefinition>("DestinyActivityModeDefinition", cancellationToken);
 
         public Task<IReadOnlyDictionary<string, ManifestDestinationDefinition>> GetDestinationDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestDestinationDefinition>("DestinyDestinationDefinition", cancellationToken);
+
+        public Task<IReadOnlyDictionary<string, ManifestCharacterIdentityDefinition>> GetClassDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestCharacterIdentityDefinition>("DestinyClassDefinition", cancellationToken);
+
+        public Task<IReadOnlyDictionary<string, ManifestCharacterIdentityDefinition>> GetRaceDefinitionsAsync(CancellationToken cancellationToken) => GetTableAsync<ManifestCharacterIdentityDefinition>("DestinyRaceDefinition", cancellationToken);
 
         public async Task<IReadOnlyDictionary<string, TDefinition>> GetTableAsync<TDefinition>(string tableName, CancellationToken cancellationToken)
         {
