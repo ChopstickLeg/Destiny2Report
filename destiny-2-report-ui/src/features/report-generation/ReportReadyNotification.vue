@@ -88,7 +88,9 @@ async function enableNotifications() {
     let subscription = await registration.pushManager.getSubscription()
 
     if (subscription && !subscriptionUsesKey(subscription, applicationServerKey)) {
-      await removeReportPushSubscription(props.identity, subscription.endpoint).catch(() => undefined)
+      await removeReportPushSubscription(props.identity, subscription.endpoint).catch(
+        () => undefined,
+      )
       await subscription.unsubscribe()
       subscription = null
     }
@@ -105,7 +107,8 @@ async function enableNotifications() {
     state.value = 'enabled'
   } catch (error) {
     if (newlyCreated) await newlyCreated.unsubscribe().catch(() => false)
-    errorMessage.value = error instanceof Error ? error.message : 'Notifications could not be enabled.'
+    errorMessage.value =
+      error instanceof Error ? error.message : 'Notifications could not be enabled.'
     state.value = 'error'
   }
 }
@@ -122,7 +125,8 @@ async function disableNotifications() {
     }
     state.value = 'idle'
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Notifications could not be changed.'
+    errorMessage.value =
+      error instanceof Error ? error.message : 'Notifications could not be changed.'
     state.value = 'error'
   }
 }
@@ -132,7 +136,9 @@ async function disableNotifications() {
   <aside v-if="state !== 'hidden' && state !== 'checking'" class="ready-notice" aria-live="polite">
     <div class="ready-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none">
-        <path d="M7.5 9.75a4.5 4.5 0 0 1 9 0c0 5.25 2.25 5.25 2.25 6.75H5.25c0-1.5 2.25-1.5 2.25-6.75Z" />
+        <path
+          d="M7.5 9.75a4.5 4.5 0 0 1 9 0c0 5.25 2.25 5.25 2.25 6.75H5.25c0-1.5 2.25-1.5 2.25-6.75Z"
+        />
         <path d="M9.75 19.25h4.5" />
       </svg>
     </div>
@@ -145,7 +151,8 @@ async function disableNotifications() {
         You can close this tab. This browser will notify you when the report is complete.
       </p>
       <p v-else-if="state === 'denied'" class="ready-detail">
-        Notifications are blocked for this site. You can allow them from your browser’s site settings.
+        Notifications are blocked for this site. You can allow them from your browser’s site
+        settings.
       </p>
       <p v-else class="ready-detail">
         Get one browser notification when this crawl finishes, even if you close the tab.
@@ -176,32 +183,25 @@ async function disableNotifications() {
 
 <style scoped>
 .ready-notice {
-  margin-top: var(--space-5);
-  padding: var(--space-3);
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
-  border-radius: var(--radius-md);
-  background:
-    linear-gradient(100deg, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 56%),
-    var(--color-surface-sunken);
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
 }
 
 .ready-icon {
-  width: 2rem;
-  height: 2rem;
+  width: 1.5rem;
+  height: 1.5rem;
   display: grid;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
-  border-radius: var(--radius-full);
   color: var(--color-accent);
-  background: var(--color-surface);
 }
 
 .ready-icon svg {
-  width: 1rem;
+  width: 1.25rem;
   stroke: currentColor;
   stroke-width: 1.7;
   stroke-linecap: round;
@@ -209,15 +209,20 @@ async function disableNotifications() {
 }
 
 .ready-title {
-  font-size: var(--text-sm);
   font-weight: 600;
 }
 
 .ready-detail,
 .ready-error {
-  margin-top: 0.15rem;
-  font-size: var(--text-xs);
+  max-width: 32rem;
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+  line-height: 1.5;
   color: var(--color-text-secondary);
+}
+
+.ready-notice :deep(.btn) {
+  margin-top: -0.25rem;
 }
 
 .ready-error {
@@ -230,8 +235,9 @@ async function disableNotifications() {
   }
 
   .ready-notice :deep(.btn) {
-    grid-column: 1 / -1;
-    width: 100%;
+    grid-column: 2;
+    justify-self: start;
+    margin-top: 0;
   }
 }
 </style>

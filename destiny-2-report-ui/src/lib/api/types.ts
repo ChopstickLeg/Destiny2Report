@@ -150,6 +150,7 @@ export interface DestinyReport {
   queuedAtUtc: string | null
   startedAtUtc: string | null
   lastCrawledAtUtc: string | null
+  hasCompletedCrawl: boolean
   crawlError: string
   needsFullRecrawl: boolean
   fullRecrawlReason: string
@@ -167,6 +168,7 @@ export interface DestinyReport {
   gambitMatchesPlayed: number
   crucibleWins: number
   gambitWins: number
+  gambitPlaylists: PvpPlaylistReport[]
   crucibleKills: CrucibleKillsReport
   gambitMotes: GambitMotesReport
   triumphSeals: TriumphSeal[]
@@ -183,6 +185,53 @@ export interface DestinyReport {
   uniquePlayersPlayedWith: number
   playersSherpaed: SherpaReport[]
   mostUsedEmblems: EmblemReport[]
+}
+
+// ---------------------------------------------------------------------------
+// Leaderboards
+// ---------------------------------------------------------------------------
+
+export interface LeaderboardDefinition {
+  key: string
+  category: string
+  title: string
+  description: string
+  unit: 'count' | 'seconds' | 'days'
+  displayOrder: number
+  rankedPlayerCount: number
+  isRepairing: boolean
+}
+
+export interface LeaderboardCatalogResponse {
+  isReady: boolean
+  completedPlayerCount: number
+  minimumCompletedPlayers: number
+  leaderboards: LeaderboardDefinition[]
+}
+
+export interface LeaderboardEntry {
+  rank: number
+  membershipTypeId: number
+  membershipId: string
+  displayName: string
+  displayCode: number
+  fullDisplayName: string
+  emblemBackgroundUrl: string
+  score: number
+}
+
+export interface LeaderboardPageResponse {
+  key: string
+  category: string
+  title: string
+  description: string
+  unit: 'count' | 'seconds' | 'days'
+  offset: number
+  limit: number
+  retainedEntryCount: number
+  updatedAtUtc: string
+  isRepairing: boolean
+  entries: LeaderboardEntry[]
 }
 
 export interface StoryVisualAssetsReport {

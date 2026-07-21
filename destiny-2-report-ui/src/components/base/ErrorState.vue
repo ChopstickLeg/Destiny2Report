@@ -14,6 +14,7 @@ const emit = defineEmits<{ retry: [] }>()
 const message = computed(() => {
   if (isApiError(props.error)) {
     if (props.error.isRateLimited) {
+      if (props.error.problem?.code === 'crawl_cooldown') return props.error.message
       const wait = props.error.retryAfterSeconds
       return wait
         ? `Too many requests right now. Try again in about ${wait} seconds.`

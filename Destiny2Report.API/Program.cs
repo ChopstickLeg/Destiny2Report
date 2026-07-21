@@ -5,6 +5,7 @@ using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.PlayerSearch;
 using Destiny2Report.API.Features.PushNotifications;
 using Destiny2Report.API.Features.Reports;
+using Destiny2Report.API.Features.Leaderboards;
 using Destiny2Report.API.Features.Status;
 using Destiny2Report.API.Mongo;
 using Destiny2Report.API.Observability;
@@ -36,6 +37,12 @@ builder.Services.Configure<ContestModeOptions>(builder.Configuration.GetSection(
 builder.Services.Configure<ConquestOptions>(builder.Configuration.GetSection(ConquestOptions.SectionName));
 builder.Services.Configure<ActivityTriumphRecordOptions>(builder.Configuration.GetSection(ActivityTriumphRecordOptions.SectionName));
 builder.Services.Configure<CrawlerOptions>(builder.Configuration.GetSection(CrawlerOptions.SectionName));
+builder.Services.AddOptions<LeaderboardsOptions>()
+    .Bind(builder.Configuration.GetSection(LeaderboardsOptions.SectionName))
+    .Validate(options => options.MinimumCompletedPlayers >= 0, "Leaderboards:MinimumCompletedPlayers cannot be negative.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<ILeaderboardService, LeaderboardService>();
+builder.Services.AddHostedService<LeaderboardRepairBackgroundService>();
 builder.Services.AddOptions<WebPushOptions>()
     .Bind(builder.Configuration.GetSection(WebPushOptions.SectionName))
     .Validate(options =>
@@ -139,6 +146,7 @@ api.MapAuthEndpoints();
 api.MapAdminEndpoints();
 api.MapPlayerSearchEndpoints();
 api.MapReportEndpoints();
+api.MapLeaderboardEndpoints();
 api.MapPushNotificationEndpoints();
 
 app.Run();

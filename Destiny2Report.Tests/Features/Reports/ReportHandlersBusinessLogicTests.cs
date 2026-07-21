@@ -170,6 +170,41 @@ public sealed class ReportHandlersBusinessLogicTests
         Assert.Equal(expected, result);
     }
 
+    [Fact]
+    public void GetForegroundCrawlRetryAfter_returns_remaining_six_hour_cooldown()
+    {
+        var now = DateTimeOffset.Parse("2026-07-20T18:00:00Z");
+        var lastCrawled = DateTime.Parse("2026-07-20T14:30:00Z").ToUniversalTime();
+
+        var result = (TimeSpan?)Invoke("GetForegroundCrawlRetryAfter", lastCrawled, false, now);
+
+        Assert.Equal(TimeSpan.FromHours(2.5), result);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("2026-07-20T12:00:00Z")]
+    public void GetForegroundCrawlRetryAfter_allows_never_or_old_crawls(string? lastCrawledValue)
+    {
+        var now = DateTimeOffset.Parse("2026-07-20T18:00:00Z");
+        var lastCrawled = lastCrawledValue is null ? (DateTime?)null : DateTime.Parse(lastCrawledValue).ToUniversalTime();
+
+        var result = (TimeSpan?)Invoke("GetForegroundCrawlRetryAfter", lastCrawled, false, now);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void GetForegroundCrawlRetryAfter_allows_recent_crawl_when_full_recrawl_is_needed()
+    {
+        var now = DateTimeOffset.Parse("2026-07-20T18:00:00Z");
+        var lastCrawled = DateTime.Parse("2026-07-20T17:30:00Z").ToUniversalTime();
+
+        var result = (TimeSpan?)Invoke("GetForegroundCrawlRetryAfter", lastCrawled, true, now);
+
+        Assert.Null(result);
+    }
+
     private static object? Invoke(string methodName, params object?[] arguments)
     {
         var method = HandlerType

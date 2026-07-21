@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Leaderboards;
 using Destiny2Report.API.Observability;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
@@ -22,7 +23,8 @@ public partial class CrawlerService(
     IOptions<ActivityTriumphRecordOptions> activityTriumphRecordOptions,
     CrawlerPgcrThrottler pgcrThrottler,
     CrawlerSherpaHistoryThrottler sherpaHistoryThrottler,
-    IOptions<CrawlerOptions> crawlerOptions) : ICrawlerService
+    IOptions<CrawlerOptions> crawlerOptions,
+    ILeaderboardService leaderboardService) : ICrawlerService
 {
     private const string BungieNetBaseUrl = "https://www.bungie.net";
     private const int GeneralStatsGroup = 1;
@@ -136,7 +138,9 @@ public partial class CrawlerService(
         [89] = "ZoneControl",
         [90] = "IronBannerRift",
         [91] = "IronBannerZoneControl",
-        [92] = "Relic"
+        [92] = "Relic",
+        [93] = "LawlessFrontier",
+        [94] = "SparrowRacingLeague"
     };
 
     public static string GetSpecificActivityModeName(int mode)
@@ -336,7 +340,8 @@ public partial class CrawlerService(
                 LeaseOwner = "",
                 CrawlError = "",
                 NeedsFullRecrawl = false,
-                FullRecrawlReason = ""
+                FullRecrawlReason = "",
+                HasCompletedCrawl = existingReport?.HasCompletedCrawl == true
             };
 
             ApplyAccountStats(
@@ -365,17 +370,22 @@ public partial class CrawlerService(
 
             if (progress is not null)
             {
-                await progress.StartPhaseAsync("saving", "Saving report", total: 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await progress.StartPhaseAsync("saving", "Saving report and leaderboards", total: 3, cancellationToken: cancellationToken).ConfigureAwait(false);
             }
 
             await reports.ReplaceOneAsync(filter, report, new ReplaceOptions { IsUpsert = true }, cancellationToken)
                 .ConfigureAwait(false);
             await accumulators.ReplaceOneAsync(accumulatorFilter, accumulator, new ReplaceOptions { IsUpsert = true }, cancellationToken)
                 .ConfigureAwait(false);
+            var leaderboardMetrics = await BuildLeaderboardMetricsAsync(report, accumulator, cancellationToken).ConfigureAwait(false);
+            await leaderboardService.PublishPlayerAsync(report, leaderboardMetrics, cancellationToken).ConfigureAwait(false);
+            report.HasCompletedCrawl = true;
+            await reports.UpdateOneAsync(filter, Builders<DestinyReport>.Update.Set(item => item.HasCompletedCrawl, true), cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
 
             if (progress is not null)
             {
-                await progress.CompletePhaseAsync(current: 2, total: 2, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await progress.CompletePhaseAsync(current: 3, total: 3, cancellationToken: cancellationToken).ConfigureAwait(false);
             }
 
             activity?.SetStatus(ActivityStatusCode.Ok);
@@ -398,6 +408,7 @@ public partial class CrawlerService(
 
     private async Task MarkPlayerNotFoundAsync(int platformId, long playerMembershipId, CancellationToken cancellationToken)
     {
+        await leaderboardService.RemovePlayerAsync(platformId, playerMembershipId, cancellationToken).ConfigureAwait(false);
         var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
         var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
         var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, platformId)
@@ -426,6 +437,7 @@ public partial class CrawlerService(
 
     private async Task MarkPlayerPrivateAsync(int platformId, long playerMembershipId, string error, CancellationToken cancellationToken)
     {
+        await leaderboardService.RemovePlayerAsync(platformId, playerMembershipId, cancellationToken).ConfigureAwait(false);
         var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
         var accumulators = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators");
         var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, platformId)

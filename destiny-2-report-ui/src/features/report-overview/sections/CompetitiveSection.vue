@@ -203,8 +203,7 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
         <p class="mote-averages">
           Averages per match:
           <strong class="tnum">{{ report.gambitMotes.averageMotesBanked }}</strong> banked,
-          <strong class="tnum">{{ report.gambitMotes.averageMotesLost }}</strong> lost. Banked,
-          lost, and denied are independent counts, not shares of one total.
+          <strong class="tnum">{{ report.gambitMotes.averageMotesLost }}</strong> lost.
         </p>
         <table class="playlist-table">
           <thead>

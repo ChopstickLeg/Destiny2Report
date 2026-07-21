@@ -83,6 +83,10 @@ const showSearch = computed(() => route.name !== 'home' && route.name !== 'searc
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
+  .wordmark-text {
+    display: none;
+  }
+
   .header-search {
     grid-column: 1 / -1;
     grid-row: 2;

@@ -91,7 +91,11 @@ public partial class CrawlerService
     private sealed class PrivatePlayerUnavailableException(string operation, string resource, BungieResponse response)
         : InvalidOperationException($"{operation} failed because the Destiny {resource} is not public. Bungie error code {response.ErrorCode}: {response.Message}");
 
-    private sealed record WeaponDefinitionSummary(string Name, string IconUrl, string CategoryName, string CategoryKey);
+    private sealed record WeaponDefinitionSummary(string Name, string IconUrl, string CategoryName, string CategoryKey)
+    {
+        public int TierType { get; init; }
+        public int DamageType { get; init; }
+    }
 
     private sealed record EmblemDefinitionSummary(string Name, string IconUrl, string BackgroundUrl);
 

@@ -101,6 +101,12 @@ const router = createRouter({
       meta: { title: 'Service status' },
     },
     {
+      path: '/leaderboards',
+      name: 'leaderboards',
+      component: () => import('@/features/leaderboards/LeaderboardsView.vue'),
+      meta: { title: 'Leaderboards' },
+    },
+    {
       path: '/admin',
       name: 'admin',
       component: () => import('@/features/admin/AdminView.vue'),

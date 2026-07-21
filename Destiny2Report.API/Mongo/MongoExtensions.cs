@@ -1,6 +1,7 @@
 using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Features.Reports;
 using Destiny2Report.API.Features.PushNotifications;
+using Destiny2Report.API.Features.Leaderboards;
 using MongoDB.Driver;
 
 namespace Destiny2Report.API.Mongo;
@@ -60,6 +61,21 @@ public static class MongoExtensions
                         Name = "ix_destiny_reports_background_queue"
                     })
             ],
+            cancellationToken);
+
+        var completedLeaderboardIndexKeys = Builders<DestinyReport>.IndexKeys
+            .Ascending(report => report.HasCompletedCrawl)
+            .Ascending(report => report.CrawlState);
+        await reports.EnsureIndexesAsync(
+            [new CreateIndexModel<DestinyReport>(completedLeaderboardIndexKeys, new CreateIndexOptions { Name = "ix_destiny_reports_leaderboard_completion" })],
+            cancellationToken);
+
+        var leaderboardBoards = mongoDatabase.GetCollection<LeaderboardBoard>("leaderboard_boards");
+        var leaderboardPlayerIndexKeys = Builders<LeaderboardBoard>.IndexKeys
+            .Ascending("Entries.MembershipTypeId")
+            .Ascending("Entries.MembershipId");
+        await leaderboardBoards.EnsureIndexesAsync(
+            [new CreateIndexModel<LeaderboardBoard>(leaderboardPlayerIndexKeys, new CreateIndexOptions { Name = "ix_leaderboard_boards_player" })],
             cancellationToken);
 
         var storyShares = mongoDatabase.GetCollection<StoryShare>("story_shares");

@@ -4,6 +4,7 @@ import GlobalSearch from '@/components/shell/GlobalSearch.vue'
 import PlayerIdentityRow from '@/components/base/PlayerIdentityRow.vue'
 import { loadRecentPlayers, type RecentPlayer } from '@/lib/recent-players'
 import { platformLabel } from '@/lib/platform'
+import LeaderboardShowcase from '@/features/leaderboards/LeaderboardShowcase.vue'
 
 const recentPlayers = ref<RecentPlayer[]>([])
 
@@ -21,7 +22,6 @@ onMounted(() => {
         activity history, then turns it into one honest, shareable report.
       </p>
       <GlobalSearch size="large" class="hero-search" />
-      <p class="hero-hint">Search any public Bungie name. Partial names work too.</p>
     </div>
 
     <section v-if="recentPlayers.length > 0" class="recent" aria-labelledby="recent-heading">
@@ -48,29 +48,7 @@ onMounted(() => {
       </ul>
     </section>
 
-    <section class="explain" aria-label="What the report covers">
-      <div class="explain-item">
-        <h2 class="explain-title">Complete history</h2>
-        <p class="explain-copy">
-          Playtime by character and destination, day streaks, and every activity since your Guardian
-          first set foot in the Cosmodrome.
-        </p>
-      </div>
-      <div class="explain-item">
-        <h2 class="explain-title">Combat, itemized</h2>
-        <p class="explain-copy">
-          Weapon and ability kills layered by class, mode, and category. Deaths and competitive
-          records stay separate and clearly labeled.
-        </p>
-      </div>
-      <div class="explain-item">
-        <h2 class="explain-title">The people beside you</h2>
-        <p class="explain-copy">
-          Recurring fireteam members, unique players encountered, and the raiders you sherpaed
-          through their first clear.
-        </p>
-      </div>
-    </section>
+    <LeaderboardShowcase />
   </div>
 </template>
 
@@ -125,25 +103,5 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
   gap: var(--space-1);
-}
-
-.explain {
-  margin-top: var(--space-8);
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: var(--space-5);
-  padding-top: var(--space-5);
-  border-top: 1px solid var(--color-border);
-}
-
-.explain-title {
-  font-size: var(--text-base);
-  font-weight: 600;
-}
-
-.explain-copy {
-  margin-top: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
 }
 </style>

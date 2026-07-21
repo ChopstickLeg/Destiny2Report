@@ -19,16 +19,28 @@ public static class ReportHandlers
 {
     private const int AllMembershipTypes = 254;
     private const int StoryShareTokenBytes = 32;
+    private static readonly TimeSpan ForegroundCrawlCooldown = TimeSpan.FromHours(6);
     private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromSeconds(5);
     private sealed record QueueAdmission(string StreamEntryId, string Status, DateTimeOffset UpdatedAtUtc);
     private const string QueueCrawlScript = """
         local currentStatus = redis.call('HGET', KEYS[2], 'status')
-        if currentStatus == 'queued' or currentStatus == 'running' then
+        if currentStatus == 'running' then
             return {
                 redis.call('HGET', KEYS[2], 'streamEntryId'),
                 currentStatus,
                 redis.call('HGET', KEYS[2], 'updatedAtUtc')
             }
+        end
+
+        if currentStatus == 'queued' then
+            local currentJobId = redis.call('HGET', KEYS[2], 'streamEntryId')
+            if currentJobId and #redis.call('XRANGE', KEYS[1], currentJobId, currentJobId, 'COUNT', 1) > 0 then
+                return {
+                    currentJobId,
+                    currentStatus,
+                    redis.call('HGET', KEYS[2], 'updatedAtUtc')
+                }
+            end
         end
 
         local jobId = redis.call('XADD', KEYS[1], '*',
@@ -296,10 +308,11 @@ public static class ReportHandlers
         return response is null ? TypedResults.NotFound() : TypedResults.Ok(response);
     }
 
-    public static async Task<Results<Accepted<IReadOnlyList<ReportQueueResponse>>, BadRequest<ProblemDetails>>> QueueCrawl(
+    public static async Task<IResult> QueueCrawl(
         IReadOnlyList<ReportQueueRequest> requests,
         IConnectionMultiplexer redis,
         IMongoDatabase mongoDatabase,
+        HttpResponse httpResponse,
         CancellationToken cancellationToken)
     {
         if (!TryValidateQueueRequests(requests, out var memberships, out var problemDetails))
@@ -313,19 +326,35 @@ public static class ReportHandlers
         var responses = new List<ReportQueueResponse>(memberships.Count);
         foreach (var (membershipTypeId, membershipId) in memberships)
         {
-            responses.Add(await QueueCrawlAsync(
+            var result = await QueueCrawlAsync(
                     redisDatabase,
                     mongoDatabase,
                     membershipTypeId,
                     membershipId,
                     cancellationToken)
-                .ConfigureAwait(false));
+                .ConfigureAwait(false);
+            if (result.RetryAfter is { } retryAfter)
+            {
+                var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+                httpResponse.Headers.RetryAfter = retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return TypedResults.Problem(
+                    title: "Report crawl cooldown",
+                    detail: $"This profile was crawled recently. Try again in {FormatCooldown(retryAfter)}.",
+                    statusCode: StatusCodes.Status429TooManyRequests,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["code"] = "crawl_cooldown",
+                        ["retryAfterSeconds"] = retryAfterSeconds
+                    });
+            }
+
+            responses.Add(result.Response!);
         }
 
         return TypedResults.Accepted<IReadOnlyList<ReportQueueResponse>>((string?)null, responses);
     }
 
-    private static async Task<ReportQueueResponse> QueueCrawlAsync(
+    private static async Task<(ReportQueueResponse? Response, TimeSpan? RetryAfter)> QueueCrawlAsync(
         IDatabase redisDatabase,
         IMongoDatabase mongoDatabase,
         int membershipTypeId,
@@ -337,26 +366,55 @@ public static class ReportHandlers
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (existingStatus is not null && existingStatus.Status is DestinyReport.CrawlStateQueued or DestinyReport.CrawlStateRunning)
+        if (existingStatus is not null && existingStatus.Status == DestinyReport.CrawlStateRunning)
         {
-            return new ReportQueueResponse(
+            return (new ReportQueueResponse(
                 JobId: existingStatus.StreamEntryId ?? "",
                 MembershipTypeId: existingStatus.MembershipTypeId,
                 MembershipId: existingStatus.MembershipId,
                 Status: existingStatus.Status,
-                QueuedAtUtc: existingStatus.UpdatedAtUtc);
+                QueuedAtUtc: existingStatus.UpdatedAtUtc), null);
+        }
+
+        if (existingStatus is not null
+            && existingStatus.Status == DestinyReport.CrawlStateQueued
+            && existingStatus.Position is not null)
+        {
+            await MarkReportAsForegroundQueuedAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
+                .ConfigureAwait(false);
+            return (new ReportQueueResponse(
+                JobId: existingStatus.StreamEntryId ?? "",
+                MembershipTypeId: existingStatus.MembershipTypeId,
+                MembershipId: existingStatus.MembershipId,
+                Status: existingStatus.Status,
+                QueuedAtUtc: existingStatus.UpdatedAtUtc), null);
         }
 
         var existingReport = await FindReportAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
             .ConfigureAwait(false);
         if (existingReport?.CrawlState == DestinyReport.CrawlStateRunning)
         {
-            return new ReportQueueResponse(
+            return (new ReportQueueResponse(
                 JobId: "",
                 MembershipTypeId: membershipTypeId,
                 MembershipId: membershipId,
                 Status: DestinyReport.CrawlStateRunning,
-                QueuedAtUtc: existingReport.StartedAtUtc ?? queuedAtUtc);
+                QueuedAtUtc: existingReport.StartedAtUtc ?? queuedAtUtc), null);
+        }
+
+        var lastCrawledAtUtc = existingReport?.LastCrawledAtUtc;
+        if (lastCrawledAtUtc is null && existingReport?.CrawlState == DestinyReport.CrawlStateCompleted)
+        {
+            lastCrawledAtUtc = existingReport.CrawledAt;
+        }
+
+        var retryAfter = GetForegroundCrawlRetryAfter(
+            lastCrawledAtUtc,
+            existingReport?.NeedsFullRecrawl == true,
+            queuedAtUtc);
+        if (retryAfter is not null)
+        {
+            return (null, retryAfter);
         }
 
         await UpsertForegroundQueuedReportAsync(mongoDatabase, membershipTypeId, membershipId, queuedAtUtc, cancellationToken)
@@ -391,7 +449,34 @@ public static class ReportHandlers
             Status: admission.Status,
             QueuedAtUtc: admission.UpdatedAtUtc);
 
-        return response;
+        return (response, null);
+    }
+
+    private static TimeSpan? GetForegroundCrawlRetryAfter(
+        DateTime? lastCrawledAtUtc,
+        bool needsFullRecrawl,
+        DateTimeOffset now)
+    {
+        if (lastCrawledAtUtc is null || needsFullRecrawl)
+        {
+            return null;
+        }
+
+        var lastCrawled = new DateTimeOffset(DateTime.SpecifyKind(lastCrawledAtUtc.Value, DateTimeKind.Utc));
+        var retryAfter = lastCrawled.Add(ForegroundCrawlCooldown) - now;
+        return retryAfter > TimeSpan.Zero ? retryAfter : null;
+    }
+
+    private static string FormatCooldown(TimeSpan retryAfter)
+    {
+        if (retryAfter.TotalHours >= 1)
+        {
+            var hours = (int)Math.Floor(retryAfter.TotalHours);
+            var minutes = retryAfter.Minutes;
+            return minutes > 0 ? $"{hours}h {minutes}m" : $"{hours}h";
+        }
+
+        return $"{Math.Max(1, (int)Math.Ceiling(retryAfter.TotalMinutes))}m";
     }
 
     public static async Task<IResult> StreamQueuePosition(
@@ -617,6 +702,21 @@ public static class ReportHandlers
             & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, membershipId)
             & Builders<DestinyReport>.Filter.Eq(item => item.CrawlState, DestinyReport.CrawlStateQueued);
         var update = Builders<DestinyReport>.Update.Set(item => item.QueuedInRedis, false);
+
+        await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task MarkReportAsForegroundQueuedAsync(
+        IMongoDatabase mongoDatabase,
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var filter = Builders<DestinyReport>.Filter.Eq(item => item.PlatformId, membershipTypeId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.PlayerMembershipId, membershipId)
+            & Builders<DestinyReport>.Filter.Eq(item => item.CrawlState, DestinyReport.CrawlStateQueued);
+        var update = Builders<DestinyReport>.Update.Set(item => item.QueuedInRedis, true);
 
         await reports.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
     }

@@ -14,6 +14,7 @@ const props = defineProps<{
   initialState: 'missing' | CrawlState
   playerName: string | null
   crawlError: string
+  queuedInRedis: boolean
 }>()
 
 const emit = defineEmits<{ refresh: [] }>()
@@ -26,7 +27,9 @@ const watcher = useQueueWatcher(identityRef, {
 
 onMounted(() => {
   // A crawl is already in flight server-side; attach to it immediately.
-  if (props.initialState === 'queued' || props.initialState === 'running') {
+  if (props.initialState === 'queued' && !props.queuedInRedis) {
+    void watcher.submitAndWatch()
+  } else if (props.initialState === 'queued' || props.initialState === 'running') {
     void watcher.watch()
   }
 })
@@ -67,7 +70,7 @@ const heading = computed(() => {
 
 <template>
   <div class="generation container">
-    <div class="generation-panel">
+    <div class="generation-content">
       <template v-if="panel === 'generate'">
         <h1 class="generation-title">No report yet</h1>
         <p class="generation-copy">
@@ -139,48 +142,60 @@ const heading = computed(() => {
 
 <style scoped>
 .generation {
-  display: flex;
-  justify-content: center;
-  padding-top: var(--space-8);
+  display: grid;
+  min-height: min(42rem, calc(100vh - 3.5rem));
+  place-items: center;
+  padding-block: var(--space-8);
 }
 
-.generation-panel {
+.generation-content {
   width: 100%;
-  max-width: 34rem;
-  padding: var(--space-6);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  max-width: 42rem;
+  text-align: center;
 }
 
 .generation-title {
-  font-size: var(--text-xl);
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-4);
+  font-size: clamp(var(--text-xl), 4vw, var(--text-2xl));
+  line-height: 1.1;
 }
 
 .generation-copy {
+  max-width: 38rem;
+  margin-inline: auto;
   color: var(--color-text-secondary);
-  font-size: var(--text-sm);
+  line-height: 1.65;
 }
 
 .generation-detail {
-  margin-top: var(--space-3);
-  padding: var(--space-3);
-  background: var(--color-surface-sunken);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
+  margin: var(--space-4) auto 0;
+  padding-left: var(--space-3);
   color: var(--color-text-muted);
   font-family: ui-monospace, monospace;
+  font-size: var(--text-xs);
+  text-align: left;
+  border-left: 2px solid var(--color-border-strong);
   overflow-wrap: anywhere;
 }
 
 .generation-error {
   margin-top: var(--space-4);
+  text-align: left;
 }
 
 .generation-actions {
-  margin-top: var(--space-5);
   display: flex;
+  justify-content: center;
   gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+
+.generation-content :deep(.progress) {
+  margin-top: var(--space-5);
+  text-align: left;
+}
+
+.generation-content :deep(.ready-notice) {
+  text-align: left;
 }
 </style>

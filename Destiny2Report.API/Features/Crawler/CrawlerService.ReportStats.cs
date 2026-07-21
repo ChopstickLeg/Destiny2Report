@@ -57,6 +57,19 @@ public partial class CrawlerService
         report.GambitMatchesPlayed = (int)(SumModeStat(modeStats, ActivityModes.Gambit, "activitiesEntered") + SumModeStat(modeStats, ActivityModes.GambitPrime, "activitiesEntered"));
         report.CrucibleWins = (int)SumModeStat(modeStats, ActivityModes.AllPvP, "activitiesWon");
         report.GambitWins = (int)(SumModeStat(modeStats, ActivityModes.Gambit, "activitiesWon") + SumModeStat(modeStats, ActivityModes.GambitPrime, "activitiesWon"));
+        report.GambitPlaylists = [
+            ToPlaylistReport(modeStats, ActivityModes.Gambit),
+            ToPlaylistReport(modeStats, ActivityModes.GambitPrime)
+        ];
+    }
+
+    private static PvpPlaylistReport ToPlaylistReport(
+        IReadOnlyDictionary<(long CharacterId, int Mode), IDictionary<string, DestinyHistoricalStatsByPeriod>> modeStats,
+        int mode)
+    {
+        var wins = (int)SumModeStat(modeStats, mode, "activitiesWon");
+        var entered = (int)SumModeStat(modeStats, mode, "activitiesEntered");
+        return new PvpPlaylistReport { Mode = mode, ModeName = GetSpecificActivityModeName(mode), Wins = wins, Losses = Math.Max(0, entered - wins) };
     }
 
     private static double SumModeStat(

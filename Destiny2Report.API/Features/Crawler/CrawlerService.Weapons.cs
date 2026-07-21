@@ -588,7 +588,11 @@ public partial class CrawlerService
             displayProperties?.Name ?? ToUnsignedHashIdentifier(itemHash),
             BungieUrl(displayProperties?.Icon),
             categoryName,
-            NormalizeWeaponKey(categoryName));
+            NormalizeWeaponKey(categoryName))
+        {
+            TierType = definition.Inventory?.TierType ?? 0,
+            DamageType = definition.DefaultDamageType
+        };
     }
 
     private static WeaponDefinitionSummary ToWeaponDefinitionSummary(DestinyDefinition definition)

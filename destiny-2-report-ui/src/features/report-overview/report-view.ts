@@ -15,6 +15,8 @@ import type {
 } from '@/lib/api/types'
 import { parseTimeSpan } from '@/lib/formatting/duration'
 import { parseApiDate } from '@/lib/formatting/dates'
+import { canonicalPatrolDestination, humanizeModeName } from '@/lib/destiny-display'
+export { humanizeModeName } from '@/lib/destiny-display'
 
 // ---------------------------------------------------------------------------
 // Time spent
@@ -41,35 +43,11 @@ export function rankCharacterPlaytime(characters: CharacterPlaytimeReport[]): Ra
     .sort((a, b) => b.seconds - a.seconds)
 }
 
-const PATROL_DESTINATION_NAMES: Readonly<Record<string, string>> = {
-  'Arcadian Valley': 'Nessus',
-  'Echo Mesa': 'IO',
-  'Hellas Basin': 'Mars',
-  'New Pacific Arcology': 'Titan',
-  Nessus: 'Nessus',
-  IO: 'IO',
-  Mars: 'Mars',
-  Titan: 'Titan',
-  'The Pale Heart': 'The Pale Heart',
-  'European Dead Zone': 'European Dead Zone',
-  'The Moon': 'The Moon',
-  Europa: 'Europa',
-  Neomuna: 'Neomuna',
-  Kepler: 'Kepler',
-  'The Dreaming City': 'The Dreaming City',
-  'The Tangled Shore': 'The Tangled Shore',
-  "Savathûn's Throne World": "Savathûn's Throne World",
-  Cosmodrome: 'Cosmodrome',
-  Mercury: 'Mercury',
-  'Tharsis Expanse': 'Tharsis Expanse',
-  Eternity: 'Eternity',
-}
-
 export function rankPatrolTime(patrolTimeByPlanet: Record<string, string>): RankedDuration[] {
   const secondsByDestination = new Map<string, number>()
 
   for (const [backendName, timespan] of Object.entries(patrolTimeByPlanet)) {
-    const destination = PATROL_DESTINATION_NAMES[backendName]
+    const destination = canonicalPatrolDestination(backendName)
     if (!destination) continue
 
     const seconds = parseTimeSpan(timespan) ?? 0
@@ -146,17 +124,6 @@ export interface RankedCount {
   key: string
   label: string
   value: number
-}
-
-const MODE_NAME_PATTERN = /(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/g
-const ACTIVITY_MODE_NAMES: Readonly<Record<string, string>> = {
-  'Mode 93': 'Lawless Frontier',
-  'Mode 94': 'Sparrow Racing League',
-}
-
-/** Replaces known API placeholders, then formats PascalCase names for display. */
-export function humanizeModeName(name: string): string {
-  return ACTIVITY_MODE_NAMES[name] ?? name.replace(MODE_NAME_PATTERN, ' ')
 }
 
 export function rankByMode(byMode: Record<string, number>, limit = 8): RankedCount[] {

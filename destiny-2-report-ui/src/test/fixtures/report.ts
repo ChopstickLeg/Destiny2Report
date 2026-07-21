@@ -20,6 +20,7 @@ export function makeReport(overrides: Partial<DestinyReport> = {}): DestinyRepor
     queuedAtUtc: null,
     startedAtUtc: null,
     lastCrawledAtUtc: '2026-07-01T12:00:00Z',
+    hasCompletedCrawl: true,
     crawlError: '',
     needsFullRecrawl: false,
     fullRecrawlReason: '',
@@ -37,6 +38,7 @@ export function makeReport(overrides: Partial<DestinyReport> = {}): DestinyRepor
     gambitMatchesPlayed: 0,
     crucibleWins: 0,
     gambitWins: 0,
+    gambitPlaylists: [],
     crucibleKills: { total: 0, byMode: {} },
     gambitMotes: {
       matches: 0,

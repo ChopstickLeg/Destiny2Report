@@ -6,6 +6,7 @@ import ErrorState from '@/components/base/ErrorState.vue'
 import GenerationExperience from '@/features/report-generation/GenerationExperience.vue'
 import { useQueueWatcher } from '@/features/report-generation/useQueueWatcher'
 import { rememberPlayer, loadRecentPlayers } from '@/lib/recent-players'
+import { isApiError } from '@/lib/api/http'
 import ReportMasthead from './ReportMasthead.vue'
 import { useInvalidateReport, useReportIdentity, useReportQuery } from './useReport'
 
@@ -40,20 +41,30 @@ const refreshWatcher = useQueueWatcher(identity, {
 
 const refreshing = computed(() => refreshWatcher.isActive.value)
 
+const refreshError = computed(() => {
+  const error = refreshWatcher.submitError.value
+  if (isApiError(error)) return error.message
+  return error ? 'The report could not be queued. Please try again.' : null
+})
+
 function startRefresh() {
   void refreshWatcher.submitAndWatch()
 }
 
 // If the loaded report shows an in-flight recrawl, attach to it quietly.
 watch(
-  () => report.value?.crawlState,
-  (state) => {
+  () => [report.value?.crawlState, report.value?.queuedInRedis] as const,
+  ([state, queuedInRedis]) => {
     if (
       hasReadableReport.value &&
       (state === 'queued' || state === 'running') &&
       !refreshWatcher.isActive.value
     ) {
-      void refreshWatcher.watch()
+      if (state === 'queued' && !queuedInRedis) {
+        void refreshWatcher.submitAndWatch()
+      } else {
+        void refreshWatcher.watch()
+      }
     }
   },
   { immediate: true },
@@ -114,6 +125,7 @@ function refetchReport() {
       :initial-state="pendingState"
       :player-name="knownName"
       :crawl-error="report?.crawlError ?? ''"
+      :queued-in-redis="report?.queuedInRedis ?? false"
       @refresh="refetchReport"
     />
 
@@ -126,10 +138,16 @@ function refetchReport() {
           <span class="refresh-dot" aria-hidden="true" />
           <span>
             Refreshing this report:
-            {{ refreshWatcher.latest.value?.progress?.label ?? 'Queued - waiting for available crawler' }}.
-            Existing data stays visible until it finishes.
+            {{
+              refreshWatcher.latest.value?.progress?.label ??
+              'Queued - waiting for available crawler'
+            }}. Existing data stays visible until it finishes.
           </span>
         </div>
+      </div>
+
+      <div v-else-if="refreshError" class="refresh-banner refresh-banner--error" role="alert">
+        <div class="container refresh-banner-row">{{ refreshError }}</div>
       </div>
 
       <RouterView />
@@ -162,6 +180,14 @@ function refetchReport() {
   padding-block: var(--space-2);
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
+}
+
+.refresh-banner--error {
+  border-bottom-color: var(--color-negative);
+}
+
+.refresh-banner--error .refresh-banner-row {
+  color: var(--color-negative);
 }
 
 .refresh-dot {
