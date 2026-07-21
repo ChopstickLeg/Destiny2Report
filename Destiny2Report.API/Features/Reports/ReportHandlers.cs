@@ -81,6 +81,7 @@ public static class ReportHandlers
         HttpRequest httpRequest,
         IAuthSessionStore sessionStore,
         IBungieAuthService authService,
+        TimeProvider timeProvider,
         IMongoDatabase mongoDatabase,
         CancellationToken cancellationToken)
     {
@@ -98,10 +99,37 @@ public static class ReportHandlers
         SignedInPlayerResponse player;
         try
         {
+            var refreshedSession = false;
+            if (AuthSessionRefresh.IsRequired(session, timeProvider))
+            {
+                session = await AuthSessionRefresh.RefreshAsync(
+                        httpRequest,
+                        session,
+                        authService,
+                        sessionStore,
+                        timeProvider,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                refreshedSession = true;
+            }
+
             player = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
+            if (!player.SignedIn && !refreshedSession)
+            {
+                session = await AuthSessionRefresh.RefreshAsync(
+                        httpRequest,
+                        session,
+                        authService,
+                        sessionStore,
+                        timeProvider,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                player = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (BungieAuthException ex) when (
-            ex.BungieStatusCode is System.Net.HttpStatusCode.BadRequest
+            ex.Error is "invalid_oauth_request" or "bungie_session_expired"
+            || ex.BungieStatusCode is System.Net.HttpStatusCode.BadRequest
                 or System.Net.HttpStatusCode.Unauthorized
                 or System.Net.HttpStatusCode.Forbidden)
         {
@@ -323,38 +351,36 @@ public static class ReportHandlers
         System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", memberships.Count);
 
         var redisDatabase = redis.GetDatabase();
-        var responses = new List<ReportQueueResponse>(memberships.Count);
         foreach (var (membershipTypeId, membershipId) in memberships)
         {
-            var result = await QueueCrawlAsync(
-                    redisDatabase,
+            var retryAfter = await GetBatchCrawlRetryAfterAsync(
                     mongoDatabase,
                     membershipTypeId,
                     membershipId,
                     cancellationToken)
                 .ConfigureAwait(false);
-            if (result.RetryAfter is { } retryAfter)
+            if (retryAfter is not null)
             {
-                var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
-                httpResponse.Headers.RetryAfter = retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                return TypedResults.Problem(
-                    title: "Report crawl cooldown",
-                    detail: $"This profile was crawled recently. Try again in {FormatCooldown(retryAfter)}.",
-                    statusCode: StatusCodes.Status429TooManyRequests,
-                    extensions: new Dictionary<string, object?>
-                    {
-                        ["code"] = "crawl_cooldown",
-                        ["retryAfterSeconds"] = retryAfterSeconds
-                    });
+                return BuildCrawlCooldownResponse(httpResponse, retryAfter.Value);
             }
+        }
 
-            responses.Add(result.Response!);
+        var responses = new List<ReportQueueResponse>(memberships.Count);
+        foreach (var (membershipTypeId, membershipId) in memberships)
+        {
+            responses.Add(await QueueCrawlAsync(
+                    redisDatabase,
+                    mongoDatabase,
+                    membershipTypeId,
+                    membershipId,
+                    cancellationToken)
+                .ConfigureAwait(false));
         }
 
         return TypedResults.Accepted<IReadOnlyList<ReportQueueResponse>>((string?)null, responses);
     }
 
-    private static async Task<(ReportQueueResponse? Response, TimeSpan? RetryAfter)> QueueCrawlAsync(
+    private static async Task<ReportQueueResponse> QueueCrawlAsync(
         IDatabase redisDatabase,
         IMongoDatabase mongoDatabase,
         int membershipTypeId,
@@ -368,12 +394,12 @@ public static class ReportHandlers
 
         if (existingStatus is not null && existingStatus.Status == DestinyReport.CrawlStateRunning)
         {
-            return (new ReportQueueResponse(
+            return new ReportQueueResponse(
                 JobId: existingStatus.StreamEntryId ?? "",
                 MembershipTypeId: existingStatus.MembershipTypeId,
                 MembershipId: existingStatus.MembershipId,
                 Status: existingStatus.Status,
-                QueuedAtUtc: existingStatus.UpdatedAtUtc), null);
+                QueuedAtUtc: existingStatus.UpdatedAtUtc);
         }
 
         if (existingStatus is not null
@@ -382,39 +408,24 @@ public static class ReportHandlers
         {
             await MarkReportAsForegroundQueuedAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
                 .ConfigureAwait(false);
-            return (new ReportQueueResponse(
+            return new ReportQueueResponse(
                 JobId: existingStatus.StreamEntryId ?? "",
                 MembershipTypeId: existingStatus.MembershipTypeId,
                 MembershipId: existingStatus.MembershipId,
                 Status: existingStatus.Status,
-                QueuedAtUtc: existingStatus.UpdatedAtUtc), null);
+                QueuedAtUtc: existingStatus.UpdatedAtUtc);
         }
 
         var existingReport = await FindReportAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
             .ConfigureAwait(false);
         if (existingReport?.CrawlState == DestinyReport.CrawlStateRunning)
         {
-            return (new ReportQueueResponse(
+            return new ReportQueueResponse(
                 JobId: "",
                 MembershipTypeId: membershipTypeId,
                 MembershipId: membershipId,
                 Status: DestinyReport.CrawlStateRunning,
-                QueuedAtUtc: existingReport.StartedAtUtc ?? queuedAtUtc), null);
-        }
-
-        var lastCrawledAtUtc = existingReport?.LastCrawledAtUtc;
-        if (lastCrawledAtUtc is null && existingReport?.CrawlState == DestinyReport.CrawlStateCompleted)
-        {
-            lastCrawledAtUtc = existingReport.CrawledAt;
-        }
-
-        var retryAfter = GetForegroundCrawlRetryAfter(
-            lastCrawledAtUtc,
-            existingReport?.NeedsFullRecrawl == true,
-            queuedAtUtc);
-        if (retryAfter is not null)
-        {
-            return (null, retryAfter);
+                QueuedAtUtc: existingReport.StartedAtUtc ?? queuedAtUtc);
         }
 
         await UpsertForegroundQueuedReportAsync(mongoDatabase, membershipTypeId, membershipId, queuedAtUtc, cancellationToken)
@@ -449,7 +460,51 @@ public static class ReportHandlers
             Status: admission.Status,
             QueuedAtUtc: admission.UpdatedAtUtc);
 
-        return (response, null);
+        return response;
+    }
+
+    private static async Task<TimeSpan?> GetBatchCrawlRetryAfterAsync(
+        IMongoDatabase mongoDatabase,
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var existingReport = await FindReportAsync(
+                mongoDatabase,
+                membershipTypeId,
+                membershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (existingReport?.CrawlState is DestinyReport.CrawlStateQueued or DestinyReport.CrawlStateRunning)
+        {
+            return null;
+        }
+
+        var lastCrawledAtUtc = existingReport?.LastCrawledAtUtc;
+        if (lastCrawledAtUtc is null && existingReport?.CrawlState == DestinyReport.CrawlStateCompleted)
+        {
+            lastCrawledAtUtc = existingReport.CrawledAt;
+        }
+
+        return GetForegroundCrawlRetryAfter(
+            lastCrawledAtUtc,
+            existingReport?.NeedsFullRecrawl == true,
+            DateTimeOffset.UtcNow);
+    }
+
+    private static IResult BuildCrawlCooldownResponse(HttpResponse httpResponse, TimeSpan retryAfter)
+    {
+        var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+        httpResponse.Headers.RetryAfter = retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return TypedResults.Problem(
+            title: "Report crawl cooldown",
+            detail: $"This profile was crawled recently. Try again in {FormatCooldown(retryAfter)}.",
+            statusCode: StatusCodes.Status429TooManyRequests,
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = "crawl_cooldown",
+                ["retryAfterSeconds"] = retryAfterSeconds
+            });
     }
 
     private static TimeSpan? GetForegroundCrawlRetryAfter(

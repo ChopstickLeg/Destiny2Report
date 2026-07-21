@@ -5,13 +5,14 @@ import type { AdminOverview } from '@/lib/api/types'
 import AdminView from '../AdminView.vue'
 
 const { watchAdminOverview } = vi.hoisted(() => ({
-  watchAdminOverview: vi.fn(),
+  watchAdminOverview:
+    vi.fn<(signal: AbortSignal, onOverview: (value: AdminOverview) => void) => Promise<void>>(),
 }))
 
 vi.mock('@/lib/api/admin', () => ({
-  flushMongoQueue: vi.fn(),
-  flushRedisQueue: vi.fn(),
-  setAllFullRecrawl: vi.fn(),
+  flushMongoQueue: vi.fn<() => Promise<void>>(),
+  flushRedisQueue: vi.fn<() => Promise<void>>(),
+  setAllFullRecrawl: vi.fn<() => Promise<void>>(),
   watchAdminOverview,
 }))
 

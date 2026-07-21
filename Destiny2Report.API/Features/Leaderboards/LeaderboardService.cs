@@ -157,10 +157,16 @@ public sealed class LeaderboardService(
             IsRepairing = board?.IsRepairing ?? false, RepairError = board?.RepairError ?? "", Entries = entries
         };
         await ReplaceBoardAsync(replacement, cancellationToken).ConfigureAwait(false);
-        if (oldEntry is not null && (metric is null || metric.Score < oldEntry.Score
-            || !string.Equals(oldEntry.DisplayName, report.DisplayName, StringComparison.Ordinal)
-            || oldEntry.DisplayCode != report.DisplayCode
-            || !string.Equals(oldEntry.EmblemBackgroundUrl, report.MostUsedEmblems.FirstOrDefault()?.BackgroundUrl ?? "", StringComparison.Ordinal)))
+        // A repair builds its replacement outside the board lock. If this publish
+        // lands during that scan, schedule one follow-up repair so the stale
+        // replacement cannot remain authoritative.
+        var publishedDuringRepair = board?.IsRepairing == true;
+        var existingEntryMayChangeTheCutoff = oldEntry is not null
+            && (metric is null || metric.Score < oldEntry.Score
+                || !string.Equals(oldEntry.DisplayName, report.DisplayName, StringComparison.Ordinal)
+                || oldEntry.DisplayCode != report.DisplayCode
+                || !string.Equals(oldEntry.EmblemBackgroundUrl, report.MostUsedEmblems.FirstOrDefault()?.BackgroundUrl ?? "", StringComparison.Ordinal));
+        if (publishedDuringRepair || existingEntryMayChangeTheCutoff)
             await redisDatabase.SetAddAsync(RepairSetKey, key).ConfigureAwait(false);
     }
 

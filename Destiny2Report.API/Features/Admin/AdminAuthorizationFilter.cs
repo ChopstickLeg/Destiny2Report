@@ -9,8 +9,6 @@ public sealed class AdminAuthorizationFilter(
     IOptions<AdminOptions> options,
     TimeProvider timeProvider) : IEndpointFilter
 {
-    private static readonly TimeSpan RefreshBeforeExpiry = TimeSpan.FromMinutes(1);
-
     public async ValueTask<object?> InvokeAsync(
         EndpointFilterInvocationContext context,
         EndpointFilterDelegate next)
@@ -26,22 +24,15 @@ public sealed class AdminAuthorizationFilter(
         SignedInPlayerResponse player;
         try
         {
-            if (session.AccessTokenExpiresAt <= timeProvider.GetUtcNow().Add(RefreshBeforeExpiry))
+            if (AuthSessionRefresh.IsRequired(session, timeProvider))
             {
-                if (string.IsNullOrWhiteSpace(session.RefreshToken))
-                {
-                    return Results.Unauthorized();
-                }
-
-                var tokens = await authService.RefreshTokenAsync(session.RefreshToken, cancellationToken)
-                    .ConfigureAwait(false);
-                session = session with
-                {
-                    AccessToken = tokens.AccessToken,
-                    RefreshToken = tokens.RefreshToken ?? session.RefreshToken,
-                    AccessTokenExpiresAt = timeProvider.GetUtcNow().AddSeconds(tokens.ExpiresIn)
-                };
-                await sessionStore.UpdateAsync(context.HttpContext.Request, session, cancellationToken)
+                session = await AuthSessionRefresh.RefreshAsync(
+                        context.HttpContext.Request,
+                        session,
+                        authService,
+                        sessionStore,
+                        timeProvider,
+                        cancellationToken)
                     .ConfigureAwait(false);
             }
 

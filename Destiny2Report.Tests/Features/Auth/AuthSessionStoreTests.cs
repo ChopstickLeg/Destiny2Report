@@ -52,6 +52,51 @@ public sealed class AuthSessionStoreTests
         Assert.Equal(TimeSpan.FromDays(7), cookie.MaxAge);
     }
 
+    [Theory]
+    [InlineData(30, true)]
+    [InlineData(61, false)]
+    public void AuthSessionRefresh_IsRequiredWithinOneMinuteOfExpiry(int secondsUntilExpiry, bool expected)
+    {
+        var session = new AuthSession("access", "refresh", Now.AddSeconds(secondsUntilExpiry), Now.AddDays(1));
+
+        var result = AuthSessionRefresh.IsRequired(session, new FixedTimeProvider(Now));
+
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public async Task AuthSessionRefresh_RefreshAsyncPersistsRotatedTokens()
+    {
+        var store = CreateStore();
+        var context = new DefaultHttpContext();
+        await store.CreateAsync(context.Response, Tokens(refreshExpiresIn: 7 * 24 * 60 * 60), CancellationToken.None);
+        var cookie = SetCookieHeaderValue.Parse(context.Response.Headers.SetCookie.ToString());
+        var requestContext = new DefaultHttpContext();
+        requestContext.Request.Headers.Cookie = $"{cookie.Name}={cookie.Value}";
+        var session = await store.GetAsync(requestContext.Request, CancellationToken.None);
+        var refreshedTokens = new BungieOAuthTokenResponse(
+            AccessToken: "rotated-access",
+            RefreshToken: "rotated-refresh",
+            TokenType: "Bearer",
+            ExpiresIn: 7200,
+            RefreshExpiresIn: 7 * 24 * 60 * 60,
+            MembershipId: "123");
+
+        var refreshed = await AuthSessionRefresh.RefreshAsync(
+            requestContext.Request,
+            Assert.IsType<AuthSession>(session),
+            new StubBungieAuthService(refreshedTokens),
+            store,
+            new FixedTimeProvider(Now),
+            CancellationToken.None);
+
+        var persisted = await store.GetAsync(requestContext.Request, CancellationToken.None);
+        Assert.Equal("rotated-access", refreshed.AccessToken);
+        Assert.Equal("rotated-refresh", refreshed.RefreshToken);
+        Assert.Equal(Now.AddHours(2), refreshed.AccessTokenExpiresAt);
+        Assert.Equal(refreshed, persisted);
+    }
+
     private static AuthSessionStore CreateStore()
     {
         var cache = new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
@@ -73,6 +118,21 @@ public sealed class AuthSessionStoreTests
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class StubBungieAuthService(BungieOAuthTokenResponse refreshResponse) : IBungieAuthService
+    {
+        public Task<BungieOAuthTokenResponse> ExchangeCodeAsync(
+            BungieOAuthCodeRequest request,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<BungieOAuthTokenResponse> RefreshTokenAsync(
+            string refreshToken,
+            CancellationToken cancellationToken) => Task.FromResult(refreshResponse);
+
+        public Task<SignedInPlayerResponse> GetCurrentUserAsync(
+            string accessToken,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class TestWebHostEnvironment : IWebHostEnvironment

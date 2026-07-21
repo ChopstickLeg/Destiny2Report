@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import GenerationExperience from '../GenerationExperience.vue'
 
 const { submitAndWatch, watchQueue } = vi.hoisted(() => ({
-  submitAndWatch: vi.fn(),
-  watchQueue: vi.fn(),
+  submitAndWatch: vi.fn<() => Promise<void>>(),
+  watchQueue: vi.fn<() => Promise<void>>(),
 }))
 
 vi.mock('../useQueueWatcher', () => ({
