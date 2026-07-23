@@ -66,7 +66,7 @@ public static class ReportHandlers
         """;
 
     public static async Task<Ok<StoryVisualAssetsReport>> GetStoryVisualAssets(
-        ICrawlerService crawlerService,
+        ICrawlerReadService crawlerService,
         CancellationToken cancellationToken)
     {
         var assets = await crawlerService
@@ -265,6 +265,7 @@ public static class ReportHandlers
         int membershipTypeId,
         long membershipId,
         IMongoDatabase mongoDatabase,
+        ICrawlGenerationStore generationStore,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
@@ -272,8 +273,10 @@ public static class ReportHandlers
             return TypedResults.BadRequest(problemDetails);
         }
 
-        var report = await FindReportAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
-            .ConfigureAwait(false);
+        var report = await generationStore.ReadReportAsync(membershipTypeId, membershipId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? await FindReportAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
+                .ConfigureAwait(false);
 
         return report is null
             ? TypedResults.NotFound()
@@ -284,7 +287,7 @@ public static class ReportHandlers
         int membershipTypeId,
         long membershipId,
         WeaponActivityMode activityMode,
-        ICrawlerService crawlerService,
+        ICrawlerReadService crawlerService,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
@@ -303,7 +306,7 @@ public static class ReportHandlers
         int membershipTypeId,
         long membershipId,
         DeathActivityMode activityMode,
-        ICrawlerService crawlerService,
+        ICrawlerReadService crawlerService,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
@@ -322,7 +325,7 @@ public static class ReportHandlers
         int membershipTypeId,
         long membershipId,
         ActivityPlaytimeMode activityMode,
-        ICrawlerService crawlerService,
+        ICrawlerReadService crawlerService,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
@@ -338,7 +341,7 @@ public static class ReportHandlers
 
     public static async Task<IResult> QueueCrawl(
         IReadOnlyList<ReportQueueRequest> requests,
-        IConnectionMultiplexer redis,
+        ICrawlerJobQueue crawlerJobQueue,
         IMongoDatabase mongoDatabase,
         HttpResponse httpResponse,
         CancellationToken cancellationToken)
@@ -350,7 +353,6 @@ public static class ReportHandlers
 
         System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", memberships.Count);
 
-        var redisDatabase = redis.GetDatabase();
         foreach (var (membershipTypeId, membershipId) in memberships)
         {
             var retryAfter = await GetBatchCrawlRetryAfterAsync(
@@ -368,11 +370,10 @@ public static class ReportHandlers
         var responses = new List<ReportQueueResponse>(memberships.Count);
         foreach (var (membershipTypeId, membershipId) in memberships)
         {
-            responses.Add(await QueueCrawlAsync(
-                    redisDatabase,
-                    mongoDatabase,
+            responses.Add(await crawlerJobQueue.EnqueueAsync(
                     membershipTypeId,
                     membershipId,
+                    forceFullCrawl: false,
                     cancellationToken)
                 .ConfigureAwait(false));
         }
@@ -557,6 +558,16 @@ public static class ReportHandlers
 
         if (initialStatus is null)
         {
+            var job = await FindCrawlJobAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
+                .ConfigureAwait(false);
+            if (job is not null)
+            {
+                initialStatus = BuildQueueStatusFromJob(job);
+            }
+        }
+
+        if (initialStatus is null)
+        {
             var report = await FindReportAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -661,6 +672,19 @@ public static class ReportHandlers
                         yield break;
                     }
 
+                    continue;
+                }
+
+                var crawlJob = await FindCrawlJobAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (crawlJob is not null)
+                {
+                    var jobStatus = BuildQueueStatusFromJob(crawlJob);
+                    yield return new SseItem<ReportQueueStatusResponse>(jobStatus, jobStatus.Status);
+                    if (IsTerminalCrawlState(jobStatus.Status))
+                    {
+                        yield break;
+                    }
                     continue;
                 }
 
@@ -816,12 +840,41 @@ public static class ReportHandlers
             .ConfigureAwait(false);
     }
 
+    private static async Task<CrawlJob?> FindCrawlJobAsync(
+        IMongoDatabase mongoDatabase,
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var key = CrawlJob.CreatePlayerKey(membershipTypeId, membershipId);
+        return await mongoDatabase.GetCollection<CrawlJob>("crawl_jobs")
+            .Find(job => job.PlayerKey == key)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static ReportQueueStatusResponse BuildQueueStatusFromJob(CrawlJob job)
+    {
+        var publicState = job.State == CrawlJob.StateAwaitingFinalization ? CrawlJob.StateRunning : job.State;
+        return BuildQueueStatus(
+            job.MembershipTypeId,
+            job.MembershipId,
+            publicState,
+            string.IsNullOrWhiteSpace(job.StreamEntryId) ? null : job.StreamEntryId,
+            string.IsNullOrWhiteSpace(job.Error) ? null : job.Error,
+            null,
+            0,
+            new DateTimeOffset(DateTime.SpecifyKind(job.UpdatedAtUtc, DateTimeKind.Utc)));
+    }
+
     private static async Task<ReportQueueStatusResponse?> GetQueueStatusAsync(
         IDatabase redisDatabase,
         int membershipTypeId,
         long membershipId)
     {
-        var entries = await redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName).ConfigureAwait(false);
+        var entries = (await redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName).ConfigureAwait(false))
+            .OrderBy(entry => entry.Id)
+            .ToArray();
         for (var index = 0; index < entries.Length; index++)
         {
             var entry = entries[index];
@@ -888,7 +941,9 @@ public static class ReportHandlers
             return storedStatus;
         }
 
-        var entries = await redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName).ConfigureAwait(false);
+        var entries = (await redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName).ConfigureAwait(false))
+            .OrderBy(entry => entry.Id)
+            .ToArray();
         for (var index = 0; index < entries.Length; index++)
         {
             var entry = entries[index];

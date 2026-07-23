@@ -15,6 +15,8 @@ const props = defineProps<{
   playerName: string | null
   crawlError: string
   queuedInRedis: boolean
+  /** Start a genuinely missing report immediately when navigation expressed that intent. */
+  autoStart?: boolean
 }>()
 
 const emit = defineEmits<{ refresh: [] }>()
@@ -31,6 +33,8 @@ onMounted(() => {
     void watcher.submitAndWatch()
   } else if (props.initialState === 'queued' || props.initialState === 'running') {
     void watcher.watch()
+  } else if (props.initialState === 'missing' && props.autoStart) {
+    void watcher.submitAndWatch()
   }
 })
 

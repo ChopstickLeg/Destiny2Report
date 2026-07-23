@@ -35,6 +35,46 @@ public static class MongoExtensions
     {
         var mongoDatabase = app.Services.GetRequiredService<IMongoDatabase>();
 
+        var crawlJobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+        var crawlJobDispatchKeys = Builders<CrawlJob>.IndexKeys
+            .Ascending(job => job.State)
+            .Ascending(job => job.DispatchedToRedis)
+            .Ascending(job => job.QueuedAtUtc)
+            .Ascending(job => job.LeaseExpiresAtUtc);
+        await crawlJobs.EnsureIndexesAsync(
+            [new CreateIndexModel<CrawlJob>(crawlJobDispatchKeys, new CreateIndexOptions { Name = "ix_crawl_jobs_state_dispatch_lease" })],
+            cancellationToken);
+
+        var compactReports = mongoDatabase.GetCollection<CrawlReportDocument>("reports");
+        await compactReports.EnsureIndexesAsync(
+            [new CreateIndexModel<CrawlReportDocument>(
+                Builders<CrawlReportDocument>.IndexKeys.Ascending(item => item.PlayerKey).Ascending(item => item.Generation),
+                new CreateIndexOptions { Name = "ux_reports_player_generation", Unique = true })],
+            cancellationToken);
+
+        var compactState = mongoDatabase.GetCollection<CrawlStateDocument>("crawl_state");
+        await compactState.EnsureIndexesAsync(
+            [new CreateIndexModel<CrawlStateDocument>(
+                Builders<CrawlStateDocument>.IndexKeys.Ascending(item => item.PlayerKey).Ascending(item => item.Generation),
+                new CreateIndexOptions { Name = "ux_crawl_state_player_generation", Unique = true })],
+            cancellationToken);
+
+        var compactArtifacts = mongoDatabase.GetCollection<CrawlArtifactDocument>("crawl_artifacts");
+        await compactArtifacts.EnsureIndexesAsync(
+            [new CreateIndexModel<CrawlArtifactDocument>(
+                Builders<CrawlArtifactDocument>.IndexKeys
+                    .Ascending(item => item.PlayerKey)
+                    .Ascending(item => item.Generation)
+                    .Ascending(item => item.Kind)
+                    .Ascending(item => item.ActivityMode)
+                    .Ascending(item => item.SpecificActivityMode)
+                    .Ascending(item => item.CharacterClass)
+                    .Ascending(item => item.Hash)
+                    .Ascending(item => item.EncounteredMembershipType)
+                    .Ascending(item => item.EncounteredMembershipId),
+                new CreateIndexOptions { Name = "ux_crawl_artifacts_generation_dimensions", Unique = true })],
+            cancellationToken);
+
         var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
         var reportIndexKeys = Builders<DestinyReport>.IndexKeys
             .Ascending(report => report.PlatformId)

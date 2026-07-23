@@ -10,9 +10,11 @@ public static class BungieClientServiceCollectionExtensions
     {
         services.Configure<BungieClientOptions>(configuration.GetSection(BungieClientOptions.SectionName));
 
-        var rateLimiterOptions = new BungieClientRateLimitOptions();
-
-        rateLimiterOptions.SetEndpointLimit("GET Platform/Destiny2/Stats/PostGameCarnageReport/{value}", 50);
+        var rateLimiterOptions = new BungieClientRateLimitOptions
+        {
+            DefaultPermitLimit = 20,
+            QueueLimit = 1_000
+        };
 
         services.AddSingleton(rateLimiterOptions);
         services.AddTransient<BungieClientRetryHandler>();

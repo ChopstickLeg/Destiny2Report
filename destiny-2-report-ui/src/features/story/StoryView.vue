@@ -129,6 +129,15 @@ const reportRoute = computed(() =>
     : null,
 )
 
+const generateReportRoute = computed(() =>
+  reportRoute.value
+    ? {
+        ...reportRoute.value,
+        query: { generate: '1' },
+      }
+    : null,
+)
+
 const resolving = computed(
   () =>
     !hasRouteIdentity.value &&
@@ -298,7 +307,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         Your story is built from your generated report. Create it once, then come back. It only takes
         a few minutes.
       </p>
-      <AppButton v-if="reportRoute" variant="primary" :to="reportRoute">
+      <AppButton v-if="generateReportRoute" variant="primary" :to="generateReportRoute">
         Generate my report
       </AppButton>
     </div>

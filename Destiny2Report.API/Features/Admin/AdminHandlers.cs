@@ -29,33 +29,63 @@ public static class AdminHandlers
         return TypedResults.ServerSentEvents(StreamOverviewEvents(mongoDatabase, cancellationToken));
     }
 
+    public static async Task<IResult> QueueCrawls(
+        IReadOnlyList<AdminCrawlerQueueItem> requests,
+        ICrawlerJobQueue queue,
+        CancellationToken cancellationToken)
+    {
+        if (requests.Count == 0)
+        {
+            return TypedResults.BadRequest(new ProblemDetails { Title = "Missing crawl requests", Status = StatusCodes.Status400BadRequest });
+        }
+
+        var responses = new List<Destiny2Report.API.Features.Reports.ReportQueueResponse>(requests.Count);
+        foreach (var request in requests)
+        {
+            if (request.MembershipTypeId <= 0 || request.MembershipId <= 0)
+            {
+                return TypedResults.BadRequest(new ProblemDetails { Title = "Invalid membership", Status = StatusCodes.Status400BadRequest });
+            }
+
+            responses.Add(await queue.EnqueueAsync(
+                    request.MembershipTypeId,
+                    request.MembershipId,
+                    request.ForceFullCrawl,
+                    cancellationToken)
+                .ConfigureAwait(false));
+        }
+
+        return TypedResults.Accepted<IReadOnlyList<Destiny2Report.API.Features.Reports.ReportQueueResponse>>((string?)null, responses);
+    }
+
     public static async Task<Ok<AdminMutationResponse>> FlushRedisQueue(
         IConnectionMultiplexer redis,
         IMongoDatabase mongoDatabase,
         CancellationToken cancellationToken)
     {
-        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
-        var queuedFilter = Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateQueued)
-            & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, true);
-        var queuedPlayers = await reports.Find(queuedFilter)
-            .Project(report => new QueuedPlayer(report.PlatformId, report.PlayerMembershipId))
+        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+        var queuedFilter = Builders<CrawlJob>.Filter.Eq(job => job.State, CrawlJob.StateQueued)
+            & Builders<CrawlJob>.Filter.Eq(job => job.DispatchedToRedis, true);
+        var queuedPlayers = await jobs.Find(queuedFilter)
+            .Project(job => new QueuedPlayer(job.MembershipTypeId, job.MembershipId, job.RunId, job.StreamEntryId))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
         var redisDatabase = redis.GetDatabase();
-        var update = Builders<DestinyReport>.Update
-            .Set(report => report.CrawlState, DestinyReport.CrawlStateFailed)
-            .Set(report => report.QueuedInRedis, false)
-            .Set(report => report.CrawlError, QueueFlushedError)
-            .Set(report => report.LeaseExpiresAtUtc, null)
-            .Set(report => report.LeaseOwner, "");
+        var update = Builders<CrawlJob>.Update
+            .Set(job => job.State, CrawlJob.StateFailed)
+            .Set(job => job.DispatchedToRedis, false)
+            .Set(job => job.Error, QueueFlushedError)
+            .Set(job => job.LeaseExpiresAtUtc, null)
+            .Set(job => job.LeaseOwner, "")
+            .Set(job => job.UpdatedAtUtc, DateTime.UtcNow);
         long affectedPlayers = 0;
         foreach (var player in queuedPlayers)
         {
             var playerFilter = queuedFilter
-                & Builders<DestinyReport>.Filter.Eq(report => report.PlatformId, player.MembershipTypeId)
-                & Builders<DestinyReport>.Filter.Eq(report => report.PlayerMembershipId, player.MembershipId);
-            var updateResult = await reports.UpdateOneAsync(
+                & Builders<CrawlJob>.Filter.Eq(job => job.PlayerKey, CrawlJob.CreatePlayerKey(player.MembershipTypeId, player.MembershipId))
+                & Builders<CrawlJob>.Filter.Eq(job => job.RunId, player.RunId);
+            var updateResult = await jobs.UpdateOneAsync(
                     playerFilter,
                     update,
                     cancellationToken: cancellationToken)
@@ -68,12 +98,9 @@ public static class AdminHandlers
 
             affectedPlayers++;
             var statusKey = CrawlerQueue.JobStatusKey(player.MembershipTypeId, player.MembershipId);
-            var streamEntryId = await redisDatabase.HashGetAsync(statusKey, "streamEntryId")
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (streamEntryId.HasValue)
+            if (!string.IsNullOrWhiteSpace(player.StreamEntryId))
             {
-                await redisDatabase.StreamDeleteAsync(CrawlerQueue.StreamName, [streamEntryId])
+                await redisDatabase.StreamDeleteAsync(CrawlerQueue.StreamName, [player.StreamEntryId])
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -92,15 +119,16 @@ public static class AdminHandlers
         IMongoDatabase mongoDatabase,
         CancellationToken cancellationToken)
     {
-        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
-        var queuedFilter = Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateQueued)
-            & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false);
-        var update = Builders<DestinyReport>.Update
-            .Set(report => report.CrawlState, DestinyReport.CrawlStateFailed)
-            .Set(report => report.CrawlError, QueueFlushedError)
-            .Set(report => report.LeaseExpiresAtUtc, null)
-            .Set(report => report.LeaseOwner, "");
-        var result = await reports.UpdateManyAsync(queuedFilter, update, cancellationToken: cancellationToken)
+        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+        var queuedFilter = Builders<CrawlJob>.Filter.Eq(job => job.State, CrawlJob.StateQueued)
+            & Builders<CrawlJob>.Filter.Eq(job => job.DispatchedToRedis, false);
+        var update = Builders<CrawlJob>.Update
+            .Set(job => job.State, CrawlJob.StateFailed)
+            .Set(job => job.Error, QueueFlushedError)
+            .Set(job => job.LeaseExpiresAtUtc, null)
+            .Set(job => job.LeaseOwner, "")
+            .Set(job => job.UpdatedAtUtc, DateTime.UtcNow);
+        var result = await jobs.UpdateManyAsync(queuedFilter, update, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         return TypedResults.Ok(new AdminMutationResponse(
@@ -156,26 +184,26 @@ public static class AdminHandlers
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
-        var activeFilter = Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateRunning)
-            & (Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, true)
-                | Builders<DestinyReport>.Filter.Gt(report => report.LeaseExpiresAtUtc, now.UtcDateTime));
+        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+        var activeFilter = Builders<CrawlJob>.Filter.In(job => job.State,
+            [CrawlJob.StateQueued, CrawlJob.StateRunning, CrawlJob.StateAwaitingFinalization]);
 
-        var activeTask = reports.Find(activeFilter)
-            .SortBy(report => report.StartedAtUtc)
-            .Project(report => new ActiveCrawlProjection(
-                report.PlatformId,
-                report.PlayerMembershipId,
-                report.DisplayName,
-                report.QueuedAtUtc,
-                report.StartedAtUtc,
-                report.LeaseExpiresAtUtc,
-                report.LeaseOwner,
-                report.QueuedInRedis))
+        var activeTask = jobs.Find(activeFilter)
+            .SortBy(job => job.StartedAtUtc)
+            .Project(job => new ActiveCrawlProjection(
+                job.MembershipTypeId,
+                job.MembershipId,
+                job.QueuedAtUtc,
+                job.StartedAtUtc,
+                job.LeaseExpiresAtUtc,
+                job.LeaseOwner,
+                job.DispatchedToRedis,
+                job.RunId,
+                job.Fence))
             .ToListAsync(cancellationToken);
-        var countTask = reports.Aggregate()
+        var countTask = jobs.Aggregate()
             .Group(
-                report => report.CrawlState,
+                job => job.State,
                 group => new CrawlStatusCount(group.Key, group.LongCount()))
             .ToListAsync(cancellationToken);
 
@@ -184,17 +212,19 @@ public static class AdminHandlers
         var activeCrawls = activeTask.Result.Select(report => new AdminActiveCrawlResponse(
             report.MembershipTypeId,
             report.MembershipId,
-            report.DisplayName ?? "",
+            "",
             ToDateTimeOffset(report.QueuedAtUtc),
             ToDateTimeOffset(report.StartedAtUtc),
             ToDateTimeOffset(report.LeaseExpiresAtUtc),
             report.LeaseOwner ?? "",
-            report.QueuedInRedis)).ToArray();
+            report.QueuedInRedis,
+            report.RunId,
+            report.Fence)).ToArray();
 
         var countsByStatus = countTask.Result
-            .GroupBy(count => string.IsNullOrWhiteSpace(count.Status)
-                ? DestinyReport.CrawlStateCompleted
-                : count.Status,
+            .GroupBy(count => count.Status == CrawlJob.StateAwaitingFinalization
+                ? CrawlJob.StateRunning
+                : string.IsNullOrWhiteSpace(count.Status) ? DestinyReport.CrawlStateCompleted : count.Status,
                 StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.Sum(item => item.Count), StringComparer.OrdinalIgnoreCase);
         var statusCounts = CrawlStatuses
@@ -209,15 +239,16 @@ public static class AdminHandlers
     private static DateTimeOffset? ToDateTimeOffset(DateTime? value) =>
         value is null ? null : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc));
 
-    private sealed record QueuedPlayer(int MembershipTypeId, long MembershipId);
+    private sealed record QueuedPlayer(int MembershipTypeId, long MembershipId, string RunId, string StreamEntryId);
 
     private sealed record ActiveCrawlProjection(
         int MembershipTypeId,
         long MembershipId,
-        string? DisplayName,
         DateTime? QueuedAtUtc,
         DateTime? StartedAtUtc,
         DateTime? LeaseExpiresAtUtc,
         string? LeaseOwner,
-        bool QueuedInRedis);
+        bool QueuedInRedis,
+        string RunId,
+        long Fence);
 }

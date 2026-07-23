@@ -45,7 +45,7 @@ public sealed class LeaderboardRepairBackgroundService(
             }
 
             using var scope = serviceProvider.CreateScope();
-            var crawler = scope.ServiceProvider.GetRequiredService<ICrawlerService>();
+            var crawler = scope.ServiceProvider.GetRequiredService<ICrawlerReadService>();
             var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
             var filter = Builders<DestinyReport>.Filter.Eq(report => report.HasCompletedCrawl, true)
                 & Builders<DestinyReport>.Filter.Ne(report => report.CrawlState, DestinyReport.CrawlStatePrivate);

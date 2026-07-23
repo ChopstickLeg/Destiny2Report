@@ -8,7 +8,9 @@ public sealed record AdminActiveCrawlResponse(
     DateTimeOffset? StartedAtUtc,
     DateTimeOffset? LeaseExpiresAtUtc,
     string LeaseOwner,
-    bool QueuedInRedis);
+    bool QueuedInRedis,
+    string RunId = "",
+    long Fence = 0);
 
 public sealed record AdminQueueStatusCountResponse(string Status, long Count);
 
@@ -18,6 +20,11 @@ public sealed record AdminOverviewResponse(
     IReadOnlyList<AdminQueueStatusCountResponse> StatusCounts);
 
 public sealed record AdminFullRecrawlRequest(string Reason);
+
+public sealed record AdminCrawlerQueueItem(
+    int MembershipTypeId,
+    long MembershipId,
+    bool ForceFullCrawl = false);
 
 public sealed record AdminMutationResponse(long AffectedPlayers, string Message);
 

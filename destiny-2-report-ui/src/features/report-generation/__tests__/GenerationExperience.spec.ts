@@ -55,4 +55,36 @@ describe('GenerationExperience', () => {
     expect(watchQueue).toHaveBeenCalledOnce()
     expect(submitAndWatch).not.toHaveBeenCalled()
   })
+
+  it('starts a missing report when navigation requested generation', () => {
+    mount(GenerationExperience, {
+      props: {
+        identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
+        initialState: 'missing',
+        playerName: null,
+        crawlError: '',
+        queuedInRedis: false,
+        autoStart: true,
+      },
+    })
+
+    expect(submitAndWatch).toHaveBeenCalledOnce()
+    expect(watchQueue).not.toHaveBeenCalled()
+  })
+
+  it('does not automatically retry a failed report', () => {
+    mount(GenerationExperience, {
+      props: {
+        identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
+        initialState: 'failed',
+        playerName: null,
+        crawlError: 'Bungie was unavailable',
+        queuedInRedis: false,
+        autoStart: true,
+      },
+    })
+
+    expect(submitAndWatch).not.toHaveBeenCalled()
+    expect(watchQueue).not.toHaveBeenCalled()
+  })
 })

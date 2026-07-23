@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { RouterView } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
 import SkeletonBlock from '@/components/base/SkeletonBlock.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
 import GenerationExperience from '@/features/report-generation/GenerationExperience.vue'
@@ -11,6 +11,7 @@ import ReportMasthead from './ReportMasthead.vue'
 import { useInvalidateReport, useReportIdentity, useReportQuery } from './useReport'
 
 const identity = useReportIdentity()
+const route = useRoute()
 const reportQuery = useReportQuery(identity)
 const invalidate = useInvalidateReport(identity)
 
@@ -126,6 +127,7 @@ function refetchReport() {
       :player-name="knownName"
       :crawl-error="report?.crawlError ?? ''"
       :queued-in-redis="report?.queuedInRedis ?? false"
+      :auto-start="route.query.generate === '1'"
       @refresh="refetchReport"
     />
 

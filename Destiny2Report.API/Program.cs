@@ -33,10 +33,8 @@ builder.Services.AddHttpClient<IBungieAuthService, BungieAuthService>(httpClient
 {
     httpClient.BaseAddress = new Uri("https://www.bungie.net/Platform/");
 });
-builder.Services.Configure<ContestModeOptions>(builder.Configuration.GetSection(ContestModeOptions.SectionName));
-builder.Services.Configure<ConquestOptions>(builder.Configuration.GetSection(ConquestOptions.SectionName));
-builder.Services.Configure<ActivityTriumphRecordOptions>(builder.Configuration.GetSection(ActivityTriumphRecordOptions.SectionName));
-builder.Services.Configure<CrawlerOptions>(builder.Configuration.GetSection(CrawlerOptions.SectionName));
+builder.Services.AddSingleton<ICrawlerJobQueue, CrawlerJobQueue>();
+builder.Services.AddSingleton<ICrawlGenerationStore, CrawlGenerationStore>();
 builder.Services.AddOptions<LeaderboardsOptions>()
     .Bind(builder.Configuration.GetSection(LeaderboardsOptions.SectionName))
     .Validate(options => options.MinimumCompletedPlayers >= 0, "Leaderboards:MinimumCompletedPlayers cannot be negative.")
@@ -53,8 +51,6 @@ builder.Services.AddOptions<WebPushOptions>()
         "WebPush must specify Subject, PublicKey, and PrivateKey together.")
     .ValidateOnStart();
 builder.Services.AddSingleton<IReportPushNotificationService, ReportPushNotificationService>();
-builder.Services.AddSingleton<CrawlerPgcrThrottler>();
-builder.Services.AddSingleton<CrawlerSherpaHistoryThrottler>();
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     var connectionString = builder.Configuration.GetConnectionString("Redis")
@@ -66,8 +62,10 @@ builder.Services.AddHybridCache(options =>
 {
     options.MaximumPayloadBytes = 200 * 1024 * 1024; // 200 MB
 });
-builder.Services.AddScoped<ICrawlerService, CrawlerService>();
-builder.Services.AddHostedService<CrawlerBackgroundJob>();
+builder.Services.AddScoped<CrawlerReadService>();
+builder.Services.AddScoped<ICrawlerReadService>(provider => provider.GetRequiredService<CrawlerReadService>());
+builder.Services.AddHostedService<CrawlerFinalizerBackgroundService>();
+builder.Services.AddHostedService<CrawlGenerationCleanupService>();
 builder.Services.AddMongo(builder.Configuration);
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
@@ -127,7 +125,7 @@ if (!app.Environment.IsProduction())
 await app.EnsureMongoIndexesAsync();
 using (var scope = app.Services.CreateScope())
 {
-    var crawlerService = scope.ServiceProvider.GetRequiredService<ICrawlerService>();
+    var crawlerService = scope.ServiceProvider.GetRequiredService<ICrawlerReadService>();
     await crawlerService.WarmReportReadModelsAsync(CancellationToken.None);
 }
 
