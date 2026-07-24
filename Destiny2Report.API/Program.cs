@@ -64,6 +64,7 @@ builder.Services.AddHybridCache(options =>
 });
 builder.Services.AddScoped<CrawlerReadService>();
 builder.Services.AddScoped<ICrawlerReadService>(provider => provider.GetRequiredService<CrawlerReadService>());
+builder.Services.AddHostedService<CrawlerIdleMongoScheduler>();
 builder.Services.AddHostedService<CrawlerFinalizerBackgroundService>();
 builder.Services.AddHostedService<CrawlGenerationCleanupService>();
 builder.Services.AddMongo(builder.Configuration);

@@ -11,6 +11,7 @@ use crate::bungie::BungieClient;
 
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
+#[derive(Clone)]
 pub struct ManifestStore {
     path: PathBuf,
 }
@@ -39,7 +40,6 @@ impl ManifestStore {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn definition_json(&self, table: &str, hash: u32) -> anyhow::Result<Option<String>> {
         if !table
             .bytes()
@@ -54,6 +54,35 @@ impl ManifestStore {
         let signed_hash = hash as i32;
         let mut rows = statement.query([signed_hash])?;
         Ok(rows.next()?.map(|row| row.get(0)).transpose()?)
+    }
+
+    pub fn definition(&self, table: &str, hash: u32) -> anyhow::Result<Option<serde_json::Value>> {
+        self.definition_json(table, hash)?
+            .map(|json| serde_json::from_str(&json).context("parse manifest definition"))
+            .transpose()
+    }
+
+    pub fn table(&self, table: &str) -> anyhow::Result<Vec<(u32, serde_json::Value)>> {
+        if !table
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            bail!("invalid manifest table name");
+        }
+        let connection =
+            Connection::open_with_flags(&self.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let mut statement = connection.prepare(&format!("SELECT id, json FROM {table}"))?;
+        let mut rows = statement.query([])?;
+        let mut definitions = Vec::new();
+        while let Some(row) = rows.next()? {
+            let signed_hash: i32 = row.get(0)?;
+            let json: String = row.get(1)?;
+            definitions.push((
+                signed_hash as u32,
+                serde_json::from_str(&json).context("parse manifest table definition")?,
+            ));
+        }
+        Ok(definitions)
     }
 }
 
@@ -135,7 +164,10 @@ mod tests {
         let path = temporary_path("source.sqlite");
         let connection = Connection::open(&path).unwrap();
         connection
-            .execute("CREATE TABLE definitions (id INTEGER PRIMARY KEY, json TEXT)", [])
+            .execute(
+                "CREATE TABLE definitions (id INTEGER PRIMARY KEY, json TEXT)",
+                [],
+            )
             .unwrap();
         drop(connection);
         let bytes = fs::read(&path).unwrap();
@@ -180,10 +212,14 @@ mod tests {
     fn rejects_non_database_response_without_leaving_a_file() {
         let destination = temporary_path("invalid.sqlite");
 
-        let error = prepare_downloaded_manifest(&destination, b"<html>upstream error</html>")
-            .unwrap_err();
+        let error =
+            prepare_downloaded_manifest(&destination, b"<html>upstream error</html>").unwrap_err();
 
-        assert!(error.to_string().contains("neither raw SQLite nor a valid ZIP"));
+        assert!(
+            error
+                .to_string()
+                .contains("neither raw SQLite nor a valid ZIP")
+        );
         assert!(!destination.exists());
     }
 }

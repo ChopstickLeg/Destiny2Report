@@ -59,7 +59,7 @@ public sealed class CrawlGenerationCleanupService(
             await mongoDatabase.GetCollection<CrawlStateDocument>("crawl_state")
                 .DeleteManyAsync(item => item.PlayerKey == key && item.Generation == generation, cancellationToken).ConfigureAwait(false);
             await mongoDatabase.GetCollection<CrawlArtifactDocument>("crawl_artifacts")
-                .DeleteManyAsync(item => item.PlayerKey == key && item.Generation == generation, cancellationToken).ConfigureAwait(false);
+                .DeleteManyAsync(item => item.Generation == generation, cancellationToken).ConfigureAwait(false);
         }
     }
 }

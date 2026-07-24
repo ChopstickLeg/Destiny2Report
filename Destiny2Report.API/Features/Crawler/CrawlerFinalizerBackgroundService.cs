@@ -81,18 +81,19 @@ public sealed class CrawlerFinalizerBackgroundService(
         var renewal = RenewLeaseAsync(job, ownership);
         try
         {
-            var (report, state) = await generationStore.MaterializeAsync(job, job.CandidateGeneration, ownership.Token)
+            var finalization = await generationStore.TryFinalizeAsync(job, ownership.Token)
                 .ConfigureAwait(false);
+            if (!finalization.Promoted || finalization.Report is not { } report)
+            {
+                logger.LogWarning("Finalizer {Owner} lost fence {Fence} for run {RunId}.", _owner, job.FinalizerFence, job.RunId);
+                return;
+            }
+
             using var scope = serviceProvider.CreateScope();
             var crawler = scope.ServiceProvider.GetRequiredService<ICrawlerReadService>();
             var leaderboards = scope.ServiceProvider.GetRequiredService<ILeaderboardService>();
 
-            var terminalState = report.CrawlState switch
-            {
-                DestinyReport.CrawlStatePrivate => CrawlJob.StatePrivate,
-                DestinyReport.CrawlStateFailed => CrawlJob.StateFailed,
-                _ => CrawlJob.StateCompleted
-            };
+            var terminalState = finalization.TerminalState;
             if (terminalState == CrawlJob.StateCompleted)
             {
                 var metrics = await crawler.GetLeaderboardMetricsAsync(
@@ -105,12 +106,6 @@ public sealed class CrawlerFinalizerBackgroundService(
             else
             {
                 await leaderboards.RemovePlayerAsync(job.MembershipTypeId, job.MembershipId, ownership.Token).ConfigureAwait(false);
-            }
-
-            if (!await TryPromoteAsync(job, terminalState, report.CrawlError, ownership.Token).ConfigureAwait(false))
-            {
-                logger.LogWarning("Finalizer {Owner} lost fence {Fence} for run {RunId}.", _owner, job.FinalizerFence, job.RunId);
-                return;
             }
 
             if (terminalState == CrawlJob.StateCompleted && job.NotifiedRunId != job.RunId)
@@ -126,7 +121,18 @@ public sealed class CrawlerFinalizerBackgroundService(
                 }
             }
 
-            await PublishTerminalStatusAsync(job, terminalState, report.CrawlError).ConfigureAwait(false);
+            if (!await generationStore.TryCompleteFinalizationAsync(job, finalization, ownership.Token)
+                    .ConfigureAwait(false))
+            {
+                logger.LogWarning(
+                    "Finalizer {Owner} lost fence {Fence} before completing run {RunId}.",
+                    _owner,
+                    job.FinalizerFence,
+                    job.RunId);
+                return;
+            }
+
+            await PublishTerminalStatusAsync(job, terminalState, finalization.Error).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -164,27 +170,6 @@ public sealed class CrawlerFinalizerBackgroundService(
         catch (OperationCanceledException) when (ownership.IsCancellationRequested)
         {
         }
-    }
-
-    private async Task<bool> TryPromoteAsync(CrawlJob job, string terminalState, string? error, CancellationToken cancellationToken)
-    {
-        var filter = FinalizerOwnershipFilter(job)
-            & Builders<CrawlJob>.Filter.Eq(item => item.State, CrawlJob.StateAwaitingFinalization)
-            & Builders<CrawlJob>.Filter.Eq(item => item.CandidateGeneration, job.CandidateGeneration);
-        var now = DateTime.UtcNow;
-        var update = Builders<CrawlJob>.Update
-            .Set(item => item.ActiveGeneration, job.CandidateGeneration)
-            .Set(item => item.CandidateGeneration, "")
-            .Set(item => item.State, terminalState)
-            .Set(item => item.Error, error ?? "")
-            .Set(item => item.FinalizerOwner, "")
-            .Set(item => item.FinalizerLeaseExpiresAtUtc, null)
-            .Set(item => item.UpdatedAtUtc, now)
-            .Set(item => item.FinishedAtUtc, now);
-        var result = await mongoDatabase.GetCollection<CrawlJob>("crawl_jobs")
-            .UpdateOneAsync(filter, update, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-        return result.ModifiedCount == 1;
     }
 
     private Task MarkNotifiedAsync(CrawlJob job, CancellationToken cancellationToken) =>

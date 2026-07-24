@@ -31,7 +31,7 @@ impl Config {
         let pid = std::process::id();
         let suffix = uuid::Uuid::new_v4().simple();
         let ordinary_rps = number("CRAWLER__ORDINARY_REQUESTS_PER_SECOND_PER_INSTANCE", 20)?;
-        let pgcr_rps = number("CRAWLER__PGCR_REQUESTS_PER_SECOND_PER_INSTANCE", 45)?;
+        let pgcr_rps = number("CRAWLER__PGCR_REQUESTS_PER_SECOND_PER_INSTANCE", 50)?;
         let sherpa_rps = number(
             "CRAWLER__SHERPA_HISTORY_REQUESTS_PER_SECOND_PER_INSTANCE",
             8,

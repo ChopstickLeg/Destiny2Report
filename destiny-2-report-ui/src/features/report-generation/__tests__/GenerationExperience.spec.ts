@@ -26,29 +26,27 @@ describe('GenerationExperience', () => {
     watchQueue.mockReset()
   })
 
-  it('promotes a Mongo-queued profile by submitting it to Redis', () => {
+  it('only watches a queued profile without submitting it again', () => {
     mount(GenerationExperience, {
       props: {
         identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
         initialState: 'queued',
         playerName: null,
         crawlError: '',
-        queuedInRedis: false,
       },
     })
 
-    expect(submitAndWatch).toHaveBeenCalledOnce()
-    expect(watchQueue).not.toHaveBeenCalled()
+    expect(watchQueue).toHaveBeenCalledOnce()
+    expect(submitAndWatch).not.toHaveBeenCalled()
   })
 
-  it('only watches a profile that is already queued in Redis', () => {
+  it('only watches a running profile without submitting it again', () => {
     mount(GenerationExperience, {
       props: {
         identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
-        initialState: 'queued',
+        initialState: 'running',
         playerName: null,
         crawlError: '',
-        queuedInRedis: true,
       },
     })
 
@@ -63,7 +61,6 @@ describe('GenerationExperience', () => {
         initialState: 'missing',
         playerName: null,
         crawlError: '',
-        queuedInRedis: false,
         autoStart: true,
       },
     })
@@ -79,7 +76,6 @@ describe('GenerationExperience', () => {
         initialState: 'failed',
         playerName: null,
         crawlError: 'Bungie was unavailable',
-        queuedInRedis: false,
         autoStart: true,
       },
     })

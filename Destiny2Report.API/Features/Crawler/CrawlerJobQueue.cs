@@ -78,6 +78,13 @@ public sealed class CrawlerJobQueue(
         {
             job = null;
         }
+        catch (MongoCommandException exception) when (IsDuplicateKeyCommand(exception.Code))
+        {
+            // findAndModify reports an upsert collision as a command error rather
+            // than a MongoWriteException. The collision means another active job
+            // already owns this player's deterministic _id, so return that job.
+            job = null;
+        }
 
         if (job is null || job.RunId != runId)
         {
@@ -106,6 +113,8 @@ public sealed class CrawlerJobQueue(
 
         return ToResponse(job);
     }
+
+    internal static bool IsDuplicateKeyCommand(int errorCode) => errorCode is 11000 or 11001;
 
     private async Task DispatchAsync(CrawlJob job, CancellationToken cancellationToken)
     {

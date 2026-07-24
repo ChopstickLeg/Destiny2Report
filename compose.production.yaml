@@ -16,7 +16,7 @@ services:
       WebPush__Subject: ${WEB_PUSH_SUBJECT:?WEB_PUSH_SUBJECT is required}
       WebPush__PublicKey: ${WEB_PUSH_PUBLIC_KEY:?WEB_PUSH_PUBLIC_KEY is required}
       WebPush__PrivateKey: ${WEB_PUSH_PRIVATE_KEY:?WEB_PUSH_PRIVATE_KEY is required}
-      ConnectionStrings__MongoDb: mongodb://${MONGO_USERNAME:?MONGO_USERNAME is required}:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@mongo:27017/?authSource=admin
+      ConnectionStrings__MongoDb: mongodb://${MONGO_USERNAME:?MONGO_USERNAME is required}:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@mongo:27017/?authSource=admin&replicaSet=rs0
       ConnectionStrings__Redis: redis:6379,password=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       OpenTelemetry__Endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT is required}
       OpenTelemetry__Protocol: ${OTEL_EXPORTER_OTLP_PROTOCOL:-Grpc}
@@ -54,7 +54,7 @@ services:
       context: .
       dockerfile: crawler-rs/Dockerfile
     environment:
-      MONGODB_URI: mongodb://${MONGO_USERNAME:?MONGO_USERNAME is required}:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@mongo:27017/?authSource=admin
+      MONGODB_URI: mongodb://${MONGO_USERNAME:?MONGO_USERNAME is required}:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@mongo:27017/?authSource=admin&replicaSet=rs0
       MONGODB_DATABASE: Destiny2Report
       REDIS_URI: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/
       BUNGIE_API_KEY: ${BUNGIE_API_KEY:?BUNGIE_API_KEY is required}
@@ -68,6 +68,9 @@ services:
       CRAWLER__MAX_IN_FLIGHT_PGCRS_PER_INSTANCE: ${RUST_CRAWLER_MAX_IN_FLIGHT_PGCRS:-64}
       CRAWLER__MAX_BUFFERED_PGCRS: ${RUST_CRAWLER_MAX_BUFFERED_PGCRS:-128}
       RUST_LOG: ${RUST_LOG:-info}
+      OTEL_SERVICE_NAME: ${RUST_CRAWLER_OTEL_SERVICE_NAME:-Destiny2Report.Crawler}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT is required}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
     depends_on:
       mongo:
         condition: service_healthy
@@ -99,10 +102,21 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:?MONGO_USERNAME is required}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD is required}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        install -m 400 -o mongodb -g mongodb /run/secrets/mongo-replica-set-key /tmp/mongodb-keyfile
+        && exec /usr/local/bin/docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --keyFile /tmp/mongodb-keyfile
+    secrets:
+      - mongo-replica-set-key
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --username \"$$MONGO_INITDB_ROOT_USERNAME\" --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"db.adminCommand('ping').ok\""]
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --username \"$$MONGO_INITDB_ROOT_USERNAME\" --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"try { rs.status().ok } catch (error) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }\" | grep 1"
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -136,3 +150,7 @@ services:
 volumes:
   mongo-data:
   redis-data:
+
+secrets:
+  mongo-replica-set-key:
+    file: ${MONGO_REPLICA_SET_KEY_FILE:?MONGO_REPLICA_SET_KEY_FILE is required}

@@ -209,10 +209,16 @@ public static class AdminHandlers
 
         await Task.WhenAll(activeTask, countTask).ConfigureAwait(false);
 
-        var activeCrawls = activeTask.Result.Select(report => new AdminActiveCrawlResponse(
+        var activeReports = activeTask.Result;
+        var displayNames = await LoadDisplayNamesAsync(
+                mongoDatabase,
+                activeReports,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var activeCrawls = activeReports.Select(report => new AdminActiveCrawlResponse(
             report.MembershipTypeId,
             report.MembershipId,
-            "",
+            displayNames.GetValueOrDefault((report.MembershipTypeId, report.MembershipId), ""),
             ToDateTimeOffset(report.QueuedAtUtc),
             ToDateTimeOffset(report.StartedAtUtc),
             ToDateTimeOffset(report.LeaseExpiresAtUtc),
@@ -236,10 +242,45 @@ public static class AdminHandlers
         return new AdminOverviewResponse(now, activeCrawls, statusCounts);
     }
 
+    private static async Task<IReadOnlyDictionary<(int MembershipTypeId, long MembershipId), string>> LoadDisplayNamesAsync(
+        IMongoDatabase mongoDatabase,
+        IReadOnlyCollection<ActiveCrawlProjection> activeCrawls,
+        CancellationToken cancellationToken)
+    {
+        if (activeCrawls.Count == 0)
+        {
+            return new Dictionary<(int, long), string>();
+        }
+
+        var membershipTypeIds = activeCrawls.Select(crawl => crawl.MembershipTypeId).Distinct();
+        var membershipIds = activeCrawls.Select(crawl => crawl.MembershipId).Distinct();
+        var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
+        var filter = Builders<DestinyReport>.Filter.In(report => report.PlatformId, membershipTypeIds)
+            & Builders<DestinyReport>.Filter.In(report => report.PlayerMembershipId, membershipIds);
+        var names = await reports.Find(filter)
+            .Project(report => new PlayerDisplayNameProjection(
+                report.PlatformId,
+                report.PlayerMembershipId,
+                report.DisplayName))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return names
+            .Where(player => !string.IsNullOrWhiteSpace(player.DisplayName))
+            .ToDictionary(
+                player => (player.MembershipTypeId, player.MembershipId),
+                player => player.DisplayName);
+    }
+
     private static DateTimeOffset? ToDateTimeOffset(DateTime? value) =>
         value is null ? null : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc));
 
     private sealed record QueuedPlayer(int MembershipTypeId, long MembershipId, string RunId, string StreamEntryId);
+
+    private sealed record PlayerDisplayNameProjection(
+        int MembershipTypeId,
+        long MembershipId,
+        string DisplayName);
 
     private sealed record ActiveCrawlProjection(
         int MembershipTypeId,

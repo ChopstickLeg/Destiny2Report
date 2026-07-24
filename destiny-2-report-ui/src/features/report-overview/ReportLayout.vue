@@ -54,18 +54,14 @@ function startRefresh() {
 
 // If the loaded report shows an in-flight recrawl, attach to it quietly.
 watch(
-  () => [report.value?.crawlState, report.value?.queuedInRedis] as const,
-  ([state, queuedInRedis]) => {
+  () => report.value?.crawlState,
+  (state) => {
     if (
       hasReadableReport.value &&
       (state === 'queued' || state === 'running') &&
       !refreshWatcher.isActive.value
     ) {
-      if (state === 'queued' && !queuedInRedis) {
-        void refreshWatcher.submitAndWatch()
-      } else {
-        void refreshWatcher.watch()
-      }
+      void refreshWatcher.watch()
     }
   },
   { immediate: true },
@@ -126,7 +122,6 @@ function refetchReport() {
       :initial-state="pendingState"
       :player-name="knownName"
       :crawl-error="report?.crawlError ?? ''"
-      :queued-in-redis="report?.queuedInRedis ?? false"
       :auto-start="route.query.generate === '1'"
       @refresh="refetchReport"
     />

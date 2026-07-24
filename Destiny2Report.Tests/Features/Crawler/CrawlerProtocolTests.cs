@@ -26,6 +26,15 @@ public sealed class CrawlerProtocolTests
         Assert.Equal("crawler-workers", CrawlerQueue.ConsumerGroupName);
     }
 
+    [Theory]
+    [InlineData(11000, true)]
+    [InlineData(11001, true)]
+    [InlineData(112, false)]
+    public void Queue_recognizes_find_and_modify_duplicate_key_commands(int errorCode, bool expected)
+    {
+        Assert.Equal(expected, CrawlerJobQueue.IsDuplicateKeyCommand(errorCode));
+    }
+
     [Fact]
     public void Queryable_report_document_keeps_metrics_as_bson_fields()
     {
@@ -96,6 +105,56 @@ public sealed class CrawlerProtocolTests
         var json = rendered.ToJson();
         Assert.Contains("\"fo\" : { \"$exists\" : false }", json);
         Assert.Contains("\"s\" : \"awaiting_finalization\"", json);
+    }
+
+    [Fact]
+    public void Finalizer_promotion_is_fenced_by_player_run_owner_and_fence()
+    {
+        var job = new CrawlJob
+        {
+            PlayerKey = CrawlJob.CreatePlayerKey(3, 42),
+            RunId = "run",
+            FinalizerOwner = "owner",
+            FinalizerFence = 7
+        };
+        var filter = CrawlGenerationStore.BuildFinalizerOwnershipFilter(job);
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+
+        var json = rendered.ToJson();
+        Assert.Contains("\"_id\"", json);
+        Assert.Contains("\"r\" : \"run\"", json);
+        Assert.Contains("\"fo\" : \"owner\"", json);
+        Assert.Contains("\"ffn\" : 7", json);
+    }
+
+    [Fact]
+    public void Idle_scheduler_only_claims_mongo_only_queued_or_expired_reports()
+    {
+        var filter = CrawlerIdleMongoScheduler.BuildReportClaimFilter(DateTime.UtcNow);
+        var rendered = filter.Render(new RenderArgs<DestinyReport>(
+            BsonSerializer.LookupSerializer<DestinyReport>(),
+            BsonSerializer.SerializerRegistry));
+
+        var json = rendered.ToJson();
+        Assert.Contains("\"QueuedInRedis\" : false", json);
+        Assert.Contains("\"CrawlState\" : \"queued\"", json);
+        Assert.Contains("\"CrawlState\" : \"running\"", json);
+        Assert.Contains("\"LeaseExpiresAtUtc\" : { \"$lt\"", json);
+    }
+
+    [Fact]
+    public void Idle_scheduler_yields_to_queued_and_running_crawler_jobs()
+    {
+        var filter = CrawlerIdleMongoScheduler.BuildActiveCrawlerFilter();
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+
+        var json = rendered.ToJson();
+        Assert.Contains("\"s\" : { \"$in\" : [\"queued\", \"running\"] }", json);
+        Assert.DoesNotContain("awaiting_finalization", json);
     }
 
 }

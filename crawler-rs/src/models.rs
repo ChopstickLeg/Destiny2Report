@@ -32,8 +32,12 @@ pub struct CrawlJob {
     pub lease_expires_at: Option<DateTime>,
     #[serde(rename = "qa")]
     pub queued_at: DateTime,
+    #[serde(rename = "sa", default)]
+    pub started_at: Option<DateTime>,
     #[serde(rename = "ff", default)]
     pub force_full_crawl: bool,
+    #[serde(rename = "ag", default)]
+    pub active_generation: String,
 }
 
 #[derive(Clone, Debug)]

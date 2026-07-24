@@ -60,10 +60,21 @@ public static class MongoExtensions
             cancellationToken);
 
         var compactArtifacts = mongoDatabase.GetCollection<CrawlArtifactDocument>("crawl_artifacts");
+        const string legacyArtifactIndex = "ux_crawl_artifacts_generation_dimensions";
+        using (var artifactIndexCursor = await compactArtifacts.Indexes.ListAsync(cancellationToken))
+        {
+            var artifactIndexes = await artifactIndexCursor.ToListAsync(cancellationToken);
+            if (artifactIndexes.Any(index =>
+                    index.TryGetValue("name", out var name)
+                    && name.IsString
+                    && name.AsString == legacyArtifactIndex))
+            {
+                await compactArtifacts.Indexes.DropOneAsync(legacyArtifactIndex, cancellationToken);
+            }
+        }
         await compactArtifacts.EnsureIndexesAsync(
             [new CreateIndexModel<CrawlArtifactDocument>(
                 Builders<CrawlArtifactDocument>.IndexKeys
-                    .Ascending(item => item.PlayerKey)
                     .Ascending(item => item.Generation)
                     .Ascending(item => item.Kind)
                     .Ascending(item => item.ActivityMode)
@@ -72,7 +83,7 @@ public static class MongoExtensions
                     .Ascending(item => item.Hash)
                     .Ascending(item => item.EncounteredMembershipType)
                     .Ascending(item => item.EncounteredMembershipId),
-                new CreateIndexOptions { Name = "ux_crawl_artifacts_generation_dimensions", Unique = true })],
+                new CreateIndexOptions { Name = "ux_crawl_artifacts_generation_dimensions_v2", Unique = true })],
             cancellationToken);
 
         var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");

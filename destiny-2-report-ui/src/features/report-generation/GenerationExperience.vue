@@ -14,7 +14,6 @@ const props = defineProps<{
   initialState: 'missing' | CrawlState
   playerName: string | null
   crawlError: string
-  queuedInRedis: boolean
   /** Start a genuinely missing report immediately when navigation expressed that intent. */
   autoStart?: boolean
 }>()
@@ -29,9 +28,7 @@ const watcher = useQueueWatcher(identityRef, {
 
 onMounted(() => {
   // A crawl is already in flight server-side; attach to it immediately.
-  if (props.initialState === 'queued' && !props.queuedInRedis) {
-    void watcher.submitAndWatch()
-  } else if (props.initialState === 'queued' || props.initialState === 'running') {
+  if (props.initialState === 'queued' || props.initialState === 'running') {
     void watcher.watch()
   } else if (props.initialState === 'missing' && props.autoStart) {
     void watcher.submitAndWatch()
