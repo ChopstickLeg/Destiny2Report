@@ -36,3 +36,10 @@ __screenshots__/
 
 # Vite
 *.timestamp-*-*.mjs
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
