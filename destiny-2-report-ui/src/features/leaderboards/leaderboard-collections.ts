@@ -105,7 +105,7 @@ const collectionDetails = [
   },
   {
     key: 'curiosities',
-    title: 'Guardian curiosities',
+    title: 'Miscellaneous',
     description: 'Fish, motes, misadventures, streaks, and other unusual honors.',
   },
 ] as const

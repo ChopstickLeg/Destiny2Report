@@ -27,8 +27,14 @@ const watcher = useQueueWatcher(identityRef, {
 })
 
 onMounted(() => {
-  // A crawl is already in flight server-side; attach to it immediately.
-  if (props.initialState === 'queued' || props.initialState === 'running') {
+  // Re-submit queued reports through the durable queue. This is idempotent for
+  // an active job and promotes legacy Mongo-only queue records into Redis.
+  if (props.initialState === 'queued') {
+    void watcher.submitAndWatch({
+      suppressCooldownError: true,
+      watchOnSuppressedCooldown: true,
+    })
+  } else if (props.initialState === 'running') {
     void watcher.watch()
   } else if (props.initialState === 'missing' && props.autoStart) {
     void watcher.submitAndWatch()

@@ -644,8 +644,6 @@ public static class ReportHandlers
                             yield break;
                         }
                     }
-
-                    continue;
                 }
 
                 if (DateTimeOffset.UtcNow < nextFallbackScanAt)
@@ -919,7 +917,9 @@ public static class ReportHandlers
         fields.TryGetValue("streamEntryId", out var streamEntryId);
         fields.TryGetValue("error", out var error);
         fields.TryGetValue("updatedAtUtc", out var updatedAtUtcValue);
-        var progress = BuildProgressSnapshot(fields);
+        var progress = status == DestinyReport.CrawlStateRunning
+            ? BuildProgressSnapshot(fields)
+            : null;
 
         var updatedAtUtc = DateTimeOffset.TryParse(updatedAtUtcValue, out var parsedUpdatedAtUtc)
             ? parsedUpdatedAtUtc

@@ -43,8 +43,15 @@ const statusLine = computed(() => {
   return 'Working…'
 })
 
+// Progress counters belong to active crawler work. A queued status can briefly
+// coexist with stale counters from an earlier run while distributed state
+// converges, but it must always be presented as indeterminate.
+const activeProgress = computed(() =>
+  props.latest?.status === 'running' ? props.latest.progress : null,
+)
+
 const progressFraction = computed(() => {
-  const progress = props.latest?.progress
+  const progress = activeProgress.value
   if (!progress || progress.current === null || progress.total === null || progress.total <= 0) {
     return null
   }
@@ -52,7 +59,7 @@ const progressFraction = computed(() => {
 })
 
 const progressDetail = computed(() => {
-  const progress = props.latest?.progress
+  const progress = activeProgress.value
   if (!progress || progress.current === null || progress.total === null) return null
   return `${formatInteger(Number(progress.current))} of ${formatInteger(Number(progress.total))}`
 })

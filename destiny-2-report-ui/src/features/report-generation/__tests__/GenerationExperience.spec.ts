@@ -26,7 +26,7 @@ describe('GenerationExperience', () => {
     watchQueue.mockReset()
   })
 
-  it('only watches a queued profile without submitting it again', () => {
+  it('quietly re-submits a queued profile before watching it', () => {
     mount(GenerationExperience, {
       props: {
         identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
@@ -36,8 +36,11 @@ describe('GenerationExperience', () => {
       },
     })
 
-    expect(watchQueue).toHaveBeenCalledOnce()
-    expect(submitAndWatch).not.toHaveBeenCalled()
+    expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({
+      suppressCooldownError: true,
+      watchOnSuppressedCooldown: true,
+    })
+    expect(watchQueue).not.toHaveBeenCalled()
   })
 
   it('only watches a running profile without submitting it again', () => {

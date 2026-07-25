@@ -46,6 +46,10 @@ describe('organizeLeaderboards', () => {
       'crucible-core': ['competition.crucible.playlist.10'],
       curiosities: ['oddities.fish-caught'],
     })
+
+    expect(collections.find((collection) => collection.key === 'curiosities')?.title).toBe(
+      'Miscellaneous',
+    )
   })
 
   it('splits specific activity records into focused Destiny activity families', () => {

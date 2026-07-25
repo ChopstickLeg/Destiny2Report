@@ -187,6 +187,9 @@ public sealed class CrawlGenerationStore(IMongoClient mongoClient, IMongoDatabas
         & Builders<CrawlJob>.Filter.Eq(item => item.FinalizerOwner, job.FinalizerOwner)
         & Builders<CrawlJob>.Filter.Eq(item => item.FinalizerFence, job.FinalizerFence);
 
+    internal static FilterDefinition<CrawlArtifactDocument> BuildArtifactGenerationFilter(string generation) =>
+        Builders<CrawlArtifactDocument>.Filter.Eq(item => item.Generation, generation);
+
     private async Task MaterializeArtifactsAsync(
         IClientSessionHandle session,
         CrawlJob job,
@@ -194,7 +197,7 @@ public sealed class CrawlGenerationStore(IMongoClient mongoClient, IMongoDatabas
         CancellationToken cancellationToken)
     {
         var values = await mongoDatabase.GetCollection<CrawlArtifactDocument>("crawl_artifacts")
-            .Find(session, item => item.PlayerKey == job.PlayerKey && item.Generation == generation)
+            .Find(session, BuildArtifactGenerationFilter(generation))
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         await ReplaceAsync(session, "weapon_aggregates", job, values.Where(x => x.Kind == CrawlArtifactKind.Weapon).Select(x => new WeaponAggregate
         {

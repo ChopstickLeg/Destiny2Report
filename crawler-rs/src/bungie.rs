@@ -17,6 +17,21 @@ pub enum EndpointClass {
     Sherpa,
 }
 
+#[derive(Clone, Copy)]
+struct RequestPolicy {
+    max_attempts: u32,
+    timeout: Option<Duration>,
+}
+
+const DEFAULT_REQUEST_POLICY: RequestPolicy = RequestPolicy {
+    max_attempts: 6,
+    timeout: None,
+};
+const SHERPA_ACCOUNT_STATS_POLICY: RequestPolicy = RequestPolicy {
+    max_attempts: 2,
+    timeout: Some(Duration::from_secs(60)),
+};
+
 #[derive(Clone)]
 pub struct BungieClient {
     http: reqwest::Client,
@@ -179,9 +194,10 @@ impl BungieClient {
         membership_type: i32,
         membership_id: i64,
     ) -> Result<Value, BungieError> {
-        self.get(
+        self.get_with_policy(
             &format!("Destiny2/{membership_type}/Account/{membership_id}/Stats/?groups=1"),
             EndpointClass::Sherpa,
+            SHERPA_ACCOUNT_STATS_POLICY,
         )
         .await
     }
@@ -293,7 +309,7 @@ impl BungieClient {
             .acquire()
             .await
             .map_err(|_| BungieError::Request("request limiter closed".into()))?;
-        let response = self.send_get(url).await?;
+        let response = self.send_get(url, None).await?;
         if !response.status().is_success() {
             return Err(BungieError::Request(
                 http_failure("manifest download", response, 1).await,
@@ -319,18 +335,36 @@ impl BungieClient {
     }
 
     async fn get(&self, path: &str, class: EndpointClass) -> Result<Value, BungieError> {
+        self.get_with_policy(path, class, DEFAULT_REQUEST_POLICY)
+            .await
+    }
+
+    async fn get_with_policy(
+        &self,
+        path: &str,
+        class: EndpointClass,
+        policy: RequestPolicy,
+    ) -> Result<Value, BungieError> {
         let operation = operation_name(path);
         let span = tracing::info_span!(
             "bungie.operation",
             otel.kind = "client",
             bungie.operation = %operation,
         );
-        let result = self.get_inner(path, class).instrument(span.clone()).await;
+        let result = self
+            .get_inner(path, class, policy)
+            .instrument(span.clone())
+            .await;
         set_operation_status(&span, &result);
         result
     }
 
-    async fn get_inner(&self, path: &str, class: EndpointClass) -> Result<Value, BungieError> {
+    async fn get_inner(
+        &self,
+        path: &str,
+        class: EndpointClass,
+        policy: RequestPolicy,
+    ) -> Result<Value, BungieError> {
         let limiter = match class {
             EndpointClass::Ordinary => &self.ordinary,
             EndpointClass::Pgcr => &self.pgcr,
@@ -353,16 +387,15 @@ impl BungieClient {
             .join(path)
             .map_err(|error| BungieError::Request(error.to_string().into()))?;
 
-        const MAX_ATTEMPTS: u32 = 6;
-        for attempt in 0..MAX_ATTEMPTS {
+        for attempt in 0..policy.max_attempts {
             limiter
                 .acquire()
                 .await
                 .map_err(|_| BungieError::Request("local rate-limit queue is full".into()))?;
-            let response = self.send_get(url.clone()).await;
+            let response = self.send_get(url.clone(), policy.timeout).await;
             let response = match response {
                 Ok(value) => value,
-                Err(error) if attempt + 1 < MAX_ATTEMPTS => {
+                Err(error) if attempt + 1 < policy.max_attempts => {
                     tokio::time::sleep(backoff(attempt)).await;
                     tracing::warn!(attempt = attempt + 1, %path, error = %error, "retrying Bungie transport failure");
                     continue;
@@ -388,7 +421,7 @@ impl BungieClient {
                     .map(Duration::from_secs)
                     .unwrap_or_else(|| backoff(attempt));
                 limiter.pause(delay).await;
-                if attempt + 1 < MAX_ATTEMPTS {
+                if attempt + 1 < policy.max_attempts {
                     continue;
                 }
             }
@@ -398,9 +431,9 @@ impl BungieClient {
                 if failure.is_privacy_restriction() {
                     return Err(BungieError::Private(Some(failure)));
                 }
-                if attempt + 1 < MAX_ATTEMPTS {
+                if attempt + 1 < policy.max_attempts {
                     let delay = backoff(attempt);
-                    if attempt == 0 || attempt + 2 == MAX_ATTEMPTS {
+                    if attempt == 0 || attempt + 2 == policy.max_attempts {
                         tracing::warn!(
                             attempt = attempt + 1,
                             %path,
@@ -457,7 +490,7 @@ impl BungieClient {
                     .get("ThrottleSeconds")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                if throttle > 0 && attempt + 1 < MAX_ATTEMPTS {
+                if throttle > 0 && attempt + 1 < policy.max_attempts {
                     limiter.pause(Duration::from_secs(throttle)).await;
                     continue;
                 }
@@ -468,7 +501,11 @@ impl BungieClient {
         Err(BungieError::Request("retry budget exhausted".into()))
     }
 
-    async fn send_get(&self, url: Url) -> Result<reqwest::Response, BungieError> {
+    async fn send_get(
+        &self,
+        url: Url,
+        request_timeout: Option<Duration>,
+    ) -> Result<reqwest::Response, BungieError> {
         let span = tracing::info_span!(
             "HTTP GET",
             otel.kind = "client",
@@ -477,10 +514,11 @@ impl BungieClient {
             server.address = url.host_str().unwrap_or_default(),
             server.port = url.port_or_known_default().unwrap_or_default() as i64,
         );
-        let response = self
-            .http
-            .get(url)
-            .header("X-API-Key", &self.api_key)
+        let mut request = self.http.get(url).header("X-API-Key", &self.api_key);
+        if let Some(timeout) = request_timeout {
+            request = request.timeout(timeout);
+        }
+        let response = request
             .send()
             .instrument(span.clone())
             .await
@@ -618,9 +656,23 @@ fn backoff(attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use serde_json::json;
 
-    use super::{BungieFailure, bungie_response_message, is_privacy_restriction, operation_name};
+    use super::{
+        BungieFailure, SHERPA_ACCOUNT_STATS_POLICY, bungie_response_message,
+        is_privacy_restriction, operation_name,
+    };
+
+    #[test]
+    fn sherpa_account_stats_gets_one_retry_with_a_sixty_second_timeout() {
+        assert_eq!(SHERPA_ACCOUNT_STATS_POLICY.max_attempts, 2);
+        assert_eq!(
+            SHERPA_ACCOUNT_STATS_POLICY.timeout,
+            Some(Duration::from_secs(60))
+        );
+    }
 
     #[test]
     fn bungie_response_payload_takes_precedence_in_span_message() {

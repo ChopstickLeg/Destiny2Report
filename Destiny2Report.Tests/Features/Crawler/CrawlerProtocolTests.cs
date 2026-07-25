@@ -57,6 +57,18 @@ public sealed class CrawlerProtocolTests
         Assert.Contains("redis.call('EXPIRE', KEYS[1], ARGV[9])", CrawlerJobQueue.DispatchStatusScript);
     }
 
+    [Theory]
+    [InlineData("progressPhase")]
+    [InlineData("progressLabel")]
+    [InlineData("progressCurrent")]
+    [InlineData("progressTotal")]
+    [InlineData("progressStartedAtUtc")]
+    [InlineData("progressUpdatedAtUtc")]
+    public void Dispatch_status_clears_progress_from_a_previous_run(string field)
+    {
+        Assert.Contains($"'{field}', ''", CrawlerJobQueue.DispatchStatusScript);
+    }
+
     [Fact]
     public void Queryable_report_document_keeps_metrics_as_bson_fields()
     {
@@ -129,6 +141,18 @@ public sealed class CrawlerProtocolTests
         Assert.Equal(uint.MaxValue, stored["h"].AsInt64);
         Assert.Equal(99, stored["n"].AsInt64);
         Assert.DoesNotContain("ActivityMode", stored.Names);
+    }
+
+    [Fact]
+    public void Finalizer_loads_compact_artifacts_by_globally_unique_generation()
+    {
+        var filter = CrawlGenerationStore.BuildArtifactGenerationFilter("generation");
+        var rendered = filter.Render(new RenderArgs<CrawlArtifactDocument>(
+            BsonSerializer.LookupSerializer<CrawlArtifactDocument>(),
+            BsonSerializer.SerializerRegistry));
+
+        Assert.Equal("""{ "g" : "generation" }""", rendered.ToJson());
+        Assert.DoesNotContain("\"p\"", rendered.ToJson());
     }
 
     [Fact]

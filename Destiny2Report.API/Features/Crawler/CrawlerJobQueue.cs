@@ -33,7 +33,13 @@ public sealed class CrawlerJobQueue(
             'status', 'queued',
             'queuedAtUtc', ARGV[7],
             'updatedAtUtc', ARGV[8],
-            'error', '')
+            'error', '',
+            'progressPhase', '',
+            'progressLabel', '',
+            'progressCurrent', '',
+            'progressTotal', '',
+            'progressStartedAtUtc', '',
+            'progressUpdatedAtUtc', '')
         redis.call('EXPIRE', KEYS[1], ARGV[9])
         return 1
         """;
