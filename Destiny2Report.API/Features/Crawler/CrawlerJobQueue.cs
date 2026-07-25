@@ -19,6 +19,25 @@ public sealed class CrawlerJobQueue(
     IConnectionMultiplexer redis,
     ILogger<CrawlerJobQueue> logger) : ICrawlerJobQueue
 {
+    internal const string DispatchStatusScript = """
+        local currentRun = redis.call('HGET', KEYS[1], 'runId')
+        local currentFence = tonumber(redis.call('HGET', KEYS[1], 'fence') or '-1')
+        if currentRun == ARGV[1] and currentFence > tonumber(ARGV[2]) then return 0 end
+        redis.call('HSET', KEYS[1],
+            'runId', ARGV[1],
+            'fence', ARGV[2],
+            'protocolVersion', ARGV[3],
+            'membershipTypeId', ARGV[4],
+            'membershipId', ARGV[5],
+            'streamEntryId', ARGV[6],
+            'status', 'queued',
+            'queuedAtUtc', ARGV[7],
+            'updatedAtUtc', ARGV[8],
+            'error', '')
+        redis.call('EXPIRE', KEYS[1], ARGV[9])
+        return 1
+        """;
+
     private static readonly string[] ActiveStates =
     [
         CrawlJob.StateQueued,
@@ -36,6 +55,14 @@ public sealed class CrawlerJobQueue(
         var playerKey = CrawlJob.CreatePlayerKey(membershipTypeId, membershipId);
         var now = DateTime.UtcNow;
         var runId = Guid.NewGuid().ToString("N");
+        if (!forceFullCrawl)
+        {
+            forceFullCrawl = await mongoDatabase.GetCollection<DestinyReport>("destiny_reports")
+                .Find(BuildFullRecrawlFilter(membershipTypeId, membershipId))
+                .Limit(1)
+                .AnyAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
         var admissionFilter = Builders<CrawlJob>.Filter.Eq(job => job.PlayerKey, playerKey)
             & Builders<CrawlJob>.Filter.Nin(job => job.State, ActiveStates);
         var admissionUpdate = Builders<CrawlJob>.Update
@@ -116,6 +143,13 @@ public sealed class CrawlerJobQueue(
 
     internal static bool IsDuplicateKeyCommand(int errorCode) => errorCode is 11000 or 11001;
 
+    internal static FilterDefinition<DestinyReport> BuildFullRecrawlFilter(
+        int membershipTypeId,
+        long membershipId) =>
+        Builders<DestinyReport>.Filter.Eq(report => report.PlatformId, membershipTypeId)
+        & Builders<DestinyReport>.Filter.Eq(report => report.PlayerMembershipId, membershipId)
+        & Builders<DestinyReport>.Filter.Eq(report => report.NeedsFullRecrawl, true);
+
     private async Task DispatchAsync(CrawlJob job, CancellationToken cancellationToken)
     {
         var database = redis.GetDatabase();
@@ -147,23 +181,29 @@ public sealed class CrawlerJobQueue(
         }
 
         var statusKey = CrawlerQueue.JobStatusKey(job.MembershipTypeId, job.MembershipId);
-        await database.HashSetAsync(
-                statusKey,
+        var queuedAtUtc = new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O");
+        var initialized = (long)await database.ScriptEvaluateAsync(
+                DispatchStatusScript,
+                [statusKey],
                 [
-                    new HashEntry("protocolVersion", job.ProtocolVersion),
-                    new HashEntry("runId", job.RunId),
-                    new HashEntry("fence", job.Fence),
-                    new HashEntry("membershipTypeId", job.MembershipTypeId),
-                    new HashEntry("membershipId", job.MembershipId),
-                    new HashEntry("streamEntryId", streamId.ToString()),
-                    new HashEntry("status", CrawlJob.StateQueued),
-                    new HashEntry("queuedAtUtc", new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O")),
-                    new HashEntry("updatedAtUtc", DateTimeOffset.UtcNow.ToString("O")),
-                    new HashEntry("error", "")
+                    job.RunId,
+                    job.Fence,
+                    job.ProtocolVersion,
+                    job.MembershipTypeId,
+                    job.MembershipId,
+                    streamId.ToString(),
+                    queuedAtUtc,
+                    DateTimeOffset.UtcNow.ToString("O"),
+                    (long)CrawlerQueue.ActiveJobStatusTtl.TotalSeconds
                 ])
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
-        await database.KeyExpireAsync(statusKey, CrawlerQueue.ActiveJobStatusTtl).WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (initialized == 0)
+        {
+            logger.LogDebug(
+                "Skipped stale queued status initialization for crawler run {RunId}; a worker has already advanced its fence.",
+                job.RunId);
+        }
     }
 
     private static ReportQueueResponse ToResponse(CrawlJob job) => new(

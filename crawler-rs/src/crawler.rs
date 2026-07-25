@@ -12,9 +12,10 @@ use crate::{
     storage,
 };
 
-const INCREMENTAL_CRAWL_OVERLAP_HOURS: i64 = 24;
-// Two full Bungie history pages cover the overlap without carrying a large ID blob.
+const INCREMENTAL_CRAWL_OVERLAP_HOURS: i64 = 8;
+// Two full Bungie history pages comfortably cover the overlap without carrying a large ID blob.
 const RECENT_ACTIVITY_INSTANCE_ID_LIMIT: usize = 500;
+const BUNGIE_NEXT_MEMBERSHIP_TYPE: i32 = 254;
 
 pub enum CrawlOutcome {
     Completed(CrawlResult),
@@ -88,6 +89,7 @@ pub(crate) struct CrawlSeed {
     pub dungeon_completions: BTreeMap<String, CompletionAggregate>,
     pub conquest_completions: BTreeMap<String, CompletionAggregate>,
     pub encounter_counts: BTreeMap<(i32, i64), i32>,
+    pub encountered_players: BTreeSet<(i32, i64)>,
     pub weapon_kills: BTreeMap<(String, i32, i64, String, i64), i32>,
     pub deaths_by_mode: BTreeMap<(String, i32), i64>,
     pub emblem_seconds: BTreeMap<u32, i64>,
@@ -139,16 +141,20 @@ pub async fn crawl(
     let user = profile
         .pointer("/profile/data/userInfo")
         .unwrap_or(&Value::Null);
+    let (existing_display_name, existing_display_code) =
+        storage::load_existing_identity(database, job).await?;
     let display_name = user
         .get("bungieGlobalDisplayName")
         .and_then(Value::as_str)
         .or_else(|| user.get("displayName").and_then(Value::as_str))
-        .unwrap_or("");
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&existing_display_name);
     storage::store_active_display_name(database, job, display_name).await?;
     let display_code = user
         .get("bungieGlobalDisplayNameCode")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+        .and_then(number_i64)
+        .and_then(|value| i32::try_from(value).ok())
+        .unwrap_or(existing_display_code);
 
     let account = match cancellable(
         cancellation,
@@ -198,6 +204,18 @@ pub async fn crawl(
         .table("DestinyMetricDefinition")?
         .into_iter()
         .collect::<BTreeMap<_, _>>();
+    let activity_mode_names = manifest
+        .table("DestinyActivityModeDefinition")?
+        .into_iter()
+        .filter_map(|(_, definition)| {
+            let mode = definition.get("modeType")?.as_i64()? as i32;
+            let name = definition
+                .pointer("/displayProperties/name")?
+                .as_str()?
+                .trim();
+            (!name.is_empty()).then_some((mode, name.to_owned()))
+        })
+        .collect::<BTreeMap<_, _>>();
     let good_boy_protocol = metric_progress(&profile, &metric_definitions, "Good Boy Protocol");
     let fish_caught = metric_progress(&profile, &metric_definitions, "Total Fish Caught");
     let triumph_seals = completed_seals(&profile, manifest)?;
@@ -212,6 +230,8 @@ pub async fn crawl(
         .collect::<Vec<_>>();
     let incremental_seed = storage::load_incremental_seed(database, job).await?;
     let mut seed = incremental_seed.unwrap_or_default();
+    let mut character_class_by_id = historical_character_classes(&account);
+    let mut deleted_character_identity = std::mem::take(&mut seed.deleted_character_identity);
     let crawl_after = seed
         .newest_period
         .as_deref()
@@ -286,6 +306,40 @@ pub async fn crawl(
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            if page == 0
+                && !profile_characters
+                    .is_some_and(|characters| characters.contains_key(&character_id.to_string()))
+                && deleted_character_identity
+                    .get(character_id)
+                    .is_none_or(|(_, race)| race == "Unknown")
+                && let Some(instance_id) = activities.iter().find_map(|activity| {
+                    activity
+                        .pointer("/activityDetails/instanceId")
+                        .and_then(id_i64)
+                        .filter(|instance_id| *instance_id > 0)
+                })
+            {
+                match cancellable(cancellation, client.pgcr(instance_id)).await {
+                    Ok(pgcr) => {
+                        recover_deleted_character_identity(
+                            &pgcr,
+                            manifest,
+                            job,
+                            *character_id,
+                            &mut character_class_by_id,
+                            &mut deleted_character_identity,
+                        );
+                    }
+                    Err(BungieError::Cancelled) => return Err(BungieError::Cancelled.into()),
+                    Err(error) => {
+                        tracing::debug!(
+                            %error,
+                            character_id,
+                            "could not recover deleted character identity"
+                        );
+                    }
+                }
+            }
             let mut reached_crawl_boundary = false;
             for activity in &activities {
                 let Some(instance_id) = activity
@@ -383,9 +437,9 @@ pub async fn crawl(
     let mut zero_kill_activities = seed.zero_kill_activities;
     let mut play_dates = std::mem::take(&mut seed.play_dates);
     let mut encounter_counts = std::mem::take(&mut seed.encounter_counts);
-    let mut encountered = encounter_counts.keys().copied().collect::<BTreeSet<_>>();
+    let mut encountered = std::mem::take(&mut seed.encountered_players);
+    encountered.extend(encounter_counts.keys().copied());
     let mut weapon_kills = std::mem::take(&mut seed.weapon_kills);
-    let mut character_class_by_id = historical_character_classes(&account);
     let mut deaths_by_mode = std::mem::take(&mut seed.deaths_by_mode);
     let mut emblem_seconds = std::mem::take(&mut seed.emblem_seconds);
     let mut mode_seconds = std::mem::take(&mut seed.mode_seconds);
@@ -395,11 +449,13 @@ pub async fn crawl(
     let mut gambit_banked = std::mem::take(&mut seed.gambit_banked);
     let mut gambit_lost = std::mem::take(&mut seed.gambit_lost);
     let mut gambit_denied = std::mem::take(&mut seed.gambit_denied);
-    let mut raid_completions = std::mem::take(&mut seed.raid_completions);
-    let mut dungeon_completions = std::mem::take(&mut seed.dungeon_completions);
-    let mut conquest_completions = std::mem::take(&mut seed.conquest_completions);
-    let mut players_sherpaed = std::mem::take(&mut seed.players_sherpaed);
-    let mut deleted_character_identity = std::mem::take(&mut seed.deleted_character_identity);
+    let mut raid_completions = normalize_completion_map(std::mem::take(&mut seed.raid_completions));
+    let mut dungeon_completions =
+        normalize_completion_map(std::mem::take(&mut seed.dungeon_completions));
+    let mut conquest_completions =
+        normalize_completion_map(std::mem::take(&mut seed.conquest_completions));
+    let mut players_sherpaed =
+        normalize_case_insensitive_counts(std::mem::take(&mut seed.players_sherpaed));
     let mut completed_raids = Vec::<CompletedRaid>::new();
     let mut sherpa_checks = Vec::<SherpaCheck>::new();
     let mut processed_pgcrs = 0i64;
@@ -423,7 +479,6 @@ pub async fn crawl(
         }
         let pgcr = match pgcr {
             Ok(value) => value,
-            Err(error) if is_missing_pgcr(&error) => continue,
             Err(error) => return Err(error.into()),
         };
         let entries = pgcr
@@ -431,244 +486,238 @@ pub async fn crawl(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let owners = entries
+        let owners = owner_entries(&entries, job.membership_type_id, job.membership_id);
+        if owners.is_empty() {
+            continue;
+        }
+        let kills = owners
             .iter()
-            .filter(|entry| is_owner_entry(entry, job.membership_type_id, job.membership_id))
+            .map(|entry| stat_i64(entry, "kills"))
+            .sum::<i64>();
+        let deaths = owners
+            .iter()
+            .map(|entry| stat_i64(entry, "deaths"))
+            .sum::<i64>();
+        let seconds = owners
+            .iter()
+            .map(|entry| preferred_playtime(entry))
+            .sum::<i64>();
+        total_kills += kills;
+        if kills == 0 {
+            zero_kill_activities += 1;
+        }
+        total_activity_seconds += seconds;
+        let mode = pgcr
+            .pointer("/activityDetails/mode")
+            .and_then(Value::as_i64)
+            .unwrap_or(0) as i32;
+        let modes = pgcr
+            .pointer("/activityDetails/modes")
+            .and_then(Value::as_array);
+        let is_pvp = includes_mode(mode, modes, 5);
+        let is_gambit = includes_mode(mode, modes, 63) || includes_mode(mode, modes, 75);
+        let is_raid = includes_mode(mode, modes, 4);
+        let is_dungeon = includes_mode(mode, modes, 82);
+        let private_competitive =
+            is_private_competitive_activity(&pgcr, &activity_definitions, is_pvp, is_gambit);
+        if !private_competitive {
+            add_deaths_by_mode(
+                &mut deaths_by_mode,
+                mode_group_from_flags(is_pvp, is_gambit),
+                mode,
+                deaths,
+            );
+        }
+        if let Some(period) = pgcr.get("period").and_then(Value::as_str) {
+            play_dates.insert(period.get(..10).unwrap_or(period).to_owned());
+        }
+        for broad in [5, 7, 64]
+            .into_iter()
+            .filter(|broad| includes_mode(mode, modes, *broad))
+        {
+            *mode_seconds
+                .entry(broad)
+                .or_default()
+                .entry(mode)
+                .or_default() += seconds;
+        }
+        if is_pvp {
+            *crucible_kills_by_mode.entry(mode).or_default() += kills;
+            add_pvp_playlist_result(&mut pvp_playlists, mode, &owners, private_competitive);
+        }
+        if is_gambit && includes_mode(mode, modes, 64) {
+            gambit_mote_matches += 1;
+            for owner in &owners {
+                let mote_mode = gambit_mote_mode(mode, modes);
+                *gambit_banked.entry(mote_mode).or_default() +=
+                    mote_stat(owner, "motesDeposited") + mote_stat(owner, "bankOverage");
+                *gambit_lost.entry(mote_mode).or_default() += mote_stat(owner, "motesLost");
+                *gambit_denied.entry(mote_mode).or_default() += mote_stat(owner, "motesDenied");
+            }
+        }
+        let activity_name = activity_name(&pgcr, &activity_definitions);
+        let normalized_activity_name = normalize_activity_name(&activity_name);
+        let completion_reason = entries
+            .first()
+            .map(|entry| stat_i64(entry, "completionReason"))
+            .unwrap_or_default();
+        let completed =
+            completion_reason == 0 && owners.iter().any(|entry| stat_i64(entry, "completed") > 0);
+        let period = pgcr
+            .get("period")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let completed_at = activity_completed_at(&period, &owners);
+        let instance_id = pgcr
+            .pointer("/activityDetails/instanceId")
+            .and_then(id_i64)
+            .unwrap_or(0);
+        let fireteam = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .pointer("/player/destinyUserInfo/membershipId")
+                    .and_then(id_i64)
+                    .is_some_and(|id| id > 0)
+            })
             .collect::<Vec<_>>();
-        if !owners.is_empty() {
-            let kills = owners
+        let started_from_beginning = activity_started_from_beginning(&pgcr, &fireteam);
+        let flawless = completed
+            && started_from_beginning
+            && !fireteam.is_empty()
+            && fireteam.iter().all(|entry| stat_i64(entry, "deaths") == 0);
+        let solo = completed
+            && started_from_beginning
+            && fireteam
                 .iter()
-                .map(|entry| stat_i64(entry, "kills"))
-                .sum::<i64>();
-            let deaths = owners
-                .iter()
-                .map(|entry| stat_i64(entry, "deaths"))
-                .sum::<i64>();
-            let seconds = owners
-                .iter()
-                .map(|entry| preferred_playtime(entry))
-                .sum::<i64>();
-            total_kills += kills;
-            if kills == 0 {
-                zero_kill_activities += 1;
-            }
-            total_activity_seconds += seconds;
-            let mode = pgcr
-                .pointer("/activityDetails/mode")
-                .and_then(Value::as_i64)
-                .unwrap_or(0) as i32;
-            let modes = pgcr
-                .pointer("/activityDetails/modes")
-                .and_then(Value::as_array);
-            let is_pvp = includes_mode(mode, modes, 5);
-            let is_gambit = includes_mode(mode, modes, 63) || includes_mode(mode, modes, 75);
-            let is_raid = includes_mode(mode, modes, 4);
-            let is_dungeon = includes_mode(mode, modes, 82);
-            let private_competitive =
-                is_private_competitive_activity(&pgcr, &activity_definitions, is_pvp, is_gambit);
-            if !private_competitive {
-                *deaths_by_mode
-                    .entry((mode_group_from_flags(is_pvp, is_gambit).into(), mode))
-                    .or_default() += deaths;
-            }
-            if let Some(period) = pgcr.get("period").and_then(Value::as_str) {
-                play_dates.insert(period.get(..10).unwrap_or(period).to_owned());
-            }
-            for broad in [5, 7, 64]
-                .into_iter()
-                .filter(|broad| includes_mode(mode, modes, *broad))
-            {
-                *mode_seconds
-                    .entry(broad)
-                    .or_default()
-                    .entry(mode)
-                    .or_default() += seconds;
-            }
-            if is_pvp {
-                *crucible_kills_by_mode.entry(mode).or_default() += kills;
-                add_pvp_playlist_result(&mut pvp_playlists, mode, &owners, private_competitive);
-            }
-            if is_gambit && includes_mode(mode, modes, 64) {
-                gambit_mote_matches += 1;
-                for owner in &owners {
-                    let mote_mode = gambit_mote_mode(mode, modes);
-                    *gambit_banked.entry(mote_mode).or_default() +=
-                        mote_stat(owner, "motesDeposited") + mote_stat(owner, "bankOverage");
-                    *gambit_lost.entry(mote_mode).or_default() += mote_stat(owner, "motesLost");
-                    *gambit_denied.entry(mote_mode).or_default() += mote_stat(owner, "motesDenied");
-                }
-            }
-            let activity_name = activity_name(&pgcr, &activity_definitions);
-            let normalized_activity_name = normalize_activity_name(&activity_name);
-            let completion_reason = entries
-                .first()
-                .map(|entry| stat_i64(entry, "completionReason"))
-                .unwrap_or_default();
-            let completed = completion_reason == 0
-                && owners.iter().any(|entry| stat_i64(entry, "completed") > 0);
-            let period = pgcr
-                .get("period")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            let completed_at = activity_completed_at(&period, &owners);
-            let instance_id = pgcr
-                .pointer("/activityDetails/instanceId")
-                .and_then(id_i64)
-                .unwrap_or(0);
-            let fireteam = entries
-                .iter()
-                .filter(|entry| {
+                .filter_map(|entry| {
                     entry
                         .pointer("/player/destinyUserInfo/membershipId")
                         .and_then(id_i64)
-                        .is_some_and(|id| id > 0)
                 })
-                .collect::<Vec<_>>();
-            let started_from_beginning = activity_started_from_beginning(&pgcr, &fireteam);
-            let flawless = completed
-                && started_from_beginning
-                && !fireteam.is_empty()
-                && fireteam.iter().all(|entry| stat_i64(entry, "deaths") == 0);
-            let solo = completed
-                && started_from_beginning
-                && fireteam
+                .collect::<BTreeSet<_>>()
+                .len()
+                == 1;
+        if is_raid {
+            add_completion(
+                &mut raid_completions,
+                normalized_activity_name.clone(),
+                completed,
+                &completed_at,
+                instance_id,
+                seconds,
+                is_contest_clear(&pgcr, true, false, &completed_at),
+                flawless,
+                solo,
+            );
+            if completed {
+                completed_raids.push(CompletedRaid {
+                    name: normalized_activity_name.clone(),
+                    period: completed_at.clone(),
+                    instance_id,
+                });
+                let candidates = fireteam
                     .iter()
+                    .filter(|entry| stat_i64(entry, "completed") > 0)
                     .filter_map(|entry| {
-                        entry
+                        let membership_id = entry
                             .pointer("/player/destinyUserInfo/membershipId")
-                            .and_then(id_i64)
+                            .and_then(id_i64)?;
+                        let membership_type = entry
+                            .pointer("/player/destinyUserInfo/membershipType")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0) as i32;
+                        (membership_id != job.membership_id)
+                            .then_some((membership_type, membership_id))
                     })
                     .collect::<BTreeSet<_>>()
-                    .len()
-                    == 1;
-            if is_raid {
-                add_completion(
-                    &mut raid_completions,
-                    normalized_activity_name.clone(),
-                    completed,
-                    &completed_at,
+                    .into_iter()
+                    .collect();
+                sherpa_checks.push(SherpaCheck {
+                    raid_name: normalized_activity_name.clone(),
+                    period: completed_at.clone(),
                     instance_id,
-                    seconds,
-                    is_contest_clear(&pgcr, true, false, &completed_at),
-                    flawless,
-                    solo,
-                );
-                if completed {
-                    completed_raids.push(CompletedRaid {
-                        name: normalized_activity_name.clone(),
-                        period: completed_at.clone(),
-                        instance_id,
-                    });
-                    let candidates = fireteam
-                        .iter()
-                        .filter(|entry| stat_i64(entry, "completed") > 0)
-                        .filter_map(|entry| {
-                            let membership_id = entry
-                                .pointer("/player/destinyUserInfo/membershipId")
-                                .and_then(id_i64)?;
-                            let membership_type = entry
-                                .pointer("/player/destinyUserInfo/membershipType")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)
-                                as i32;
-                            (membership_id != job.membership_id)
-                                .then_some((membership_type, membership_id))
-                        })
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect();
-                    sherpa_checks.push(SherpaCheck {
-                        raid_name: normalized_activity_name.clone(),
-                        period: completed_at.clone(),
-                        instance_id,
-                        candidates,
-                    });
-                }
+                    candidates,
+                });
             }
-            if is_dungeon {
-                add_completion(
-                    &mut dungeon_completions,
-                    normalized_activity_name,
-                    completed,
-                    &completed_at,
-                    instance_id,
-                    seconds,
-                    is_contest_clear(&pgcr, false, true, &completed_at),
-                    flawless,
-                    solo,
-                );
-            }
-            if let Some(conquest) = conquest_name(&pgcr, &activity_name, &completed_at) {
-                add_completion(
-                    &mut conquest_completions,
-                    conquest,
-                    completed,
-                    &completed_at,
-                    instance_id,
-                    seconds,
-                    false,
-                    flawless,
-                    solo,
-                );
-            }
-            for owner in owners {
-                let reported_class = owner
-                    .pointer("/player/characterClass")
-                    .and_then(Value::as_str)
-                    .map(normalize_class_name)
-                    .unwrap_or("Unknown")
-                    .to_owned();
-                let character_id = owner.get("characterId").and_then(id_i64).unwrap_or(0);
-                if character_id > 0 && reported_class != "Unknown" {
-                    match character_class_by_id.entry(character_id) {
-                        std::collections::btree_map::Entry::Occupied(mut entry)
-                            if entry.get() == "Unknown" =>
-                        {
-                            entry.insert(reported_class.clone());
-                        }
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert(reported_class.clone());
-                        }
-                        _ => {}
+        }
+        if is_dungeon {
+            add_completion(
+                &mut dungeon_completions,
+                normalized_activity_name,
+                completed,
+                &completed_at,
+                instance_id,
+                seconds,
+                is_contest_clear(&pgcr, false, true, &completed_at),
+                flawless,
+                solo,
+            );
+        }
+        if let Some(conquest) = conquest_name(&pgcr, &activity_name, &completed_at) {
+            add_completion(
+                &mut conquest_completions,
+                conquest,
+                completed,
+                &completed_at,
+                instance_id,
+                seconds,
+                false,
+                flawless,
+                solo,
+            );
+        }
+        for owner in owners {
+            let reported_class = pgcr_character_class(owner, manifest);
+            let character_id = owner.get("characterId").and_then(id_i64).unwrap_or(0);
+            if character_id > 0 && reported_class != "Unknown" {
+                match character_class_by_id.entry(character_id) {
+                    std::collections::btree_map::Entry::Occupied(mut entry)
+                        if entry.get() == "Unknown" =>
+                    {
+                        entry.insert(reported_class.clone());
                     }
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(reported_class.clone());
+                    }
+                    _ => {}
                 }
-                if character_id > 0
-                    && !profile_characters.is_some_and(|characters| {
-                        characters.contains_key(&character_id.to_string())
+            }
+            if character_id > 0
+                && !profile_characters
+                    .is_some_and(|characters| characters.contains_key(&character_id.to_string()))
+            {
+                let race = owner
+                    .pointer("/player/raceHash")
+                    .and_then(id_u32)
+                    .and_then(|hash| {
+                        manifest_display_name(manifest, "DestinyRaceDefinition", hash)
+                            .ok()
+                            .flatten()
                     })
-                {
-                    let race = owner
-                        .pointer("/player/raceHash")
-                        .and_then(id_u32)
-                        .and_then(|hash| {
-                            manifest_display_name(manifest, "DestinyRaceDefinition", hash)
-                                .ok()
-                                .flatten()
-                        })
-                        .unwrap_or_else(|| "Unknown".into());
-                    merge_character_identity(
-                        &mut deleted_character_identity,
-                        character_id,
-                        &reported_class,
-                        &race,
-                    );
-                }
-                if let Some(emblem) = owner.pointer("/player/emblemHash").and_then(id_u32) {
-                    *emblem_seconds.entry(emblem).or_default() += preferred_playtime(owner);
-                }
-                if !private_competitive {
-                    for (hash, kills) in weapon_kill_deltas(owner) {
-                        *weapon_kills
-                            .entry((
-                                mode_group_from_flags(is_pvp, is_gambit).into(),
-                                mode,
-                                character_id,
-                                reported_class.clone(),
-                                hash,
-                            ))
-                            .or_default() += kills;
-                    }
+                    .unwrap_or_else(|| "Unknown".into());
+                merge_character_identity(
+                    &mut deleted_character_identity,
+                    character_id,
+                    &reported_class,
+                    &race,
+                );
+            }
+            if let Some(emblem) = owner.pointer("/player/emblemHash").and_then(id_u32) {
+                *emblem_seconds.entry(emblem).or_default() += preferred_playtime(owner);
+            }
+            if !private_competitive {
+                for (hash, kills) in weapon_kill_deltas(owner) {
+                    *weapon_kills
+                        .entry((
+                            mode_group_from_flags(is_pvp, is_gambit).into(),
+                            mode,
+                            character_id,
+                            reported_class.clone(),
+                            hash,
+                        ))
+                        .or_default() += kills;
                 }
             }
         }
@@ -687,7 +736,7 @@ pub async fn crawl(
                 .pointer("/player/destinyUserInfo/membershipType")
                 .and_then(Value::as_i64)
                 .unwrap_or(0) as i32;
-            if membership_type > 0 {
+            if is_countable_encounter(membership_type, id) {
                 activity_encounters.insert((membership_type, id));
             }
         }
@@ -701,6 +750,7 @@ pub async fn crawl(
         &mut character_playtime,
         &account,
         profile_characters,
+        &character_class_by_id,
         &deleted_character_identity,
     );
     character_playtime.sort_by(|left, right| {
@@ -734,7 +784,7 @@ pub async fn crawl(
     )
     .await;
     for (raid_name, count) in sherpa_deltas {
-        *players_sherpaed.entry(raid_name).or_default() += count;
+        add_case_insensitive_count(&mut players_sherpaed, raid_name, count);
     }
     let players_sherpaed_report = players_sherpaed
         .iter()
@@ -743,35 +793,21 @@ pub async fn crawl(
             json!({ "raidName": raid_name, "playerCount": player_count })
         })
         .collect::<Vec<_>>();
-    let most_played_with = resolve_most_played_with(client, &encounter_counts, cancellation).await;
+    let most_played_with =
+        resolve_most_played_with(client, &encounter_counts, cancellation).await?;
     let most_used_emblems = resolve_most_used_emblems(manifest, &emblem_seconds);
-    let pvp_playlist_reports = pvp_playlists
-        .iter()
-        .map(|(mode, (wins, losses))| {
-            json!({
-                "mode": mode,
-                "modeName": mode_name(*mode),
-                "wins": wins,
-                "losses": losses,
-                "matches": wins + losses,
-                "winRate": ratio(f64::from(*wins), f64::from(wins + losses))
-            })
-        })
-        .collect::<Vec<_>>();
+    let pvp_playlist_reports = build_pvp_playlist_reports(&pvp_playlists, &activity_mode_names);
     let crucible_kills_total = crucible_kills_by_mode.values().sum::<i64>();
-    let crucible_kill_modes = crucible_kills_by_mode
-        .iter()
-        .map(|(mode, kills)| (mode_name(*mode).to_owned(), *kills))
-        .collect::<BTreeMap<_, _>>();
+    let mut crucible_kill_modes = BTreeMap::<String, i64>::new();
+    for (mode, kills) in &crucible_kills_by_mode {
+        let name = activity_mode_name(*mode, &activity_mode_names);
+        *crucible_kill_modes.entry(name).or_default() += *kills;
+    }
     let banked_total = gambit_banked.values().sum::<i32>();
     let lost_total = gambit_lost.values().sum::<i32>();
     let denied_total = gambit_denied.values().sum::<i32>();
-    let mote_modes = |values: &BTreeMap<i32, i32>| {
-        values
-            .iter()
-            .map(|(mode, value)| (mode_name(*mode).to_owned(), *value))
-            .collect::<BTreeMap<_, _>>()
-    };
+    let mote_modes =
+        |values: &BTreeMap<i32, i32>| named_mode_totals_i32(values, &activity_mode_names);
     let patrol_report = patrol_seconds
         .iter()
         .map(|(name, seconds)| (name.clone(), timespan(*seconds)))
@@ -1010,10 +1046,6 @@ fn is_private_error(error: &BungieError) -> bool {
     matches!(error, BungieError::Private(_))
 }
 
-fn is_missing_pgcr(error: &BungieError) -> bool {
-    matches!(error, BungieError::NotFound(_))
-}
-
 fn is_owner_entry(entry: &Value, membership_type: i32, membership_id: i64) -> bool {
     if entry
         .pointer("/player/destinyUserInfo/membershipId")
@@ -1027,6 +1059,13 @@ fn is_owner_entry(entry: &Value, membership_type: i32, membership_id: i64) -> bo
         .and_then(Value::as_i64)
         .unwrap_or(0) as i32;
     membership_type <= 0 || entry_membership_type <= 0 || entry_membership_type == membership_type
+}
+
+fn owner_entries(entries: &[Value], membership_type: i32, membership_id: i64) -> Vec<&Value> {
+    entries
+        .iter()
+        .filter(|entry| is_owner_entry(entry, membership_type, membership_id))
+        .collect()
 }
 
 fn metric_progress(profile: &Value, definitions: &BTreeMap<u32, Value>, metric_name: &str) -> i64 {
@@ -1064,12 +1103,19 @@ fn completed_seals(profile: &Value, manifest: &ManifestStore) -> anyhow::Result<
         else {
             continue;
         };
-        for child in root
+        let mut children = root
             .pointer("/children/presentationNodes")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-        {
+            .collect::<Vec<_>>();
+        children.sort_by_key(|child| {
+            child
+                .get("nodeDisplayPriority")
+                .and_then(number_i64)
+                .unwrap_or(i64::MAX)
+        });
+        for child in children {
             let Some(node_hash) = child.get("presentationNodeHash").and_then(id_u32) else {
                 continue;
             };
@@ -1101,26 +1147,24 @@ fn completed_seals(profile: &Value, manifest: &ManifestStore) -> anyhow::Result<
                 continue;
             }
             let definition = manifest.definition("DestinyRecordDefinition", record_hash)?;
-            let name = definition
+            let preferred_name = definition
                 .as_ref()
                 .and_then(|value| value.pointer("/displayProperties/name"))
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    node.pointer("/displayProperties/name")
-                        .and_then(Value::as_str)
-                })
-                .unwrap_or("");
-            let description = definition
+                .and_then(Value::as_str);
+            let name = first_non_blank(
+                preferred_name,
+                node.pointer("/displayProperties/name")
+                    .and_then(Value::as_str),
+            );
+            let preferred_description = definition
                 .as_ref()
                 .and_then(|value| value.pointer("/displayProperties/description"))
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    node.pointer("/displayProperties/description")
-                        .and_then(Value::as_str)
-                })
-                .unwrap_or("");
+                .and_then(Value::as_str);
+            let description = first_non_blank(
+                preferred_description,
+                node.pointer("/displayProperties/description")
+                    .and_then(Value::as_str),
+            );
             seals.push(json!({
                 "name": name,
                 "description": description,
@@ -1277,7 +1321,12 @@ fn add_completion(
     if name.is_empty() {
         return;
     }
-    let value = values.entry(name).or_default();
+    let key = values
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case(&name))
+        .cloned()
+        .unwrap_or(name);
+    let value = values.entry(key).or_default();
     value.activity_count += 1;
     if !completed {
         return;
@@ -1311,6 +1360,78 @@ fn add_completion(
     value.solo_flawless_clear |= solo && flawless;
 }
 
+fn normalize_completion_map(
+    values: BTreeMap<String, CompletionAggregate>,
+) -> BTreeMap<String, CompletionAggregate> {
+    let mut normalized = BTreeMap::new();
+    for (name, value) in values {
+        let key = normalized
+            .keys()
+            .find(|key: &&String| key.eq_ignore_ascii_case(&name))
+            .cloned()
+            .unwrap_or(name);
+        let target = normalized
+            .entry(key)
+            .or_insert_with(CompletionAggregate::default);
+        merge_completion(target, value);
+    }
+    normalized
+}
+
+fn merge_completion(target: &mut CompletionAggregate, source: CompletionAggregate) {
+    target.activity_count += source.activity_count;
+    target.completion_count += source.completion_count;
+    if source.first_completion.as_ref().is_some_and(|(date, _)| {
+        target
+            .first_completion
+            .as_ref()
+            .is_none_or(|(current, _)| date < current)
+    }) {
+        target.first_completion = source.first_completion;
+    }
+    if source.last_completion.as_ref().is_some_and(|(date, _)| {
+        target
+            .last_completion
+            .as_ref()
+            .is_none_or(|(current, _)| date > current)
+    }) {
+        target.last_completion = source.last_completion;
+    }
+    if source
+        .fastest_completion
+        .as_ref()
+        .is_some_and(|(seconds, _, _)| {
+            target
+                .fastest_completion
+                .as_ref()
+                .is_none_or(|(current, _, _)| seconds < current)
+        })
+    {
+        target.fastest_completion = source.fastest_completion;
+    }
+    target.contest_clear |= source.contest_clear;
+    target.flawless_clear |= source.flawless_clear;
+    target.solo_clear |= source.solo_clear;
+    target.solo_flawless_clear |= source.solo_flawless_clear;
+}
+
+fn normalize_case_insensitive_counts(values: BTreeMap<String, i32>) -> BTreeMap<String, i32> {
+    let mut normalized = BTreeMap::new();
+    for (name, count) in values {
+        add_case_insensitive_count(&mut normalized, name, count);
+    }
+    normalized
+}
+
+fn add_case_insensitive_count(values: &mut BTreeMap<String, i32>, name: String, count: i32) {
+    let key = values
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case(&name))
+        .cloned()
+        .unwrap_or(name);
+    *values.entry(key).or_default() += count;
+}
+
 fn add_pvp_playlist_result(
     values: &mut BTreeMap<i32, (i32, i32)>,
     mode: i32,
@@ -1329,6 +1450,48 @@ fn add_pvp_playlist_result(
     } else {
         playlist.1 += 1;
     }
+}
+
+fn build_pvp_playlist_reports(
+    values: &BTreeMap<i32, (i32, i32)>,
+    activity_mode_names: &BTreeMap<i32, String>,
+) -> Vec<Value> {
+    let mut playlists = values
+        .iter()
+        .map(|(mode, (wins, losses))| (*mode, *wins, *losses))
+        .collect::<Vec<_>>();
+    playlists.sort_by(|left, right| {
+        (right.1 + right.2)
+            .cmp(&(left.1 + left.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    playlists
+        .into_iter()
+        .map(|(mode, wins, losses)| {
+            json!({
+                "mode": mode,
+                "modeName": activity_mode_name(mode, activity_mode_names),
+                "wins": wins,
+                "losses": losses,
+                "matches": wins + losses,
+                "winRate": ratio(f64::from(wins), f64::from(wins + losses))
+            })
+        })
+        .collect()
+}
+
+fn add_deaths_by_mode(
+    values: &mut BTreeMap<(String, i32), i64>,
+    activity_mode: &str,
+    specific_mode: i32,
+    deaths: i64,
+) {
+    if deaths <= 0 {
+        return;
+    }
+    *values
+        .entry((activity_mode.to_owned(), specific_mode))
+        .or_default() += deaths;
 }
 
 fn activity_completed_at(period: &str, owners: &[&Value]) -> String {
@@ -1596,7 +1759,7 @@ fn is_contest_clear(pgcr: &Value, is_raid: bool, is_dungeon: bool, completed_at:
     false
 }
 
-fn conquest_name(pgcr: &Value, activity_name: &str, period: &str) -> Option<String> {
+fn conquest_name(pgcr: &Value, _activity_name: &str, period: &str) -> Option<String> {
     let reference = pgcr
         .pointer("/activityDetails/referenceId")
         .and_then(id_u32);
@@ -1664,10 +1827,7 @@ fn conquest_name(pgcr: &Value, activity_name: &str, period: &str) -> Option<Stri
             .to_owned(),
         );
     }
-    activity_name
-        .to_ascii_lowercase()
-        .contains("conquest")
-        .then(|| normalize_activity_name(activity_name))
+    None
 }
 
 fn normalize_activity_name(activity_name: &str) -> String {
@@ -1701,6 +1861,7 @@ fn append_deleted_character_playtime(
     output: &mut Vec<Value>,
     account: &Value,
     current: Option<&serde_json::Map<String, Value>>,
+    historical_classes: &BTreeMap<i64, String>,
     recovered: &BTreeMap<i64, (String, String)>,
 ) {
     for character in account
@@ -1722,10 +1883,14 @@ fn append_deleted_character_playtime(
         let recovered_identity = recovered.get(&character_id);
         let class = recovered_identity
             .map(|value| value.0.as_str())
+            .filter(|value| *value != "Unknown")
+            .or_else(|| historical_classes.get(&character_id).map(String::as_str))
             .or_else(|| character.get("characterClass").and_then(Value::as_str))
+            .map(normalize_class_name)
             .unwrap_or("Unknown");
         let race = recovered_identity
             .map(|value| value.1.as_str())
+            .map(normalize_race_name)
             .unwrap_or("Unknown");
         output.push(json!({
             "class": class,
@@ -1734,6 +1899,43 @@ fn append_deleted_character_playtime(
             "playtime": timespan(seconds)
         }));
     }
+}
+
+fn recover_deleted_character_identity(
+    pgcr: &Value,
+    manifest: &ManifestStore,
+    job: &CrawlJob,
+    character_id: i64,
+    historical_classes: &mut BTreeMap<i64, String>,
+    identities: &mut BTreeMap<i64, (String, String)>,
+) {
+    let Some(entry) = pgcr
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| {
+            entry.get("characterId").and_then(id_i64) == Some(character_id)
+                && is_owner_entry(entry, job.membership_type_id, job.membership_id)
+        })
+    else {
+        return;
+    };
+    let class = pgcr_character_class(entry, manifest);
+    if class != "Unknown" {
+        historical_classes.insert(character_id, class.clone());
+    }
+    let race = entry
+        .pointer("/player/raceHash")
+        .and_then(id_u32)
+        .and_then(|hash| {
+            manifest_display_name(manifest, "DestinyRaceDefinition", hash)
+                .ok()
+                .flatten()
+        })
+        .map(|value| normalize_race_name(&value))
+        .unwrap_or("Unknown");
+    merge_character_identity(identities, character_id, &class, race);
 }
 
 fn merge_character_identity(
@@ -1773,7 +1975,10 @@ async fn resolve_sherpas(
         .map(|membership_id| {
             let client = client.clone();
             async move {
-                let linked = client.linked_profiles(-1, membership_id).await.ok();
+                let linked = client
+                    .linked_profiles(BUNGIE_NEXT_MEMBERSHIP_TYPE, membership_id)
+                    .await
+                    .ok();
                 (
                     membership_id,
                     linked
@@ -2001,11 +2206,10 @@ async fn fetch_completed_raid_history(
                 };
                 history.entry(instance_id).or_insert_with(|| CompletedRaid {
                     name: normalize_activity_name(&activity_name(activity, activity_definitions)),
-                    period: activity
-                        .get("period")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_owned(),
+                    period: activity_completed_at(
+                        activity.get("period").and_then(Value::as_str).unwrap_or(""),
+                        &[activity],
+                    ),
                     instance_id,
                 });
             }
@@ -2021,7 +2225,7 @@ async fn resolve_most_played_with(
     client: &BungieClient,
     counts: &BTreeMap<(i32, i64), i32>,
     cancellation: &CancellationToken,
-) -> Vec<Value> {
+) -> anyhow::Result<Vec<Value>> {
     let mut top = counts
         .iter()
         .filter(|((membership_type, membership_id), count)| {
@@ -2035,10 +2239,7 @@ async fn resolve_most_played_with(
         .map(|(index, ((membership_type, membership_id), count))| {
             let client = client.clone();
             async move {
-                let profile = client
-                    .profile_summary(membership_type, membership_id)
-                    .await
-                    .ok();
+                let profile = client.profile_summary(membership_type, membership_id).await;
                 (index, membership_type, membership_id, count, profile)
             }
         })
@@ -2046,11 +2247,16 @@ async fn resolve_most_played_with(
     let mut resolved = Vec::new();
     loop {
         let next = tokio::select! {
-            _ = cancellation.cancelled() => None,
+            _ = cancellation.cancelled() => return Err(BungieError::Cancelled.into()),
             value = pending.next() => value,
         };
         let Some((index, membership_type, membership_id, count, profile)) = next else {
             break;
+        };
+        let profile = match profile {
+            Ok(profile) => Some(profile),
+            Err(BungieError::NotFound(_) | BungieError::Private(_)) => None,
+            Err(error) => return Err(error.into()),
         };
         let user = profile
             .as_ref()
@@ -2091,7 +2297,7 @@ async fn resolve_most_played_with(
         ));
     }
     resolved.sort_by_key(|(index, _)| *index);
-    resolved.into_iter().map(|(_, value)| value).collect()
+    Ok(resolved.into_iter().map(|(_, value)| value).collect())
 }
 
 fn resolve_most_used_emblems(manifest: &ManifestStore, seconds: &BTreeMap<u32, i64>) -> Vec<Value> {
@@ -2237,15 +2443,39 @@ fn historical_character_classes(account: &Value) -> BTreeMap<i64, String> {
                 .into_iter()
                 .find_map(|key| {
                     let value = character.get(key)?;
-                    value
+                    let class = value
                         .as_i64()
                         .map(|value| class_name(value as i32))
                         .or_else(|| value.as_str().map(normalize_class_name))
+                        .unwrap_or("Unknown");
+                    (class != "Unknown").then_some(class)
                 })
                 .unwrap_or("Unknown");
             Some((id, class.to_owned()))
         })
         .collect()
+}
+
+fn pgcr_character_class(entry: &Value, manifest: &ManifestStore) -> String {
+    let reported = entry
+        .pointer("/player/characterClass")
+        .and_then(Value::as_str)
+        .map(normalize_class_name)
+        .unwrap_or("Unknown");
+    if reported != "Unknown" {
+        return reported.to_owned();
+    }
+    entry
+        .pointer("/player/classHash")
+        .and_then(id_u32)
+        .and_then(|hash| {
+            manifest_display_name(manifest, "DestinyClassDefinition", hash)
+                .ok()
+                .flatten()
+        })
+        .map(|name| normalize_class_name(&name).to_owned())
+        .filter(|name| name != "Unknown")
+        .unwrap_or_else(|| "Unknown".to_owned())
 }
 
 fn normalize_class_name(value: &str) -> &'static str {
@@ -2258,6 +2488,29 @@ fn normalize_class_name(value: &str) -> &'static str {
     } else {
         "Unknown"
     }
+}
+
+fn normalize_race_name(value: &str) -> &'static str {
+    if value.eq_ignore_ascii_case("Human") {
+        "Human"
+    } else if value.eq_ignore_ascii_case("Awoken") {
+        "Awoken"
+    } else if value.eq_ignore_ascii_case("Exo") {
+        "Exo"
+    } else {
+        "Unknown"
+    }
+}
+
+fn first_non_blank<'a>(preferred: Option<&'a str>, fallback: Option<&'a str>) -> &'a str {
+    preferred
+        .filter(|value| !value.trim().is_empty())
+        .or(fallback)
+        .unwrap_or("")
+}
+
+fn is_countable_encounter(membership_type: i32, membership_id: i64) -> bool {
+    (1..=i32::from(u8::MAX)).contains(&membership_type) && membership_id > 0
 }
 
 fn mote_stat(value: &Value, name: &str) -> i32 {
@@ -2348,6 +2601,29 @@ fn mode_name(mode: i32) -> &'static str {
         94 => "SparrowRacingLeague",
         _ => "Unknown",
     }
+}
+
+fn activity_mode_name(mode: i32, definitions: &BTreeMap<i32, String>) -> String {
+    definitions.get(&mode).cloned().unwrap_or_else(|| {
+        let legacy = mode_name(mode);
+        if legacy == "Unknown" {
+            format!("Mode {mode}")
+        } else {
+            legacy.to_owned()
+        }
+    })
+}
+
+fn named_mode_totals_i32(
+    values: &BTreeMap<i32, i32>,
+    definitions: &BTreeMap<i32, String>,
+) -> BTreeMap<String, i32> {
+    let mut totals = BTreeMap::new();
+    for (mode, value) in values {
+        let name = activity_mode_name(*mode, definitions);
+        *totals.entry(name).or_default() += *value;
+    }
+    totals
 }
 
 fn numeric_mode_map(values: &BTreeMap<i32, i32>) -> BTreeMap<String, i32> {
@@ -2584,6 +2860,9 @@ fn encode_encounters(values: &BTreeSet<(i32, i64)>) -> Vec<u8> {
     // compresses the payload; materialization must still recreate these 9-byte keys.
     let mut output = Vec::with_capacity(values.len() * 9);
     for (membership_type, membership_id) in values {
+        if !is_countable_encounter(*membership_type, *membership_id) {
+            continue;
+        }
         output.push(*membership_type as u8);
         output.extend_from_slice(&membership_id.to_le_bytes());
     }
@@ -2747,6 +3026,107 @@ mod tests {
     }
 
     #[test]
+    fn historical_character_class_skips_unrecognized_earlier_fields() {
+        let account = json!({ "characters": [{
+            "characterId": "20",
+            "characterClass": "",
+            "classType": 2
+        }] });
+
+        let classes = historical_character_classes(&account);
+
+        assert_eq!(classes.get(&20).map(String::as_str), Some("Warlock"));
+    }
+
+    #[test]
+    fn pgcr_character_class_falls_back_to_the_class_manifest() {
+        let path = std::env::temp_dir().join(format!(
+            "destiny2report-class-manifest-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE DestinyClassDefinition (id INTEGER PRIMARY KEY, json TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO DestinyClassDefinition (id, json) VALUES (?1, ?2)",
+                rusqlite::params![123_i32, r#"{"displayProperties":{"name":"Warlock"}}"#],
+            )
+            .unwrap();
+        drop(connection);
+        let manifest = ManifestStore::new(&path);
+        let entry = json!({ "player": { "characterClass": "", "classHash": 123 } });
+
+        assert_eq!(pgcr_character_class(&entry, &manifest), "Warlock");
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn completion_and_sherpa_state_merge_names_case_insensitively() {
+        let completions = BTreeMap::from([
+            (
+                "King's Fall".to_owned(),
+                CompletionAggregate {
+                    activity_count: 2,
+                    completion_count: 1,
+                    first_completion: Some(("2024-01-02T00:00:00Z".into(), 2)),
+                    ..CompletionAggregate::default()
+                },
+            ),
+            (
+                "KING'S FALL".to_owned(),
+                CompletionAggregate {
+                    activity_count: 3,
+                    completion_count: 2,
+                    first_completion: Some(("2024-01-01T00:00:00Z".into(), 1)),
+                    flawless_clear: true,
+                    ..CompletionAggregate::default()
+                },
+            ),
+        ]);
+
+        let completions = normalize_completion_map(completions);
+        let completion = completions.values().next().unwrap();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completion.activity_count, 5);
+        assert_eq!(completion.completion_count, 3);
+        assert_eq!(completion.first_completion.as_ref().unwrap().1, 1);
+        assert!(completion.flawless_clear);
+
+        let sherpas = normalize_case_insensitive_counts(BTreeMap::from([
+            ("Root of Nightmares".to_owned(), 2),
+            ("ROOT OF NIGHTMARES".to_owned(), 3),
+        ]));
+        assert_eq!(sherpas.len(), 1);
+        assert_eq!(sherpas.values().next(), Some(&5));
+    }
+
+    #[test]
+    fn activity_mode_names_use_manifest_and_lossless_fallbacks() {
+        let definitions = BTreeMap::from([(95, "New Crucible Mode".to_owned())]);
+        assert_eq!(activity_mode_name(95, &definitions), "New Crucible Mode");
+        assert_eq!(activity_mode_name(96, &definitions), "Mode 96");
+        assert_eq!(
+            named_mode_totals_i32(&BTreeMap::from([(95, 2), (96, 3)]), &definitions),
+            BTreeMap::from([
+                ("Mode 96".to_owned(), 3),
+                ("New Crucible Mode".to_owned(), 2)
+            ])
+        );
+    }
+
+    #[test]
+    fn incremental_overlap_is_eight_hours() {
+        assert_eq!(INCREMENTAL_CRAWL_OVERLAP_HOURS, 8);
+        assert_eq!(RECENT_ACTIVITY_INSTANCE_ID_LIMIT, 500);
+    }
+
+    #[test]
     fn linked_profile_resolution_prefers_cross_save_primary() {
         let linked = json!({ "profiles": [
             {
@@ -2902,6 +3282,29 @@ mod tests {
     }
 
     #[test]
+    fn pvp_playlists_are_ordered_by_matches_then_mode() {
+        let playlists = BTreeMap::from([(70, (2, 1)), (12, (1, 4)), (10, (3, 2))]);
+        let reports = build_pvp_playlist_reports(&playlists, &BTreeMap::new());
+        let modes = reports
+            .iter()
+            .map(|report| report["mode"].as_i64().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(modes, vec![10, 12, 70]);
+    }
+
+    #[test]
+    fn zero_deaths_do_not_create_aggregate_rows() {
+        let mut deaths = BTreeMap::new();
+        add_deaths_by_mode(&mut deaths, "PvE", 3, 0);
+        assert!(deaths.is_empty());
+
+        add_deaths_by_mode(&mut deaths, "PvE", 3, 2);
+        add_deaths_by_mode(&mut deaths, "PvE", 3, 3);
+        assert_eq!(deaths[&("PvE".to_owned(), 3)], 5);
+    }
+
+    #[test]
     fn kd_falls_back_to_bungie_ratio_for_deathless_stats() {
         assert_eq!(kd_with_fallback(42.0, 0.0, &[7.25, 8.75]), 8.0);
         assert_eq!(kd_with_fallback(42.0, 2.0, &[99.0]), 21.0);
@@ -2914,11 +3317,8 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_pgcr_is_not_treated_as_a_permanently_missing_pgcr() {
-        assert!(is_missing_pgcr(&BungieError::NotFound(None)));
-        assert!(!is_missing_pgcr(&BungieError::Unavailable(
-            "temporary server failure".into()
-        )));
+    fn sherpa_membership_resolution_uses_bungie_next_for_known_membership_ids() {
+        assert_eq!(BUNGIE_NEXT_MEMBERSHIP_TYPE, 254);
     }
 
     #[test]
@@ -2934,8 +3334,59 @@ mod tests {
             }}
         }]});
         let mut output = Vec::new();
-        append_deleted_character_playtime(&mut output, &account, None, &identities);
+        let historical_classes = BTreeMap::from([(42, "Hunter".to_owned())]);
+        append_deleted_character_playtime(
+            &mut output,
+            &account,
+            None,
+            &historical_classes,
+            &identities,
+        );
         assert_eq!(output[0]["class"], "Hunter");
         assert_eq!(output[0]["race"], "Awoken");
+    }
+
+    #[test]
+    fn pgcr_without_an_owner_entry_is_not_processed() {
+        let entries = vec![json!({ "player": { "destinyUserInfo": {
+            "membershipType": 3,
+            "membershipId": "99"
+        }}})];
+
+        assert!(owner_entries(&entries, 3, 42).is_empty());
+    }
+
+    #[test]
+    fn encounter_membership_type_must_fit_the_persisted_byte_contract() {
+        assert!(is_countable_encounter(1, 42));
+        assert!(is_countable_encounter(255, 42));
+        assert!(!is_countable_encounter(0, 42));
+        assert!(!is_countable_encounter(256, 42));
+        assert!(!is_countable_encounter(3, 0));
+    }
+
+    #[test]
+    fn unconfigured_conquest_names_are_not_counted() {
+        let pgcr = json!({ "activityDetails": {
+            "referenceId": 999,
+            "directorActivityHash": 998
+        }});
+
+        assert_eq!(
+            conquest_name(&pgcr, "An Unconfigured Conquest", "2026-01-01T00:00:00Z"),
+            None
+        );
+    }
+
+    #[test]
+    fn seal_text_falls_back_when_the_record_value_is_blank() {
+        assert_eq!(
+            first_non_blank(Some("   "), Some("Presentation node description")),
+            "Presentation node description"
+        );
+        assert_eq!(
+            first_non_blank(Some("Record description"), Some("Fallback")),
+            "Record description"
+        );
     }
 }

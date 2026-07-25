@@ -36,6 +36,28 @@ public sealed class CrawlerProtocolTests
     }
 
     [Fact]
+    public void Queue_admission_honors_the_report_full_recrawl_marker()
+    {
+        var filter = CrawlerJobQueue.BuildFullRecrawlFilter(3, 42);
+        var rendered = filter.Render(new RenderArgs<DestinyReport>(
+            BsonSerializer.LookupSerializer<DestinyReport>(),
+            BsonSerializer.SerializerRegistry));
+
+        Assert.Equal(3, rendered["PlatformId"].AsInt32);
+        Assert.Equal(42, rendered["PlayerMembershipId"].AsInt64);
+        Assert.True(rendered["NeedsFullRecrawl"].AsBoolean);
+    }
+
+    [Fact]
+    public void Dispatch_status_does_not_overwrite_a_worker_with_a_newer_fence()
+    {
+        Assert.Contains(
+            "if currentRun == ARGV[1] and currentFence > tonumber(ARGV[2]) then return 0 end",
+            CrawlerJobQueue.DispatchStatusScript);
+        Assert.Contains("redis.call('EXPIRE', KEYS[1], ARGV[9])", CrawlerJobQueue.DispatchStatusScript);
+    }
+
+    [Fact]
     public void Queryable_report_document_keeps_metrics_as_bson_fields()
     {
         var document = new CrawlReportDocument

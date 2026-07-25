@@ -90,6 +90,11 @@ impl BungieFailure {
     pub(crate) fn preferred_message(&self) -> &str {
         self.span_message()
     }
+
+    fn is_privacy_restriction(&self) -> bool {
+        is_privacy_restriction(&self.message)
+            || self.response.as_deref().is_some_and(is_privacy_restriction)
+    }
 }
 
 impl std::fmt::Display for BungieFailure {
@@ -368,9 +373,11 @@ impl BungieClient {
             };
 
             if response.status() == StatusCode::NOT_FOUND {
-                return Err(BungieError::NotFound(Some(
-                    http_failure(path, response, attempt + 1).await,
-                )));
+                let failure = http_failure(path, response, attempt + 1).await;
+                if failure.is_privacy_restriction() {
+                    return Err(BungieError::Private(Some(failure)));
+                }
+                return Err(BungieError::NotFound(Some(failure)));
             }
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 let delay = response
@@ -385,30 +392,33 @@ impl BungieClient {
                     continue;
                 }
             }
-            if (response.status().is_server_error() || response.status().as_u16() == 524)
-                && attempt + 1 < MAX_ATTEMPTS
-            {
-                let delay = backoff(attempt);
-                if attempt == 0 || attempt + 2 == MAX_ATTEMPTS {
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        %path,
-                        status = %response.status(),
-                        "retrying Bungie server failure"
-                    );
-                }
-                limiter.pause(delay).await;
-                continue;
-            }
             if response.status().is_server_error() || response.status().as_u16() == 524 {
-                return Err(BungieError::Unavailable(
-                    http_failure(path, response, attempt + 1).await,
-                ));
+                let status = response.status();
+                let failure = http_failure(path, response, attempt + 1).await;
+                if failure.is_privacy_restriction() {
+                    return Err(BungieError::Private(Some(failure)));
+                }
+                if attempt + 1 < MAX_ATTEMPTS {
+                    let delay = backoff(attempt);
+                    if attempt == 0 || attempt + 2 == MAX_ATTEMPTS {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            %path,
+                            %status,
+                            "retrying Bungie server failure"
+                        );
+                    }
+                    limiter.pause(delay).await;
+                    continue;
+                }
+                return Err(BungieError::Unavailable(failure));
             }
             if !response.status().is_success() {
-                return Err(BungieError::Request(
-                    http_failure(path, response, attempt + 1).await,
-                ));
+                let failure = http_failure(path, response, attempt + 1).await;
+                if failure.is_privacy_restriction() {
+                    return Err(BungieError::Private(Some(failure)));
+                }
+                return Err(BungieError::Request(failure));
             }
 
             let status_code = response.status().as_u16();
@@ -437,7 +447,7 @@ impl BungieClient {
                     status_code,
                     response_text,
                 );
-                if error_status.contains("Privacy") || error_status.contains("Private") {
+                if is_privacy_restriction(error_status) || is_privacy_restriction(&message) {
                     return Err(BungieError::Private(Some(failure)));
                 }
                 if error_status.contains("NotFound") {
@@ -544,6 +554,11 @@ fn bungie_response_message(body: &Value) -> Option<&str> {
         })
 }
 
+fn is_privacy_restriction(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    value.contains("privacy") || value.contains("private")
+}
+
 fn operation_name(path: &str) -> String {
     let path_without_query = path.split('?').next().unwrap_or(path).trim_matches('/');
     let parts = path_without_query.split('/').collect::<Vec<_>>();
@@ -605,7 +620,7 @@ fn backoff(attempt: u32) -> Duration {
 mod tests {
     use serde_json::json;
 
-    use super::{BungieFailure, bungie_response_message, operation_name};
+    use super::{BungieFailure, bungie_response_message, is_privacy_restriction, operation_name};
 
     #[test]
     fn bungie_response_payload_takes_precedence_in_span_message() {
@@ -633,6 +648,21 @@ mod tests {
         assert_eq!(failure.span_message(), "request timed out");
         assert_eq!(failure.status_code, None);
         assert_eq!(failure.response, None);
+    }
+
+    #[test]
+    fn http_500_privacy_messages_are_classified_as_private() {
+        let failure = BungieFailure::with_response(
+            "Destiny2/1/Account/42/Character/7/Stats/Activities/: HTTP 500 Internal Server Error: The user has chosen for this data to be private. No peeking!".to_owned(),
+            500,
+            r#"{"ErrorCode":1665,"Message":"The user has chosen for this data to be private.  No peeking!"}"#.to_owned(),
+        );
+
+        assert!(failure.is_privacy_restriction());
+        assert!(is_privacy_restriction(
+            "The user has chosen for this data to be private. No peeking!"
+        ));
+        assert!(!is_privacy_restriction("Internal Server Error"));
     }
 
     #[test]

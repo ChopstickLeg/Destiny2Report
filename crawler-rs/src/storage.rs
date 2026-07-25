@@ -42,6 +42,43 @@ pub async fn store_active_display_name(
     Ok(())
 }
 
+pub async fn load_existing_identity(
+    database: &Database,
+    job: &CrawlJob,
+) -> anyhow::Result<(String, i32)> {
+    let existing = database
+        .collection::<Document>("destiny_reports")
+        .find_one(doc! {
+            "PlatformId": job.membership_type_id,
+            "PlayerMembershipId": job.membership_id
+        })
+        .await?;
+    Ok(existing_identity(existing.as_ref(), &job.display_name))
+}
+
+fn existing_identity(existing: Option<&Document>, fallback_name: &str) -> (String, i32) {
+    let name = existing
+        .and_then(|document| {
+            document
+                .get_str("DisplayName")
+                .ok()
+                .or_else(|| document.get_str("displayName").ok())
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback_name)
+        .to_owned();
+    let code = existing
+        .map(|document| {
+            bson_i32(
+                document
+                    .get("DisplayCode")
+                    .or_else(|| document.get("displayCode")),
+            )
+        })
+        .unwrap_or_default();
+    (name, code)
+}
+
 pub async fn load_incremental_seed(
     database: &Database,
     job: &CrawlJob,
@@ -85,6 +122,7 @@ pub async fn load_incremental_seed(
         raid_completions: completion_map(state, "raidCompletions"),
         dungeon_completions: completion_map(state, "dungeonCompletions"),
         conquest_completions: completion_map(state, "conquestCompletions"),
+        encountered_players: encountered_players(state),
         mode_seconds: playtime_map(state),
         pvp_playlists: playlist_map(state),
         crucible_kills_by_mode: i32_i64_map(state, "crucibleKillsByMode"),
@@ -165,11 +203,7 @@ pub async fn cached_raid_history(
     else {
         return Ok(None);
     };
-    if !required_raid_names.iter().all(|required| {
-        completions
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case(required))
-    }) {
+    if !has_required_first_completions(completions, required_raid_names) {
         return Ok(None);
     }
     let history = completions
@@ -192,6 +226,21 @@ pub async fn cached_raid_history(
         })
         .collect::<Vec<_>>();
     Ok(Some(history))
+}
+
+fn has_required_first_completions(
+    completions: &Document,
+    required_raid_names: &std::collections::BTreeSet<String>,
+) -> bool {
+    required_raid_names.iter().all(|required| {
+        completions.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case(required)
+                && value.as_document().is_some_and(|completion| {
+                    completion.contains_key("FirstCompletion")
+                        || completion.contains_key("firstCompletion")
+                })
+        })
+    })
 }
 
 pub async fn persist_inferred_raid_history(
@@ -578,6 +627,78 @@ fn string_set(document: &Document, name: &str) -> std::collections::BTreeSet<Str
         .collect()
 }
 
+fn encountered_players(document: &Document) -> std::collections::BTreeSet<(i32, i64)> {
+    let Some(encoded) = document
+        .get_str("encounteredPlayerKeys")
+        .ok()
+        .filter(|value| !value.is_empty())
+    else {
+        return std::collections::BTreeSet::new();
+    };
+    let Some(bytes) = decode_base64(encoded) else {
+        return std::collections::BTreeSet::new();
+    };
+    bytes
+        .chunks_exact(9)
+        .filter_map(|chunk| {
+            let membership_type = i32::from(chunk[0]);
+            let membership_id = i64::from_le_bytes(chunk[1..9].try_into().ok()?);
+            (membership_type > 0 && membership_id > 0).then_some((membership_type, membership_id))
+        })
+        .collect()
+}
+
+fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    if value.len() % 4 != 0 {
+        return None;
+    }
+    let decode = |byte: u8| match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let mut output = Vec::with_capacity(value.len() / 4 * 3);
+    for (index, chunk) in value.as_bytes().chunks_exact(4).enumerate() {
+        let last = index + 1 == value.len() / 4;
+        let padding = match (chunk[2], chunk[3]) {
+            (b'=', b'=') => 2,
+            (_, b'=') => 1,
+            (b'=', _) => return None,
+            _ => 0,
+        };
+        if padding > 0 && !last {
+            return None;
+        }
+        let first = decode(chunk[0])?;
+        let second = decode(chunk[1])?;
+        let third = if chunk[2] == b'=' {
+            0
+        } else {
+            decode(chunk[2])?
+        };
+        let fourth = if chunk[3] == b'=' {
+            0
+        } else {
+            decode(chunk[3])?
+        };
+        let bits = (u32::from(first) << 18)
+            | (u32::from(second) << 12)
+            | (u32::from(third) << 6)
+            | u32::from(fourth);
+        output.push((bits >> 16) as u8);
+        if padding < 2 {
+            output.push((bits >> 8) as u8);
+        }
+        if padding == 0 {
+            output.push(bits as u8);
+        }
+    }
+    Some(output)
+}
+
 fn string_i64_map(document: &Document, name: &str) -> std::collections::BTreeMap<String, i64> {
     document
         .get_document(name)
@@ -848,6 +969,33 @@ mod tests {
     }
 
     #[test]
+    fn sherpa_cache_requires_an_actual_first_completion_for_every_required_raid() {
+        let completions = doc! {
+            "King's Fall": {
+                "ActivityCount": 3,
+                "CompletionCount": 0
+            },
+            "Vault of Glass": {
+                "activityCount": 2,
+                "completionCount": 1,
+                "firstCompletion": {
+                    "completedAt": "2024-01-01T00:00:00Z",
+                    "instanceId": 42_i64
+                }
+            }
+        };
+
+        assert!(!has_required_first_completions(
+            &completions,
+            &std::collections::BTreeSet::from(["King's Fall".to_owned()])
+        ));
+        assert!(has_required_first_completions(
+            &completions,
+            &std::collections::BTreeSet::from(["Vault of Glass".to_owned()])
+        ));
+    }
+
+    #[test]
     fn generation_state_parsers_restore_incremental_aggregates() {
         let state = doc! {
             "patrolSecondsByPlanet": { "Nessus": 90_i64 },
@@ -874,6 +1022,7 @@ mod tests {
             },
             "playersSherpaed": { "Vault of Glass": 2 }
             ,
+            "encounteredPlayerKeys": "AwgHBgUEAwIB",
             "deletedCharacterIdentity": {
                 "123": { "class": "Hunter", "race": "Awoken" }
             }
@@ -895,6 +1044,27 @@ mod tests {
         assert_eq!(
             character_identity_map(&state)[&123],
             ("Hunter".into(), "Awoken".into())
+        );
+        assert_eq!(
+            encountered_players(&state),
+            std::collections::BTreeSet::from([(3, 0x0102_0304_0506_0708)])
+        );
+    }
+
+    #[test]
+    fn existing_report_identity_is_used_when_bungie_omits_it() {
+        let report = doc! {
+            "DisplayName": "Existing Guardian",
+            "DisplayCode": 1234
+        };
+
+        assert_eq!(
+            existing_identity(Some(&report), "Queued Guardian"),
+            ("Existing Guardian".to_owned(), 1234)
+        );
+        assert_eq!(
+            existing_identity(None, "Queued Guardian"),
+            ("Queued Guardian".to_owned(), 0)
         );
     }
 }

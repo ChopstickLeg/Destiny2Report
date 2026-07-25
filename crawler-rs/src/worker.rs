@@ -304,7 +304,14 @@ impl Worker {
             ownership.clone(),
         ));
         let _ = self
-            .publish_progress(&job, "running", "profile", "Loading profile", 0, None)
+            .publish_progress(
+                &job,
+                "running",
+                "profile",
+                "Loading profile",
+                None,
+                (0, None),
+            )
             .await;
         let bungie = self.bungie.clone();
         let manifest = self.manifest.clone();
@@ -316,14 +323,36 @@ impl Worker {
             destiny.membership_id = job.membership_id,
         );
         let database = self.mongo.database(&self.config.mongo_database);
-        let crawl = crawler::crawl(
-            &bungie,
-            &manifest,
-            &database,
-            &job,
-            &ownership,
-            &progress_tx,
-        )
+        let crawl = async {
+            const MAX_CRAWL_ATTEMPTS: u32 = 2;
+            for attempt in 1..=MAX_CRAWL_ATTEMPTS {
+                let result = crawler::crawl(
+                    &bungie,
+                    &manifest,
+                    &database,
+                    &job,
+                    &ownership,
+                    &progress_tx,
+                )
+                .await;
+                match result {
+                    Err(error)
+                        if attempt < MAX_CRAWL_ATTEMPTS
+                            && !ownership.is_cancelled()
+                            && !is_cancelled_crawl_error(&error) =>
+                    {
+                        tracing::warn!(
+                            %error,
+                            run_id = %job.run_id,
+                            attempt,
+                            "crawler attempt failed; retrying once immediately"
+                        );
+                    }
+                    result => return result,
+                }
+            }
+            unreachable!("crawl attempt loop always returns")
+        }
         .instrument(crawl_span.clone());
         tokio::pin!(crawl);
         let result = loop {
@@ -337,8 +366,8 @@ impl Worker {
                                 "running",
                                 update.phase,
                                 update.label,
-                                update.current,
-                                update.total,
+                                None,
+                                (update.current, update.total),
                             )
                             .await;
                     }
@@ -358,13 +387,28 @@ impl Worker {
                     | crawler::CrawlOutcome::Private(result)
                     | crawler::CrawlOutcome::NotFound(result),
                 ) => {
-                    match storage::stage(
-                        &self.mongo.database(&self.config.mongo_database),
-                        &job,
-                        &result,
-                    )
-                    .await
-                    {
+                    let mut stage_attempt = 1;
+                    let stage_result = loop {
+                        let staged = storage::stage(
+                            &self.mongo.database(&self.config.mongo_database),
+                            &job,
+                            &result,
+                        )
+                        .await;
+                        match staged {
+                            Err(error) if stage_attempt < 2 && !ownership.is_cancelled() => {
+                                tracing::warn!(
+                                    %error,
+                                    run_id = %job.run_id,
+                                    attempt = stage_attempt,
+                                    "candidate storage failed; retrying once immediately"
+                                );
+                                stage_attempt += 1;
+                            }
+                            result => break result,
+                        }
+                    };
+                    match stage_result {
                         Ok(Some(generation)) => {
                             process_span.set_status(Status::Ok);
                             let _ = self
@@ -373,8 +417,8 @@ impl Worker {
                                     "running",
                                     "finalizing",
                                     "Finalizing report",
-                                    1,
-                                    Some(1),
+                                    None,
+                                    (1, Some(1)),
                                 )
                                 .await;
                             if !job.stream_entry_id.is_empty() {
@@ -395,9 +439,17 @@ impl Worker {
                 Err(error) => {
                     record_crawl_error(&process_span, &error);
                     tracing::error!(%error, run_id = %job.run_id, "crawl failed");
-                    if matches!(self.fail(&job, &error.to_string()).await, Ok(true)) {
+                    let error = error.to_string();
+                    if matches!(self.fail(&job, &error).await, Ok(true)) {
                         let _ = self
-                            .publish_progress(&job, "failed", "failed", "Crawl failed", 1, Some(1))
+                            .publish_progress(
+                                &job,
+                                "failed",
+                                "failed",
+                                "Crawl failed",
+                                Some(&error),
+                                (1, Some(1)),
+                            )
                             .await;
                         if !job.stream_entry_id.is_empty() {
                             let _ = self.ack(&job.stream_entry_id).await;
@@ -414,12 +466,20 @@ impl Worker {
     }
 
     async fn fail(&self, job: &CrawlJob, error: &str) -> anyhow::Result<bool> {
-        let result = self.mongo.database(&self.config.mongo_database).collection::<CrawlJob>("crawl_jobs")
+        let database = self.mongo.database(&self.config.mongo_database);
+        let result = database.collection::<CrawlJob>("crawl_jobs")
             .update_one(
                 doc! { "_id": &job.player_key, "r": &job.run_id, "f": job.fence, "lo": &job.lease_owner, "s": STATE_RUNNING },
                 doc! { "$set": { "s": "failed", "e": error, "lo": "", "le": null, "ua": DateTime::now(), "fa": DateTime::now() } },
             ).await?;
-        Ok(result.modified_count == 1)
+        if result.modified_count != 1 {
+            return Ok(false);
+        }
+        database
+            .collection::<Document>("destiny_reports")
+            .update_one(failed_report_filter(job), failed_report_update(error))
+            .await?;
+        Ok(true)
     }
 
     async fn find_job(
@@ -477,9 +537,10 @@ impl Worker {
         state: &str,
         phase: &str,
         label: &str,
-        current: i64,
-        total: Option<i64>,
+        error: Option<&str>,
+        progress: (i64, Option<i64>),
     ) -> anyhow::Result<bool> {
+        let (current, total) = progress;
         const LUA: &str = r#"
 local currentRun = redis.call('HGET', KEYS[1], 'runId')
 local currentFence = tonumber(redis.call('HGET', KEYS[1], 'fence') or '-1')
@@ -493,7 +554,8 @@ redis.call('HSET', KEYS[1], 'runId', ARGV[1], 'fence', ARGV[2],
   'progressTotal', ARGV[7],
   'progressStartedAtUtc', ARGV[8],
   'progressUpdatedAtUtc', ARGV[8],
-  'updatedAtUtc', ARGV[8])
+  'updatedAtUtc', ARGV[8],
+  'error', ARGV[9])
 redis.call('EXPIRE', KEYS[1], 86400)
 return 1
 "#;
@@ -513,6 +575,7 @@ return 1
             .arg(current)
             .arg(&total_text)
             .arg(&now)
+            .arg(error.unwrap_or(""))
             .invoke_async(&mut self.redis)
             .await?;
         if accepted == 1 {
@@ -521,7 +584,7 @@ return 1
                 "MembershipId": job.membership_id,
                 "Status": state,
                 "StreamEntryId": if job.stream_entry_id.is_empty() { None } else { Some(job.stream_entry_id.as_str()) },
-                "Error": if state == "failed" { Some(label) } else { None },
+                "Error": error,
                 "UpdatedAtUtc": now,
                 "Progress": {
                     "Phase": phase,
@@ -540,6 +603,32 @@ return 1
         }
         Ok(accepted == 1)
     }
+}
+
+fn failed_report_filter(job: &CrawlJob) -> Document {
+    doc! {
+        "PlatformId": job.membership_type_id,
+        "PlayerMembershipId": job.membership_id
+    }
+}
+
+fn failed_report_update(error: &str) -> Document {
+    doc! {
+        "$set": {
+            "CrawlState": "failed",
+            "QueuedInRedis": false,
+            "LeaseExpiresAtUtc": null,
+            "LeaseOwner": "",
+            "CrawlError": error
+        }
+    }
+}
+
+fn is_cancelled_crawl_error(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<BungieError>(),
+        Some(BungieError::Cancelled)
+    )
 }
 
 fn record_crawl_error(span: &Span, error: &anyhow::Error) {
@@ -689,6 +778,51 @@ mod tests {
             redis_reclaim_idle(Duration::from_secs(300)),
             Duration::from_secs(305).as_millis() as u64
         );
+    }
+
+    #[test]
+    fn cancellation_errors_are_never_retried() {
+        assert!(is_cancelled_crawl_error(&anyhow::Error::new(
+            BungieError::Cancelled
+        )));
+        assert!(!is_cancelled_crawl_error(&anyhow::anyhow!(
+            "transient failure"
+        )));
+    }
+
+    #[test]
+    fn terminal_failure_updates_the_materialized_report() {
+        let job = CrawlJob {
+            player_key: player_key(3, 42),
+            membership_type_id: 3,
+            membership_id: 42,
+            display_name: String::new(),
+            protocol_version: PROTOCOL_VERSION,
+            run_id: "run".into(),
+            state: STATE_RUNNING.into(),
+            dispatched: true,
+            stream_entry_id: "123-0".into(),
+            fence: 1,
+            lease_owner: "worker".into(),
+            lease_expires_at: None,
+            queued_at: DateTime::now(),
+            started_at: None,
+            force_full_crawl: false,
+            active_generation: String::new(),
+        };
+
+        assert_eq!(
+            failed_report_filter(&job),
+            doc! {
+                "PlatformId": 3,
+                "PlayerMembershipId": 42_i64
+            }
+        );
+        let update = failed_report_update("upstream failed");
+        let set = update.get_document("$set").unwrap();
+        assert_eq!(set.get_str("CrawlState").unwrap(), "failed");
+        assert!(!set.get_bool("QueuedInRedis").unwrap());
+        assert_eq!(set.get_str("CrawlError").unwrap(), "upstream failed");
     }
 
     #[test]
