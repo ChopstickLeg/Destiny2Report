@@ -50,6 +50,21 @@ public sealed class CrawlerProtocolTests
         Assert.DoesNotContain("v", document.ToBsonDocument().Names);
     }
 
+    [Fact]
+    public void Active_job_display_name_uses_the_shared_compact_field()
+    {
+        var document = new CrawlJob
+        {
+            PlayerKey = CrawlJob.CreatePlayerKey(3, 42),
+            MembershipTypeId = 3,
+            MembershipId = 42,
+            DisplayName = "Guardian"
+        }.ToBsonDocument();
+
+        Assert.Equal("Guardian", document["dn"].AsString);
+        Assert.DoesNotContain("DisplayName", document.Names);
+    }
+
     [Theory]
     [InlineData("PvE", StoredActivityMode.Pve)]
     [InlineData("Crucible", StoredActivityMode.Crucible)]

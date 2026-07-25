@@ -11,6 +11,7 @@ public partial class CrawlerReadService
     private const long GrenadeKillsReferenceId = -1;
     private const long MeleeKillsReferenceId = -2;
     private const long SuperKillsReferenceId = -3;
+    private const long UnknownKillsReferenceId = -4;
     private const string AbilityCategoryName = "Abilities";
     private const string AbilityCategoryKey = "ABILITIES";
     private const string UnknownWeaponCategoryName = "Unknown";
@@ -184,6 +185,7 @@ public partial class CrawlerReadService
         GrenadeKillsReferenceId => "Grenade",
         MeleeKillsReferenceId => "Melee",
         SuperKillsReferenceId => "Super",
+        UnknownKillsReferenceId => "Unknown",
         _ => referenceId.ToString(System.Globalization.CultureInfo.InvariantCulture)
     };
 

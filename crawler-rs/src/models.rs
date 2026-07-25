@@ -14,6 +14,8 @@ pub struct CrawlJob {
     pub membership_type_id: i32,
     #[serde(rename = "mi")]
     pub membership_id: i64,
+    #[serde(rename = "dn", default)]
+    pub display_name: String,
     #[serde(rename = "v")]
     pub protocol_version: i32,
     #[serde(rename = "r")]

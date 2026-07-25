@@ -193,6 +193,7 @@ public static class AdminHandlers
             .Project(job => new ActiveCrawlProjection(
                 job.MembershipTypeId,
                 job.MembershipId,
+                job.DisplayName,
                 job.QueuedAtUtc,
                 job.StartedAtUtc,
                 job.LeaseExpiresAtUtc,
@@ -218,7 +219,9 @@ public static class AdminHandlers
         var activeCrawls = activeReports.Select(report => new AdminActiveCrawlResponse(
             report.MembershipTypeId,
             report.MembershipId,
-            displayNames.GetValueOrDefault((report.MembershipTypeId, report.MembershipId), ""),
+            string.IsNullOrWhiteSpace(report.DisplayName)
+                ? displayNames.GetValueOrDefault((report.MembershipTypeId, report.MembershipId), "")
+                : report.DisplayName,
             ToDateTimeOffset(report.QueuedAtUtc),
             ToDateTimeOffset(report.StartedAtUtc),
             ToDateTimeOffset(report.LeaseExpiresAtUtc),
@@ -285,6 +288,7 @@ public static class AdminHandlers
     private sealed record ActiveCrawlProjection(
         int MembershipTypeId,
         long MembershipId,
+        string? DisplayName,
         DateTime? QueuedAtUtc,
         DateTime? StartedAtUtc,
         DateTime? LeaseExpiresAtUtc,

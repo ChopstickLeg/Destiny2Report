@@ -12,7 +12,7 @@ use crate::{
     storage,
 };
 
-const INCREMENTAL_CRAWL_OVERLAP_HOURS: i64 = 48;
+const INCREMENTAL_CRAWL_OVERLAP_HOURS: i64 = 24;
 // Two full Bungie history pages cover the overlap without carrying a large ID blob.
 const RECENT_ACTIVITY_INSTANCE_ID_LIMIT: usize = 500;
 
@@ -136,6 +136,20 @@ pub async fn crawl(
         }
         Err(error) => return Err(error.into()),
     };
+    let user = profile
+        .pointer("/profile/data/userInfo")
+        .unwrap_or(&Value::Null);
+    let display_name = user
+        .get("bungieGlobalDisplayName")
+        .and_then(Value::as_str)
+        .or_else(|| user.get("displayName").and_then(Value::as_str))
+        .unwrap_or("");
+    storage::store_active_display_name(database, job, display_name).await?;
+    let display_code = user
+        .get("bungieGlobalDisplayNameCode")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+
     let account = match cancellable(
         cancellation,
         client.account_stats(job.membership_type_id, job.membership_id),
@@ -149,18 +163,6 @@ pub async fn crawl(
         Err(error) => return Err(error.into()),
     };
     report_progress(progress, "profile", "Profile loaded", 1, Some(1));
-    let user = profile
-        .pointer("/profile/data/userInfo")
-        .unwrap_or(&Value::Null);
-    let display_name = user
-        .get("bungieGlobalDisplayName")
-        .and_then(Value::as_str)
-        .or_else(|| user.get("displayName").and_then(Value::as_str))
-        .unwrap_or("");
-    let display_code = user
-        .get("bungieGlobalDisplayNameCode")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
 
     let profile_characters = profile
         .pointer("/characters/data")
@@ -241,18 +243,18 @@ pub async fn crawl(
                 Err(error) => return Err(error.into()),
             };
             let totals = mode_totals.entry(mode).or_default();
-            totals.kills += historical_stat(&stats, "kills");
-            totals.deaths += historical_stat(&stats, "deaths");
-            let kd = historical_stat(&stats, "killsDeathsRatio");
+            totals.kills += historical_stat(&stats, mode, "kills");
+            totals.deaths += historical_stat(&stats, mode, "deaths");
+            let kd = historical_stat(&stats, mode, "killsDeathsRatio");
             if kd > 0.0 {
                 totals.kd_values.push(kd);
             }
-            let kda = historical_stat(&stats, "killsDeathsAssists");
+            let kda = historical_stat(&stats, mode, "killsDeathsAssists");
             if kda > 0.0 {
                 totals.kda_values.push(kda);
             }
-            totals.entered += historical_stat(&stats, "activitiesEntered") as i32;
-            totals.wins += historical_stat(&stats, "activitiesWon") as i32;
+            totals.entered += historical_stat(&stats, mode, "activitiesEntered") as i32;
+            totals.wins += historical_stat(&stats, mode, "activitiesWon") as i32;
         }
     }
     let mut activity_ids = BTreeSet::new();
@@ -431,12 +433,7 @@ pub async fn crawl(
             .unwrap_or_default();
         let owners = entries
             .iter()
-            .filter(|entry| {
-                entry
-                    .pointer("/player/destinyUserInfo/membershipId")
-                    .and_then(id_i64)
-                    == Some(job.membership_id)
-            })
+            .filter(|entry| is_owner_entry(entry, job.membership_type_id, job.membership_id))
             .collect::<Vec<_>>();
         if !owners.is_empty() {
             let kills = owners
@@ -494,13 +491,7 @@ pub async fn crawl(
             if is_gambit && includes_mode(mode, modes, 64) {
                 gambit_mote_matches += 1;
                 for owner in &owners {
-                    let mote_mode = if includes_mode(mode, modes, 75) {
-                        75
-                    } else if includes_mode(mode, modes, 63) {
-                        63
-                    } else {
-                        mode
-                    };
+                    let mote_mode = gambit_mote_mode(mode, modes);
                     *gambit_banked.entry(mote_mode).or_default() +=
                         mote_stat(owner, "motesDeposited") + mote_stat(owner, "bankOverage");
                     *gambit_lost.entry(mote_mode).or_default() += mote_stat(owner, "motesLost");
@@ -1021,6 +1012,21 @@ fn is_private_error(error: &BungieError) -> bool {
 
 fn is_missing_pgcr(error: &BungieError) -> bool {
     matches!(error, BungieError::NotFound(_))
+}
+
+fn is_owner_entry(entry: &Value, membership_type: i32, membership_id: i64) -> bool {
+    if entry
+        .pointer("/player/destinyUserInfo/membershipId")
+        .and_then(id_i64)
+        != Some(membership_id)
+    {
+        return false;
+    }
+    let entry_membership_type = entry
+        .pointer("/player/destinyUserInfo/membershipType")
+        .and_then(Value::as_i64)
+        .unwrap_or(0) as i32;
+    membership_type <= 0 || entry_membership_type <= 0 || entry_membership_type == membership_type
 }
 
 fn metric_progress(profile: &Value, definitions: &BTreeMap<u32, Value>, metric_name: &str) -> i64 {
@@ -2019,7 +2025,7 @@ async fn resolve_most_played_with(
     let mut top = counts
         .iter()
         .filter(|((membership_type, membership_id), count)| {
-            *membership_type > 0 && *membership_id > 0 && **count > 0
+            *membership_type > 0 && *membership_id > 0 && **count >= 2
         })
         .map(|(key, count)| (*key, *count))
         .collect::<Vec<_>>();
@@ -2102,7 +2108,8 @@ fn resolve_most_used_emblems(manifest: &ManifestStore, seconds: &BTreeMap<u32, i
                 "name": definition.as_ref()
                     .and_then(|value| value.pointer("/displayProperties/name"))
                     .and_then(Value::as_str)
-                    .unwrap_or(""),
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| hash.to_string()),
                 "iconUrl": bungie_url(definition.as_ref()
                     .and_then(|value| value.pointer("/displayProperties/icon"))
                     .and_then(Value::as_str)),
@@ -2149,6 +2156,16 @@ fn includes_mode(mode: i32, modes: Option<&Vec<Value>>, expected: i32) -> bool {
                 .iter()
                 .any(|value| value.as_i64() == Some(i64::from(expected)))
         })
+}
+
+fn gambit_mote_mode(mode: i32, modes: Option<&Vec<Value>>) -> i32 {
+    match mode {
+        63 | 64 | 75 => mode,
+        _ if includes_mode(mode, modes, 75) => 75,
+        _ if includes_mode(mode, modes, 63) => 63,
+        _ if includes_mode(mode, modes, 64) => 64,
+        _ => mode,
+    }
 }
 
 fn mode_group_from_flags(is_pvp: bool, is_gambit: bool) -> &'static str {
@@ -2384,15 +2401,28 @@ fn preferred_playtime(value: &Value) -> i64 {
     }
 }
 
-fn historical_stat(response: &Value, name: &str) -> f64 {
-    response
-        .as_object()
-        .into_iter()
-        .flat_map(|values| values.values())
-        .find_map(|bucket| {
-            bucket
-                .pointer(&format!("/allTime/{name}/basic/value"))
-                .and_then(Value::as_f64)
+fn historical_stat(response: &Value, mode: i32, name: &str) -> f64 {
+    let preferred_keys: &[&str] = match mode {
+        5 => &["allPvP", "allTime"],
+        7 => &["allPvE", "allTime"],
+        63 => &["gambit", "allTime"],
+        75 => &["gambitPrime", "allTime"],
+        _ => &["allTime"],
+    };
+    let value = |bucket: &Value| {
+        bucket
+            .pointer(&format!("/allTime/{name}/basic/value"))
+            .and_then(Value::as_f64)
+    };
+    preferred_keys
+        .iter()
+        .find_map(|key| response.get(*key).and_then(value))
+        .or_else(|| {
+            response
+                .as_object()
+                .into_iter()
+                .flat_map(|values| values.values())
+                .find_map(value)
         })
         .unwrap_or(0.0)
 }
@@ -2613,7 +2643,40 @@ mod tests {
     fn historical_stats_use_documented_dictionary_bucket() {
         let response =
             json!({ "allPvP": { "allTime": { "kills": { "basic": { "value": 42.0 } } } } });
-        assert_eq!(historical_stat(&response, "kills"), 42.0);
+        assert_eq!(historical_stat(&response, 5, "kills"), 42.0);
+    }
+
+    #[test]
+    fn historical_stats_prefer_the_mode_specific_bucket() {
+        let response = json!({
+            "allTime": { "allTime": { "kills": { "basic": { "value": 999.0 } } } },
+            "gambit": { "allTime": { "kills": { "basic": { "value": 42.0 } } } }
+        });
+        assert_eq!(historical_stat(&response, 63, "kills"), 42.0);
+    }
+
+    #[test]
+    fn owner_entries_require_a_compatible_membership_type() {
+        let matching = json!({ "player": { "destinyUserInfo": {
+            "membershipId": "42", "membershipType": 3
+        }}});
+        let unknown_type = json!({ "player": { "destinyUserInfo": {
+            "membershipId": "42", "membershipType": 0
+        }}});
+        let other_type = json!({ "player": { "destinyUserInfo": {
+            "membershipId": "42", "membershipType": 2
+        }}});
+        assert!(is_owner_entry(&matching, 3, 42));
+        assert!(is_owner_entry(&unknown_type, 3, 42));
+        assert!(!is_owner_entry(&other_type, 3, 42));
+    }
+
+    #[test]
+    fn gambit_mote_mode_prefers_the_primary_mode() {
+        let modes = vec![json!(7), json!(64), json!(63), json!(75)];
+        assert_eq!(gambit_mote_mode(63, Some(&modes)), 63);
+        assert_eq!(gambit_mote_mode(75, Some(&modes)), 75);
+        assert_eq!(gambit_mote_mode(0, Some(&modes)), 75);
     }
 
     #[test]

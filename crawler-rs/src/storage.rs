@@ -17,6 +17,31 @@ const DEATH: i32 = 2;
 const EMBLEM: i32 = 3;
 const ENCOUNTER: i32 = 4;
 
+pub async fn store_active_display_name(
+    database: &Database,
+    job: &CrawlJob,
+    display_name: &str,
+) -> anyhow::Result<()> {
+    if display_name.trim().is_empty() {
+        return Ok(());
+    }
+
+    database
+        .collection::<CrawlJob>("crawl_jobs")
+        .update_one(
+            doc! {
+                "_id": &job.player_key,
+                "r": &job.run_id,
+                "f": job.fence,
+                "lo": &job.lease_owner,
+                "s": STATE_RUNNING
+            },
+            doc! { "$set": { "dn": display_name } },
+        )
+        .await?;
+    Ok(())
+}
+
 pub async fn load_incremental_seed(
     database: &Database,
     job: &CrawlJob,
@@ -239,6 +264,15 @@ pub async fn stage(
 ) -> anyhow::Result<Option<String>> {
     let generation = uuid::Uuid::new_v4().simple().to_string();
     let now = DateTime::now();
+    // Insert the cleanup anchor first. Any later partial failure leaves a report
+    // generation that the cleanup service can discover and remove.
+    database
+        .collection::<Document>("reports")
+        .insert_one(doc! {
+            "p": &job.player_key, "g": &generation,
+            "d": mongodb::bson::to_document(&result.report)?, "ca": now
+        })
+        .await?;
     database
         .collection::<Document>("crawl_state")
         .insert_one(doc! {
@@ -250,30 +284,31 @@ pub async fn stage(
     write_artifacts(database, job, &generation, WEAPON, &result.weapons, now).await?;
     write_artifacts(database, job, &generation, DEATH, &result.deaths, now).await?;
     write_artifacts(database, job, &generation, EMBLEM, &result.emblems, now).await?;
+    let persisted_encounters = persistable_encounters(&result.encounters);
     write_artifacts(
         database,
         job,
         &generation,
         ENCOUNTER,
-        &result.encounters,
+        &persisted_encounters,
         now,
     )
     .await?;
     queue_discovered_players(database, job, &result.encounters, now).await?;
-
-    database
-        .collection::<Document>("reports")
-        .insert_one(doc! {
-            "p": &job.player_key, "g": &generation,
-            "d": mongodb::bson::to_document(&result.report)?, "ca": now
-        })
-        .await?;
 
     let update = database.collection::<CrawlJob>("crawl_jobs").update_one(
         doc! { "_id": &job.player_key, "r": &job.run_id, "f": job.fence, "lo": &job.lease_owner, "s": STATE_RUNNING },
         doc! { "$set": { "cg": &generation, "s": STATE_AWAITING_FINALIZATION, "lo": "", "le": null, "ua": DateTime::now() } },
     ).await?;
     Ok((update.modified_count == 1).then_some(generation))
+}
+
+fn persistable_encounters(encounters: &[Value]) -> Vec<Value> {
+    encounters
+        .iter()
+        .filter(|value| integer(value, "count").is_ok_and(|count| count >= 2))
+        .cloned()
+        .collect()
 }
 
 async fn queue_discovered_players(
@@ -707,6 +742,7 @@ mod tests {
             player_key: player_key(3, 42),
             membership_type_id: 3,
             membership_id: 42,
+            display_name: String::new(),
             protocol_version: 1,
             run_id: "run".into(),
             state: "running".into(),
@@ -763,6 +799,19 @@ mod tests {
         assert!(!inserted.get_bool("QueuedInRedis").unwrap());
         assert_eq!(inserted.get_datetime("QueuedAtUtc").unwrap(), &queued_at);
         assert!(!update.contains_key("$set"));
+    }
+
+    #[test]
+    fn one_off_encounters_are_not_persisted() {
+        let encounters = vec![
+            serde_json::json!({ "encounteredMembershipType": 3, "encounteredMembershipId": 10, "count": 1 }),
+            serde_json::json!({ "encounteredMembershipType": 3, "encounteredMembershipId": 20, "count": 2 }),
+        ];
+
+        let persisted = persistable_encounters(&encounters);
+
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0]["encounteredMembershipId"], 20);
     }
 
     #[test]

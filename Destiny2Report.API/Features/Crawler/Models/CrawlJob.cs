@@ -22,6 +22,10 @@ public sealed class CrawlJob
     [BsonElement("mi")]
     public long MembershipId { get; init; }
 
+    [BsonElement("dn")]
+    [BsonIgnoreIfDefault]
+    public string DisplayName { get; set; } = "";
+
     [BsonElement("v")]
     public int ProtocolVersion { get; set; } = CrawlerQueue.ProtocolVersion;
 
