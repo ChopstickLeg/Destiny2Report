@@ -17,38 +17,22 @@ import type {
   StoryVisualAssetsReport,
   WeaponActivityModeAggregateReport,
 } from '@/lib/api/types'
-import { formatClock, formatHours, parseTimeSpan } from '@/lib/formatting/duration'
-import { formatInteger, formatPercent, formatRatio } from '@/lib/formatting/numbers'
+import { formatHours, parseTimeSpan } from '@/lib/formatting/duration'
+import { formatInteger, formatPercent } from '@/lib/formatting/numbers'
 import {
   humanizeModeName,
   rankCharacterPlaytime,
-  rankPatrolTime,
   summarizeStreak,
 } from '@/features/report-overview/report-view'
 
-export interface StoryFact {
-  label: string
-  value: string
-  /** Comparison basis or definition; keeps claims honest. */
-  note?: string
-}
+type StoryTone = 'gold' | 'solar' | 'arc' | 'void' | 'neutral'
 
-export interface StoryChapter {
-  key: string
-  kicker: string
-  title: string
-  lead: string
-  facts: StoryFact[]
-}
-
-export type StoryTone = 'gold' | 'solar' | 'arc' | 'void' | 'neutral'
-
-export interface StoryImage {
+interface StoryImage {
   url: string
   alt: string
 }
 
-export type StoryLayout =
+type StoryLayout =
   | 'achievement-list'
   | 'contest-gallery'
   | 'pantheon-gallery'
@@ -62,7 +46,7 @@ export type StoryLayout =
   | 'emblem-banner'
   | 'personality-number'
 
-export interface StoryStat {
+interface StoryStat {
   label: string
   value: string
   numericValue?: number
@@ -71,7 +55,7 @@ export interface StoryStat {
   color?: string
 }
 
-export interface StoryRankedItem {
+interface StoryRankedItem {
   label: string
   value: string
   imageUrl?: string
@@ -79,7 +63,7 @@ export interface StoryRankedItem {
 }
 
 /** A single beat in the interactive story experience. */
-export interface StorySlide {
+interface StorySlide {
   key: string
   layout: StoryLayout
   eyebrow: string
@@ -96,14 +80,14 @@ export interface StorySlide {
   items?: StoryRankedItem[]
 }
 
-export interface StoryWeapon {
+interface StoryWeapon {
   name: string
   iconUrl: string
   kills: number
 }
 
 /** Playlists need at least this many matches before being praised. */
-export const MIN_PLAYLIST_SAMPLE = 20
+const MIN_PLAYLIST_SAMPLE = 20
 
 /**
  * Selects a short, accomplishment-first narrative rather than mirroring the
@@ -141,12 +125,6 @@ export function mostUsedActualWeapons(
   }
 
   return [...totals.values()].sort((a, b) => b.kills - a.kills).slice(0, limit)
-}
-
-export function mostUsedActualWeapon(
-  weapons: WeaponActivityModeAggregateReport | null | undefined,
-): StoryWeapon | null {
-  return mostUsedActualWeapons(weapons, 1)[0] ?? null
 }
 
 function classBreakdown(
@@ -550,313 +528,9 @@ export function buildStorySlides(
   return slides
 }
 
-export function buildStory(report: DestinyReport): StoryChapter[] {
-  const chapters = [
-    timeChapter(report),
-    fightChapter(report),
-    challengeChapter(report),
-    competitiveChapter(report),
-    peopleChapter(report),
-    detailsChapter(report),
-  ].filter((chapter): chapter is StoryChapter => chapter !== null && chapter.facts.length > 0)
-
-  return chapters.map((chapter, index) => ({
-    ...chapter,
-    kicker: `Chapter ${index + 1}`,
-  }))
-}
-
-function timeChapter(report: DestinyReport): StoryChapter | null {
-  const facts: StoryFact[] = []
-
-  const playtime = parseTimeSpan(report.totalPlaytime)
-  if (playtime && playtime > 0) {
-    facts.push({
-      label: 'Total playtime',
-      value: formatHours(playtime),
-      note: 'Total character playtime across your account.',
-    })
-  }
-
-  const topCharacter = rankCharacterPlaytime(report.characterPlaytime)[0]
-  if (topCharacter) {
-    facts.push({
-      label: 'Most-played character',
-      value: topCharacter.label,
-      note: `${formatHours(topCharacter.seconds)} of playtime, more than any other character.`,
-    })
-  }
-
-  const streak = summarizeStreak(report.longestPlaytimeStreak)
-  if (streak && streak.days > 1) {
-    facts.push({
-      label: 'Longest streak',
-      value: `${formatInteger(streak.days)} days in a row`,
-    })
-  }
-
-  const topPatrol = rankPatrolTime(report.patrolTimeByPlanet)[0]
-  if (topPatrol) {
-    facts.push({
-      label: 'Most-patrolled destination',
-      value: topPatrol.label,
-      note: `${formatHours(topPatrol.seconds)} on patrol at your most-visited destination.`,
-    })
-  }
-
-  return {
-    key: 'time',
-    kicker: '',
-    title: 'Time played',
-    lead: 'Your whole Destiny 2 history, across every character and destination.',
-    facts,
-  }
-}
-
-function fightChapter(report: DestinyReport): StoryChapter | null {
-  const facts: StoryFact[] = []
-
-  if (report.totalKills > 0) {
-    facts.push({
-      label: 'Total kills',
-      value: formatInteger(report.totalKills),
-      note: 'Every combatant and Guardian, in every activity.',
-    })
-  }
-
-  if (report.crucibleKills.total > 0) {
-    const topMode = Object.entries(report.crucibleKills.byMode).sort((a, b) => b[1] - a[1])[0]
-    facts.push({
-      label: 'Crucible kills',
-      value: formatInteger(report.crucibleKills.total),
-      note: topMode ? `Most of them in ${humanizeModeName(topMode[0])}.` : undefined,
-    })
-  }
-
-  return {
-    key: 'fight',
-    kicker: '',
-    title: 'Combat',
-    lead: 'The scale of the fight, in numbers only your Ghost was counting.',
-    facts,
-  }
-}
-
-interface FastestClear {
-  activityName: string
-  seconds: number
-}
-
-/** Fastest clear across raids and dungeons (conquests excluded: different pacing). */
-export function fastestEndgameClear(report: DestinyReport): FastestClear | null {
-  let best: FastestClear | null = null
-  for (const summary of [...report.raidCompletions, ...report.dungeonCompletions]) {
-    const seconds = parseTimeSpan(summary.fastestCompletion?.duration)
-    if (!seconds || seconds <= 0) continue
-    if (!best || seconds < best.seconds) {
-      best = { activityName: summary.activityName, seconds }
-    }
-  }
-  return best
-}
-
 function countDistinction(
   summaries: ActivityCompletionSummary[],
   predicate: (s: ActivityCompletionSummary) => boolean,
 ): string[] {
   return summaries.filter((s) => s.completionCount > 0 && predicate(s)).map((s) => s.activityName)
-}
-
-function challengeChapter(report: DestinyReport): StoryChapter | null {
-  const facts: StoryFact[] = []
-  const raids = report.raidCompletions
-
-  const raidClears = raids.reduce((sum, raid) => sum + raid.completionCount, 0)
-  if (raidClears > 0) {
-    const topRaid = [...raids].sort((a, b) => b.completionCount - a.completionCount)[0]
-    facts.push({
-      label: 'Raid clears',
-      value: formatInteger(raidClears),
-      note:
-        topRaid && topRaid.completionCount > 0
-          ? `${topRaid.activityName} led the way with ${formatInteger(topRaid.completionCount)} clears.`
-          : undefined,
-    })
-  }
-
-  const dungeonClears = report.dungeonCompletions.reduce((sum, d) => sum + d.completionCount, 0)
-  if (dungeonClears > 0) {
-    facts.push({ label: 'Dungeon clears', value: formatInteger(dungeonClears) })
-  }
-
-  // Earned distinctions outrank generic counts; solo flawless is rarest.
-  const soloFlawless = countDistinction(
-    [...raids, ...report.dungeonCompletions],
-    (s) => s.soloFlawlessClear,
-  )
-  if (soloFlawless.length > 0) {
-    facts.push({
-      label: 'Solo flawless',
-      value: soloFlawless.join(', '),
-      note: 'Alone, without dying once.',
-    })
-  }
-
-  const contest = countDistinction(raids, (s) => s.contestClear)
-  if (contest.length > 0) {
-    facts.push({
-      label: 'Contest-mode clears',
-      value: contest.join(', '),
-      note: 'Cleared while contest difficulty was live.',
-    })
-  }
-
-  const fastest = fastestEndgameClear(report)
-  if (fastest) {
-    facts.push({
-      label: 'Fastest clear',
-      value: formatClock(fastest.seconds),
-      note: `Your quickest ${fastest.activityName} completion.`,
-    })
-  }
-
-  return {
-    key: 'challenge',
-    kicker: '',
-    title: 'Endgame completions',
-    lead: 'Raid and dungeon clears, including notable completions.',
-    facts,
-  }
-}
-
-function competitiveChapter(report: DestinyReport): StoryChapter | null {
-  const facts: StoryFact[] = []
-
-  if (report.crucibleMatchesPlayed > 0) {
-    facts.push({
-      label: 'Crucible',
-      value: `${formatRatio(report.crucibleKd)} KD`,
-      note: `Across ${formatInteger(report.crucibleMatchesPlayed)} matches, ${formatInteger(report.crucibleWins)} of them wins.`,
-    })
-  }
-
-  if (report.gambitMatchesPlayed > 0) {
-    facts.push({
-      label: 'Gambit',
-      value: `${formatRatio(report.gambitKd)} KD`,
-      note: `Across ${formatInteger(report.gambitMatchesPlayed)} matches, ${formatInteger(report.gambitWins)} of them wins.`,
-    })
-  }
-
-  // "Best playlist" only with a meaningful sample.
-  const bestPlaylist = [...report.pvpPlaylists]
-    .filter((playlist) => playlist.matches >= MIN_PLAYLIST_SAMPLE)
-    .sort((a, b) => b.winRate - a.winRate)[0]
-  if (bestPlaylist && bestPlaylist.winRate > 0.5) {
-    facts.push({
-      label: 'Strongest playlist',
-      value: humanizeModeName(bestPlaylist.modeName),
-      note: `${formatPercent(bestPlaylist.winRate)} win rate over ${formatInteger(bestPlaylist.matches)} matches.`,
-    })
-  }
-
-  return {
-    key: 'competitive',
-    kicker: '',
-    title: 'Competitive record',
-    lead: 'Ratios straight from match history, sample sizes included.',
-    facts,
-  }
-}
-
-function peopleChapter(report: DestinyReport): StoryChapter | null {
-  const facts: StoryFact[] = []
-
-  if (report.uniquePlayersPlayedWith > 0) {
-    facts.push({
-      label: 'Guardians met',
-      value: formatInteger(report.uniquePlayersPlayedWith),
-      note: 'Unique players who shared at least one activity with you.',
-    })
-  }
-
-  const topTeammate = [...report.mostPlayedWith].sort(
-    (a, b) => b.encounterCount - a.encounterCount,
-  )[0]
-  if (topTeammate && topTeammate.player.displayName) {
-    facts.push({
-      label: 'Most frequent teammate',
-      value: topTeammate.player.displayName,
-      note: `${formatInteger(topTeammate.encounterCount)} activities together, more than anyone else.`,
-    })
-  }
-
-  const sherpaed = report.playersSherpaed.reduce((sum, sherpa) => sum + sherpa.playerCount, 0)
-  if (sherpaed > 0) {
-    facts.push({
-      label: 'Raiders sherpaed',
-      value: formatInteger(sherpaed),
-      note: 'First-time raiders you guided through a clear.',
-    })
-  }
-
-  return {
-    key: 'people',
-    kicker: '',
-    title: 'Teammates',
-    lead: 'Players who appear most often in your activity history.',
-    facts,
-  }
-}
-
-function detailsChapter(report: DestinyReport): StoryChapter | null {
-  const facts: StoryFact[] = []
-
-  const favoriteEmblem = report.mostUsedEmblems
-    .map((emblem) => ({ ...emblem, seconds: parseTimeSpan(emblem.totalPlaytime) ?? 0 }))
-    .sort((a, b) => b.seconds - a.seconds)[0]
-  if (favoriteEmblem && favoriteEmblem.seconds > 0) {
-    facts.push({
-      label: 'Favorite emblem',
-      value: favoriteEmblem.name,
-      note: `Worn for ${formatHours(favoriteEmblem.seconds)}, longer than any other.`,
-    })
-  }
-
-  if (report.triumphSeals.length > 0) {
-    const first = report.triumphSeals[0]
-    facts.push({
-      label: 'Seals completed',
-      value: formatInteger(report.triumphSeals.length),
-      note: first ? `Including ${first.name}.` : undefined,
-    })
-  }
-
-  if (report.goodBoyProtocol > 0) {
-    facts.push({
-      label: 'Good Boy Protocol',
-      value: formatInteger(report.goodBoyProtocol),
-      note: 'Visits to the Tower’s very good dog.',
-    })
-  }
-
-  if (report.fishCaught > 0) {
-    facts.push({ label: 'Fish caught', value: formatInteger(report.fishCaught) })
-  }
-
-  if (report.misadventures > 0) {
-    facts.push({
-      label: 'Misadventures',
-      value: formatInteger(report.misadventures),
-      note: 'Deaths with nobody to blame. The architects thank you.',
-    })
-  }
-
-  return {
-    key: 'details',
-    kicker: '',
-    title: 'Other stats',
-    lead: 'Emblems, titles, and miscellaneous activity totals.',
-    facts,
-  }
 }

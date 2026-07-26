@@ -23,10 +23,6 @@ export interface StatusResponse {
 // Player search
 // ---------------------------------------------------------------------------
 
-export interface PlayerSearchRequest {
-  displayNamePrefix: string
-}
-
 export interface PlayerSearchResult {
   displayName: string
   displayCode: number | null
@@ -53,7 +49,7 @@ export interface PlaytimeStreakReport {
   endDate: string
 }
 
-export interface PvpPlaylistReport {
+interface PvpPlaylistReport {
   mode: number
   modeName: string
   wins: number
@@ -62,12 +58,12 @@ export interface PvpPlaylistReport {
   winRate: number // fraction of 1, pre-rounded by the backend
 }
 
-export interface ActivityCompletionMark {
+interface ActivityCompletionMark {
   completedAt: string
   instanceId: string
 }
 
-export interface ActivityFastestCompletion {
+interface ActivityFastestCompletion {
   duration: string // .NET TimeSpan
   completedAt: string
   instanceId: string
@@ -87,17 +83,17 @@ export interface ActivityCompletionSummary {
   soloFlawlessClear: boolean
 }
 
-export interface CrucibleKillsReport {
+interface CrucibleKillsReport {
   total: number
   byMode: Record<string, number>
 }
 
-export interface GambitMoteStatReport {
+interface GambitMoteStatReport {
   total: number
   byMode: Record<string, number>
 }
 
-export interface GambitMotesReport {
+interface GambitMotesReport {
   matches: number
   motesBanked: GambitMoteStatReport
   motesLost: GambitMoteStatReport
@@ -106,31 +102,31 @@ export interface GambitMotesReport {
   averageMotesLost: number
 }
 
-export interface TriumphSeal {
+interface TriumphSeal {
   name: string
   description: string
   iconUrl: string
   isCompleted: boolean
 }
 
-export interface DestinyPlayerRef {
+interface DestinyPlayerRef {
   membershipId: string
   membershipType: number
   displayName: string
   emblemUrl: string
 }
 
-export interface PlayerEncounterReport {
+interface PlayerEncounterReport {
   player: DestinyPlayerRef
   encounterCount: number
 }
 
-export interface SherpaReport {
+interface SherpaReport {
   raidName: string
   playerCount: number
 }
 
-export interface EmblemReport {
+interface EmblemReport {
   name: string
   iconUrl: string
   backgroundUrl: string
@@ -247,13 +243,13 @@ export interface StoryVisualAssetsReport {
   goodBoyProtocolIconUrl: string
 }
 
-export interface ContestRaidEmblemAsset {
+interface ContestRaidEmblemAsset {
   raidName: string
   emblemName: string
   iconUrl: string
 }
 
-export interface PantheonEmblemAsset {
+interface PantheonEmblemAsset {
   pantheonName: string
   emblemName: string
   iconUrl: string
@@ -266,7 +262,7 @@ export interface PantheonEmblemAsset {
 /** Route value for the drill-down endpoints. */
 export type ActivityModeParam = 'PvE' | 'PvP' | 'Gambit'
 
-export interface WeaponAggregateDetail {
+interface WeaponAggregateDetail {
   weaponKey: string
   weaponName: string
   referenceId: number // synthetic negatives: -1 grenade, -2 melee, -3 super
@@ -283,12 +279,12 @@ export interface WeaponCategoryAggregate {
   weapons: WeaponAggregateDetail[]
 }
 
-export interface WeaponModeAggregate {
+interface WeaponModeAggregate {
   specificActivityMode: string
   categories: WeaponCategoryAggregate[]
 }
 
-export interface WeaponClassAggregate {
+interface WeaponClassAggregate {
   className: string // "Titan" | "Hunter" | "Warlock" | "Unknown"
   modes: WeaponModeAggregate[]
 }
@@ -298,7 +294,7 @@ export interface WeaponActivityModeAggregateReport {
   classes: WeaponClassAggregate[]
 }
 
-export interface DeathModeAggregate {
+interface DeathModeAggregate {
   specificActivityModeId: number
   specificActivityMode: string
   deaths: number
@@ -310,7 +306,7 @@ export interface DeathActivityModeAggregateReport {
   modes: DeathModeAggregate[]
 }
 
-export interface ActivityModePlaytimeBreakdown {
+interface ActivityModePlaytimeBreakdown {
   mode: number
   modeName: string
   playtime: string // .NET TimeSpan
@@ -326,11 +322,6 @@ export interface ActivityPlaytimeAggregateReport {
 // Report queue
 // ---------------------------------------------------------------------------
 
-export interface ReportQueueRequest {
-  membershipTypeId: number
-  membershipId: string
-}
-
 export interface ReportQueueResponse {
   jobId: string
   membershipTypeId: number
@@ -341,7 +332,7 @@ export interface ReportQueueResponse {
 
 export type QueueStatus = CrawlState | 'not_found'
 
-export interface CrawlProgressSnapshot {
+interface CrawlProgressSnapshot {
   phase: string
   label: string
   current: number | null
@@ -366,13 +357,8 @@ export interface ReportQueueStatusResponse {
 // Auth
 // ---------------------------------------------------------------------------
 
-export interface BungieOAuthCodeRequest {
-  code: string
-  redirectUri: string | null
-}
-
 /** The one endpoint that serializes snake_case. */
-export interface BungieNetUser {
+interface BungieNetUser {
   membershipId: string
   uniqueName: string | null
   displayName: string | null
@@ -405,7 +391,7 @@ export interface SignedInPlayerResponse {
 // Admin
 // ---------------------------------------------------------------------------
 
-export interface AdminActiveCrawl {
+interface AdminActiveCrawl {
   membershipTypeId: number
   membershipId: string
   displayName: string | null
@@ -416,7 +402,7 @@ export interface AdminActiveCrawl {
   queuedInRedis: boolean
 }
 
-export interface AdminQueueStatusCount {
+interface AdminQueueStatusCount {
   status: CrawlState
   count: number
 }

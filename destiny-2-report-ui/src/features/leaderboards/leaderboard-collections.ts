@@ -1,6 +1,6 @@
 import type { LeaderboardDefinition } from '@/lib/api/types'
 
-export interface LeaderboardCollection {
+interface LeaderboardCollection {
   key: string
   title: string
   description: string
@@ -8,15 +8,15 @@ export interface LeaderboardCollection {
   choices: LeaderboardChoice[]
 }
 
-export type LeaderboardMetricKind = 'time' | 'kills' | 'wins' | 'score'
+type LeaderboardMetricKind = 'time' | 'kills' | 'wins' | 'score'
 
-export interface LeaderboardVariant {
+interface LeaderboardVariant {
   kind: LeaderboardMetricKind
   label: string
   board: LeaderboardDefinition
 }
 
-export interface LeaderboardChoice {
+interface LeaderboardChoice {
   key: string
   title: string
   variants: LeaderboardVariant[]

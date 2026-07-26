@@ -2,17 +2,16 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
     /** Larger presentation for the home page. */
     size?: 'compact' | 'large'
-    initialQuery?: string
   }>(),
-  { size: 'compact', initialQuery: '' },
+  { size: 'compact' },
 )
 
 const router = useRouter()
-const query = ref(props.initialQuery)
+const query = ref('')
 
 function submit() {
   const q = query.value.trim()

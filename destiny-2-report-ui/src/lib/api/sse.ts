@@ -14,7 +14,7 @@ import { API_BASE_URL, ApiError, parseApiJson } from './http'
 import type { ReportIdentity } from './reports'
 import type { QueueStatus, ReportQueueStatusResponse } from './types'
 
-export interface SseEvent {
+interface SseEvent {
   event: string
   data: string
 }
@@ -55,7 +55,7 @@ export function isTerminalStatus(status: QueueStatus): boolean {
   return TERMINAL_STATUSES.has(status)
 }
 
-export interface QueueWatchHandlers {
+interface QueueWatchHandlers {
   onStatus: (status: ReportQueueStatusResponse) => void
   /** Fired when the queue endpoint returns 404 or emits not_found. */
   onNotFound: () => void

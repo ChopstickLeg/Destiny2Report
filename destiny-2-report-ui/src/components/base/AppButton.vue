@@ -8,9 +8,8 @@ withDefaults(
     disabled?: boolean
     /** Render as a router link with button styling. */
     to?: RouteLocationRaw
-    type?: 'button' | 'submit'
   }>(),
-  { variant: 'secondary', size: 'md', disabled: false, type: 'button' },
+  { variant: 'secondary', size: 'md', disabled: false },
 )
 </script>
 
@@ -27,7 +26,7 @@ withDefaults(
     v-else
     class="btn"
     :class="[`btn--${variant}`, `btn--${size}`]"
-    :type="type"
+    type="button"
     :disabled="disabled"
   >
     <slot />

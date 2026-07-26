@@ -15,7 +15,7 @@ import { watchQueue } from '@/lib/api/sse'
 import { isApiError } from '@/lib/api/http'
 import type { ReportQueueStatusResponse } from '@/lib/api/types'
 
-export type QueueWatchPhase =
+type QueueWatchPhase =
   | 'idle'
   | 'submitting'
   | 'watching'

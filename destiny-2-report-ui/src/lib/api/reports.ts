@@ -14,7 +14,7 @@ export interface ReportIdentity {
   membershipId: string
 }
 
-export interface StoryShareResponse {
+interface StoryShareResponse {
   token: string
 }
 
@@ -61,10 +61,7 @@ export function createStoryShare(identity: ReportIdentity): Promise<StoryShareRe
   })
 }
 
-export function resolveStoryShare(
-  token: string,
-  signal?: AbortSignal,
-): Promise<ReportIdentity> {
+export function resolveStoryShare(token: string, signal?: AbortSignal): Promise<ReportIdentity> {
   return apiFetch(`/reports/story-shares/${encodeURIComponent(token)}`, { signal })
 }
 

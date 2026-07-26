@@ -79,12 +79,6 @@ onMounted(() => {
   margin-top: var(--space-5);
 }
 
-.hero-hint {
-  margin-top: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-}
-
 .recent {
   margin-top: var(--space-7);
 }

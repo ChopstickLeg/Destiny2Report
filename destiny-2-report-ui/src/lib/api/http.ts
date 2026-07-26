@@ -10,7 +10,7 @@
  *  - accepts AbortSignal for route changes and search supersession.
  */
 
-export interface ProblemDetails {
+interface ProblemDetails {
   type?: string
   title?: string
   status?: number
@@ -64,7 +64,7 @@ export function parseApiJson<T>(raw: string): T {
   return JSON.parse(guarded) as T
 }
 
-export interface ApiRequestOptions {
+interface ApiRequestOptions {
   method?: 'GET' | 'POST' | 'QUERY'
   body?: unknown
   signal?: AbortSignal
