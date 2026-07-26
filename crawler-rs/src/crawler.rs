@@ -514,12 +514,12 @@ pub async fn crawl(
         let modes = pgcr
             .pointer("/activityDetails/modes")
             .and_then(Value::as_array);
-        let is_pvp = includes_mode(mode, modes, 5);
+        let is_pvp = is_pvp_activity(mode, modes);
         let is_gambit = includes_mode(mode, modes, 63) || includes_mode(mode, modes, 75);
         let is_raid = includes_mode(mode, modes, 4);
         let is_dungeon = includes_mode(mode, modes, 82);
-        let private_competitive =
-            is_private_competitive_activity(&pgcr, &activity_definitions, is_pvp, is_gambit);
+        let private_competitive = is_private_match_activity(mode, modes)
+            || is_private_competitive_activity(&pgcr, &activity_definitions, is_pvp, is_gambit);
         if !private_competitive {
             add_deaths_by_mode(
                 &mut deaths_by_mode,
@@ -533,7 +533,7 @@ pub async fn crawl(
         }
         for broad in [5, 7, 64]
             .into_iter()
-            .filter(|broad| includes_mode(mode, modes, *broad))
+            .filter(|broad| (*broad == 5 && is_pvp) || includes_mode(mode, modes, *broad))
         {
             *mode_seconds
                 .entry(broad)
@@ -2364,6 +2364,14 @@ fn includes_mode(mode: i32, modes: Option<&Vec<Value>>, expected: i32) -> bool {
         })
 }
 
+fn is_pvp_activity(mode: i32, modes: Option<&Vec<Value>>) -> bool {
+    includes_mode(mode, modes, 5) || is_private_match_activity(mode, modes)
+}
+
+fn is_private_match_activity(mode: i32, modes: Option<&Vec<Value>>) -> bool {
+    includes_mode(mode, modes, 32)
+}
+
 fn gambit_mote_mode(mode: i32, modes: Option<&Vec<Value>>) -> i32 {
     match mode {
         63 | 64 | 75 => mode,
@@ -3279,6 +3287,16 @@ mod tests {
         assert!(playlists.is_empty());
         add_pvp_playlist_result(&mut playlists, 31, &[&winner], false);
         assert_eq!(playlists[&31], (1, 0));
+    }
+
+    #[test]
+    fn private_matches_all_is_both_pvp_and_private_without_all_pvp_marker() {
+        assert!(is_pvp_activity(32, None));
+        assert!(is_private_match_activity(32, None));
+
+        let modes = vec![json!(31), json!(32)];
+        assert!(is_pvp_activity(31, Some(&modes)));
+        assert!(is_private_match_activity(31, Some(&modes)));
     }
 
     #[test]

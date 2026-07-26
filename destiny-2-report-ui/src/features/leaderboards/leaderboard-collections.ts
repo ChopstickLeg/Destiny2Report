@@ -45,7 +45,7 @@ const collectionDetails = [
   },
   {
     key: 'competitive',
-    title: 'Competitive records',
+    title: 'Competitive game modes',
     description: 'Crucible and Gambit wins, from broad records to favorite modes.',
   },
   {
@@ -67,6 +67,11 @@ const collectionDetails = [
     key: 'gambit-modes',
     title: 'Gambit modes',
     description: 'Playtime, kills, and wins in the Drifter’s favorite modes.',
+  },
+  {
+    key: 'gambit-motes',
+    title: 'Gambit motes',
+    description: 'Motes banked, lost, and denied across Gambit.',
   },
   {
     key: 'crucible-core',
@@ -94,19 +99,14 @@ const collectionDetails = [
     description: 'Every Iron Banner ruleset in one focused collection.',
   },
   {
-    key: 'private-matches',
-    title: 'Private matches',
-    description: 'Records earned across private Crucible rulesets.',
-  },
-  {
     key: 'other-activities',
     title: 'Other activities',
     description: 'Activity modes that do not fit the usual Vanguard or Crucible buckets.',
   },
   {
     key: 'curiosities',
-    title: 'Miscellaneous',
-    description: 'Fish, motes, misadventures, streaks, and other unusual honors.',
+    title: 'Guardian curiosities',
+    description: 'Fish, misadventures, streaks, and other unusual honors.',
   },
 ] as const
 
@@ -117,7 +117,6 @@ const modeCollections: ReadonlyArray<[string, ReadonlySet<number>]> = [
   ['gambit-modes', new Set([63, 75])],
   ['iron-banner', new Set([19, 43, 44, 45, 68, 90, 91])],
   ['trials', new Set([39, 41, 42, 84])],
-  ['private-matches', new Set([32, 51, 52, 53, 54, 55, 56, 57])],
   ['crucible-competitive', new Set([37, 38, 59, 65, 69, 72, 74, 80])],
   ['crucible-core', new Set([10, 12, 31, 48, 67, 70, 71, 73, 88, 89])],
   ['crucible-rotators', new Set([15, 25, 40, 49, 50, 60, 61, 62, 81, 92, 94])],
@@ -185,7 +184,11 @@ function organizeChoices(boards: LeaderboardDefinition[]): LeaderboardChoice[] {
     )
 }
 
-function collectionKey(board: LeaderboardDefinition): string {
+function isPrivateMatchMode(modeId: number): boolean {
+  return modeId === 32 || (modeId >= 51 && modeId <= 57)
+}
+
+function collectionKey(board: LeaderboardDefinition): string | null {
   if (board.key.startsWith('time.patrol.') && board.key !== 'time.patrol.total') {
     return 'destinations'
   }
@@ -196,9 +199,11 @@ function collectionKey(board: LeaderboardDefinition): string {
   ) {
     return 'arsenal'
   }
+  if (board.key.startsWith('oddities.gambit-motes-')) return 'gambit-motes'
   if (board.key.startsWith('oddities.')) return 'curiosities'
   const modeId = specificModeId(board.key)
   if (modeId !== null) {
+    if (isPrivateMatchMode(modeId)) return null
     return modeCollections.find(([, modeIds]) => modeIds.has(modeId))?.[0] ?? 'other-activities'
   }
   if (board.key.startsWith('competition.')) return 'competitive'
@@ -211,6 +216,7 @@ export function organizeLeaderboards(boards: LeaderboardDefinition[]): Leaderboa
   const grouped = new Map<string, LeaderboardDefinition[]>()
   for (const board of boards) {
     const key = collectionKey(board)
+    if (key === null) continue
     const group = grouped.get(key) ?? []
     group.push(board)
     grouped.set(key, group)

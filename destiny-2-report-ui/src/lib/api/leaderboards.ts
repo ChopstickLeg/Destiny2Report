@@ -3,7 +3,7 @@ import type { LeaderboardCatalogResponse, LeaderboardPageResponse } from './type
 
 export const leaderboardKeys = {
   catalog: ['leaderboards'] as const,
-  board: (key: string, offset: number) => ['leaderboards', key, offset] as const,
+  board: (key: string) => ['leaderboards', key] as const,
 }
 
 export function fetchLeaderboardCatalog(signal?: AbortSignal): Promise<LeaderboardCatalogResponse> {
@@ -15,5 +15,5 @@ export function fetchLeaderboard(
   offset: number,
   signal?: AbortSignal,
 ): Promise<LeaderboardPageResponse> {
-  return apiFetch(`/leaderboards/${encodeURIComponent(key)}?offset=${offset}&limit=50`, { signal })
+  return apiFetch(`/leaderboards/${encodeURIComponent(key)}?offset=${offset}&limit=250`, { signal })
 }

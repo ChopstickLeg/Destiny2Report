@@ -153,7 +153,10 @@ public partial class CrawlerReadService
 
     private static bool TryRecognizedMode(int mode, out string label)
     {
-        if (!ActivityModeTypeNames.TryGetValue(mode, out var raw) || raw.StartsWith("Reserved", StringComparison.Ordinal) || raw == "None")
+        if (LeaderboardMetricRules.IsPrivateMatchMode(mode)
+            || !ActivityModeTypeNames.TryGetValue(mode, out var raw)
+            || raw.StartsWith("Reserved", StringComparison.Ordinal)
+            || raw == "None")
         {
             label = "";
             return false;

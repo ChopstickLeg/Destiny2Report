@@ -39,8 +39,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
         aria-labelledby="story-prompt-title"
         aria-describedby="story-prompt-copy"
       >
-        <p class="story-prompt-kicker">Welcome back, Guardian</p>
-        <h2 id="story-prompt-title" class="story-prompt-title display">Your story is waiting</h2>
+        <p class="story-prompt-kicker">Your Destiny 2 history</p>
+        <h2 id="story-prompt-title" class="story-prompt-title display">Review your highlights</h2>
         <p id="story-prompt-copy" class="story-prompt-copy">
           Take a look back at the moments, milestones, and people that shaped your Destiny 2
           history.

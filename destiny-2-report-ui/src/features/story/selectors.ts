@@ -298,8 +298,8 @@ export function buildStorySlides(
       key: 'pantheon',
       layout: 'pantheon-gallery',
       eyebrow: 'Pantheon completions',
-      title: 'You climbed the Pantheon and put its bosses back in their place.',
-      value: `${formatInteger(pantheonKeys.length)} ${pantheonKeys.length === 1 ? 'tier' : 'tiers'} conquered`,
+      title: 'Your completed Pantheon tiers.',
+      value: `${formatInteger(pantheonKeys.length)} ${pantheonKeys.length === 1 ? 'tier' : 'tiers'} completed`,
       body: 'Completed Pantheon lineups from both runs of the boss gauntlet.',
       detail: 'Only fully completed Pantheon activities appear here.',
       tone: 'gold',
@@ -404,7 +404,7 @@ export function buildStorySlides(
       key: 'time',
       layout: 'class-breakdown',
       eyebrow: 'Total character playtime',
-      title: 'This is the time you spent playing your Guardians.',
+      title: 'Time played across your characters.',
       value: formatHours(playtime),
       body: 'Summed from the playtime reported for every current and deleted character on this account.',
       detail:
@@ -494,7 +494,7 @@ export function buildStorySlides(
       key: 'emblem',
       layout: 'emblem-banner',
       eyebrow: 'Most-used emblem',
-      title: 'This was the emblem behind your name most often.',
+      title: 'Your most-used emblem.',
       value: emblem.name,
       body: `${formatHours(emblem.seconds)} of character playtime, more than any other emblem in your report.`,
       tone: 'neutral',
@@ -508,7 +508,7 @@ export function buildStorySlides(
       count: report.goodBoyProtocol,
       eyebrow: 'Good Boy Protocol',
       value: formatInteger(report.goodBoyProtocol),
-      title: 'Good Boy Protocol was successfully executed.',
+      title: 'Good Boy Protocol interactions.',
       body: 'Recorded interactions with the best boy in the Tower.',
       iconUrl: assets?.goodBoyProtocolIconUrl,
     },
@@ -516,15 +516,15 @@ export function buildStorySlides(
       count: report.fishCaught,
       eyebrow: 'Fish caught',
       value: formatInteger(report.fishCaught),
-      title: 'Not every victory needed a weapon.',
-      body: 'Fish caught between universe-ending emergencies. A Guardian contains multitudes.',
+      title: 'Time spent fishing.',
+      body: 'Fish caught between universe-ending emergencies.',
     },
     {
       count: report.misadventures,
       eyebrow: 'Misadventures',
       value: formatInteger(report.misadventures),
       title: 'The Architects remember you too.',
-      body: 'Misadventures with nobody else to blame. Every legend needs a few rough landings.',
+      body: 'Deaths with nobody else to blame.',
     },
   ].filter((candidate) => candidate.count > 0)
   const personality =
@@ -572,7 +572,7 @@ function timeChapter(report: DestinyReport): StoryChapter | null {
   const playtime = parseTimeSpan(report.totalPlaytime)
   if (playtime && playtime > 0) {
     facts.push({
-      label: 'Given to the fight',
+      label: 'Total playtime',
       value: formatHours(playtime),
       note: 'Total character playtime across your account.',
     })
@@ -607,7 +607,7 @@ function timeChapter(report: DestinyReport): StoryChapter | null {
   return {
     key: 'time',
     kicker: '',
-    title: 'The time you gave',
+    title: 'Time played',
     lead: 'Your whole Destiny 2 history, across every character and destination.',
     facts,
   }
@@ -636,7 +636,7 @@ function fightChapter(report: DestinyReport): StoryChapter | null {
   return {
     key: 'fight',
     kicker: '',
-    title: 'How you fight',
+    title: 'Combat',
     lead: 'The scale of the fight, in numbers only your Ghost was counting.',
     facts,
   }
@@ -723,8 +723,8 @@ function challengeChapter(report: DestinyReport): StoryChapter | null {
   return {
     key: 'challenge',
     kicker: '',
-    title: 'The challenges you cleared',
-    lead: 'Raids, dungeons, and the marks that can only be earned once.',
+    title: 'Endgame completions',
+    lead: 'Raid and dungeon clears, including notable completions.',
     facts,
   }
 }
@@ -763,7 +763,7 @@ function competitiveChapter(report: DestinyReport): StoryChapter | null {
   return {
     key: 'competitive',
     kicker: '',
-    title: 'Your competitive side',
+    title: 'Competitive record',
     lead: 'Ratios straight from match history, sample sizes included.',
     facts,
   }
@@ -803,8 +803,8 @@ function peopleChapter(report: DestinyReport): StoryChapter | null {
   return {
     key: 'people',
     kicker: '',
-    title: 'The people beside you',
-    lead: 'No Guardian fights alone.',
+    title: 'Teammates',
+    lead: 'Players who appear most often in your activity history.',
     facts,
   }
 }
@@ -855,8 +855,8 @@ function detailsChapter(report: DestinyReport): StoryChapter | null {
   return {
     key: 'details',
     kicker: '',
-    title: 'Details only your Guardian could own',
-    lead: 'The small numbers that make a history yours.',
+    title: 'Other stats',
+    lead: 'Emblems, titles, and miscellaneous activity totals.',
     facts,
   }
 }

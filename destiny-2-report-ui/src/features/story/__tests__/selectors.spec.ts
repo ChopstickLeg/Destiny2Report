@@ -224,7 +224,7 @@ describe('buildStorySlides', () => {
     const pantheon = slides.find((slide) => slide.key === 'pantheon')
 
     expect(slides.map((slide) => slide.key)).not.toContain('contest')
-    expect(pantheon?.value).toBe('2 tiers conquered')
+    expect(pantheon?.value).toBe('2 tiers completed')
     expect(pantheon?.items).toEqual([
       {
         label: 'Pantheon: Nezarec Sublime',

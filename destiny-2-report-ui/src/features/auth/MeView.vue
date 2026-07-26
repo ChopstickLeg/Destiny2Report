@@ -41,8 +41,8 @@ function signIn() {
     <div v-else-if="!session.isSignedIn" class="me-panel">
       <h1 class="me-title">Your report</h1>
       <p class="me-copy">
-        Sign in with Bungie to jump straight to your own report and unlock “Your Story,” a paced
-        retrospective of your Destiny 2 history.
+        Sign in with Bungie to open your report and view “Your Story,” a guided summary of your
+        Destiny 2 history.
       </p>
       <AppButton v-if="session.signInAvailable" class="me-action" variant="primary" @click="signIn">
         Sign in with Bungie

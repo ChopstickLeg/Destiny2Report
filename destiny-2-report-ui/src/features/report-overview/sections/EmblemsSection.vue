@@ -20,7 +20,7 @@ const emblems = computed(() =>
 </script>
 
 <template>
-  <ReportSection id="emblems" title="Emblems you lived in" subtitle="Ranked by time worn">
+  <ReportSection id="emblems" title="Most-used emblems" subtitle="Ranked by time equipped">
     <ul class="emblem-list">
       <li v-for="emblem in emblems" :key="emblem.name" class="emblem-card">
         <div class="emblem-art">

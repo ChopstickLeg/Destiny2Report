@@ -15,7 +15,7 @@ public static class LeaderboardHandlers
         CancellationToken cancellationToken)
     {
         offset = Math.Max(0, offset);
-        limit = limit <= 0 ? 50 : Math.Min(limit, 50);
+        limit = limit <= 0 ? 250 : Math.Min(limit, 250);
         if (offset >= LeaderboardBoard.MaximumEntries)
         {
             return TypedResults.BadRequest(new ProblemDetails { Title = "Invalid leaderboard page", Detail = "offset must be less than 1000.", Status = 400 });

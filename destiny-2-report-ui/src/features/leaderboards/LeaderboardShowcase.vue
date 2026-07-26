@@ -17,7 +17,7 @@ const featuredCollections = computed(() => {
   return preferred
     .map((key) => collections.find((collection) => collection.key === key))
     .filter((collection) => collection !== undefined)
-    .map((collection) => ({ ...collection, boards: collection.boards.slice(0, 3) }))
+    .map((collection) => ({ ...collection, boards: collection.boards.slice(0, 4) }))
 })
 </script>
 
@@ -35,7 +35,7 @@ const featuredCollections = computed(() => {
   >
     <div class="showcase-heading">
       <div>
-        <p class="eyebrow">Community records</p>
+        <p class="eyebrow">Community leaderboards</p>
         <h2 id="leaderboard-heading" class="display">See who leads the pack</h2>
       </div>
       <RouterLink class="all-link" :to="{ name: 'leaderboards' }">
