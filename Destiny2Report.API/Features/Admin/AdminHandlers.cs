@@ -39,14 +39,14 @@ public static class AdminHandlers
             return TypedResults.BadRequest(new ProblemDetails { Title = "Missing crawl requests", Status = StatusCodes.Status400BadRequest });
         }
 
+        if (requests.Any(request => request.MembershipTypeId <= 0 || request.MembershipId <= 0))
+        {
+            return TypedResults.BadRequest(new ProblemDetails { Title = "Invalid membership", Status = StatusCodes.Status400BadRequest });
+        }
+
         var responses = new List<Destiny2Report.API.Features.Reports.ReportQueueResponse>(requests.Count);
         foreach (var request in requests)
         {
-            if (request.MembershipTypeId <= 0 || request.MembershipId <= 0)
-            {
-                return TypedResults.BadRequest(new ProblemDetails { Title = "Invalid membership", Status = StatusCodes.Status400BadRequest });
-            }
-
             responses.Add(await queue.EnqueueAsync(
                     request.MembershipTypeId,
                     request.MembershipId,
@@ -96,6 +96,15 @@ public static class AdminHandlers
                 continue;
             }
 
+            await mongoDatabase.GetCollection<DestinyReport>("destiny_reports")
+                .UpdateOneAsync(
+                    BuildRedisQueuedReportFilter()
+                        & Builders<DestinyReport>.Filter.Eq(report => report.PlatformId, player.MembershipTypeId)
+                        & Builders<DestinyReport>.Filter.Eq(report => report.PlayerMembershipId, player.MembershipId),
+                    BuildQueueFlushedReportUpdate(),
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
             affectedPlayers++;
             var statusKey = CrawlerQueue.JobStatusKey(player.MembershipTypeId, player.MembershipId);
             if (!string.IsNullOrWhiteSpace(player.StreamEntryId))
@@ -130,11 +139,34 @@ public static class AdminHandlers
             .Set(job => job.UpdatedAtUtc, DateTime.UtcNow);
         var result = await jobs.UpdateManyAsync(queuedFilter, update, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+        var reportResult = await mongoDatabase.GetCollection<DestinyReport>("destiny_reports")
+            .UpdateManyAsync(
+                BuildMongoQueuedReportFilter(),
+                BuildQueueFlushedReportUpdate(),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        var affectedQueueRecords = result.ModifiedCount + reportResult.ModifiedCount;
 
         return TypedResults.Ok(new AdminMutationResponse(
-            result.ModifiedCount,
-            $"Removed {result.ModifiedCount} queued player(s) from the Mongo crawl queue."));
+            affectedQueueRecords,
+            $"Removed {affectedQueueRecords} queued record(s) from the Mongo crawl queue."));
     }
+
+    internal static FilterDefinition<DestinyReport> BuildMongoQueuedReportFilter() =>
+        Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateQueued)
+        & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, false);
+
+    internal static FilterDefinition<DestinyReport> BuildRedisQueuedReportFilter() =>
+        Builders<DestinyReport>.Filter.Eq(report => report.CrawlState, DestinyReport.CrawlStateQueued)
+        & Builders<DestinyReport>.Filter.Eq(report => report.QueuedInRedis, true);
+
+    internal static UpdateDefinition<DestinyReport> BuildQueueFlushedReportUpdate() =>
+        Builders<DestinyReport>.Update
+            .Set(report => report.CrawlState, DestinyReport.CrawlStateFailed)
+            .Set(report => report.QueuedInRedis, false)
+            .Set(report => report.CrawlError, QueueFlushedError)
+            .Set(report => report.LeaseExpiresAtUtc, null)
+            .Set(report => report.LeaseOwner, "");
 
     public static async Task<Results<Ok<AdminMutationResponse>, BadRequest<ProblemDetails>>> SetFullRecrawl(
         AdminFullRecrawlRequest request,
