@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Reports;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
@@ -217,5 +218,76 @@ public sealed class CrawlerProtocolTests
         Assert.Contains("\"s\" : { \"$in\" : [\"queued\", \"running\"] }", json);
         Assert.DoesNotContain("awaiting_finalization", json);
     }
+
+    [Fact]
+    public void Durable_terminal_job_overrides_stale_running_redis_status()
+    {
+        var job = CreateJob(CrawlJob.StateCompleted, dispatched: true, streamEntryId: "new-0");
+        var redisStatus = CreateStatus(DestinyReport.CrawlStateRunning, "new-0");
+
+        var reconciled = ReportHandlers.ReconcileQueueStatus(job, redisStatus);
+
+        Assert.NotNull(reconciled);
+        Assert.Equal(DestinyReport.CrawlStateCompleted, reconciled.Status);
+    }
+
+    [Fact]
+    public void Undispatched_mongo_job_overrides_a_previous_terminal_redis_status()
+    {
+        var job = CreateJob(CrawlJob.StateQueued, dispatched: false);
+        var redisStatus = CreateStatus(DestinyReport.CrawlStateCompleted, "old-0");
+
+        var reconciled = ReportHandlers.ReconcileQueueStatus(job, redisStatus);
+
+        Assert.NotNull(reconciled);
+        Assert.Equal(DestinyReport.CrawlStateQueued, reconciled.Status);
+        Assert.Null(reconciled.StreamEntryId);
+    }
+
+    [Fact]
+    public void Matching_live_redis_status_keeps_its_progress_snapshot()
+    {
+        var job = CreateJob(CrawlJob.StateRunning, dispatched: true, streamEntryId: "new-0");
+        var progress = new CrawlProgressSnapshot(
+            "activities",
+            "Loading activities",
+            12,
+            20,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+        var redisStatus = CreateStatus(DestinyReport.CrawlStateRunning, "new-0") with
+        {
+            Progress = progress
+        };
+
+        var reconciled = ReportHandlers.ReconcileQueueStatus(job, redisStatus);
+
+        Assert.Same(redisStatus, reconciled);
+        Assert.Same(progress, reconciled!.Progress);
+    }
+
+    private static CrawlJob CreateJob(string state, bool dispatched, string streamEntryId = "") => new()
+    {
+        PlayerKey = CrawlJob.CreatePlayerKey(3, 42),
+        MembershipTypeId = 3,
+        MembershipId = 42,
+        RunId = "run",
+        State = state,
+        DispatchedToRedis = dispatched,
+        StreamEntryId = streamEntryId,
+        QueuedAtUtc = DateTime.UtcNow,
+        UpdatedAtUtc = DateTime.UtcNow
+    };
+
+    private static ReportQueueStatusResponse CreateStatus(string status, string? streamEntryId) => new(
+        3,
+        42,
+        status,
+        streamEntryId,
+        null,
+        null,
+        0,
+        DateTimeOffset.UtcNow,
+        null);
 
 }

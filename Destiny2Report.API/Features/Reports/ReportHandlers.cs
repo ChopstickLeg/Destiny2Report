@@ -548,23 +548,17 @@ public static class ReportHandlers
         }
 
         var redisDatabase = redis.GetDatabase();
-        var initialStatus = await GetStoredQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
+        var redisStatus = await GetStoredQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        initialStatus ??= await GetQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
+        redisStatus ??= await GetQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (initialStatus is null)
-        {
-            var job = await FindCrawlJobAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
-                .ConfigureAwait(false);
-            if (job is not null)
-            {
-                initialStatus = BuildQueueStatusFromJob(job);
-            }
-        }
+        var job = await FindCrawlJobAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
+            .ConfigureAwait(false);
+        var initialStatus = ReconcileQueueStatus(job, redisStatus);
 
         if (initialStatus is null)
         {
@@ -653,33 +647,21 @@ public static class ReportHandlers
 
                 nextFallbackScanAt = DateTimeOffset.UtcNow.Add(QueueScanFallbackInterval);
 
-                var status = await GetStoredQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
+                var redisStatus = await GetStoredQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
 
-                status ??= await GetQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
+                redisStatus ??= await GetQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
-
-                if (status is not null)
-                {
-                    yield return new SseItem<ReportQueueStatusResponse>(status, status.Status);
-
-                    if (IsTerminalCrawlState(status.Status))
-                    {
-                        yield break;
-                    }
-
-                    continue;
-                }
 
                 var crawlJob = await FindCrawlJobAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
                     .ConfigureAwait(false);
-                if (crawlJob is not null)
+                var status = ReconcileQueueStatus(crawlJob, redisStatus);
+                if (status is not null)
                 {
-                    var jobStatus = BuildQueueStatusFromJob(crawlJob);
-                    yield return new SseItem<ReportQueueStatusResponse>(jobStatus, jobStatus.Status);
-                    if (IsTerminalCrawlState(jobStatus.Status))
+                    yield return new SseItem<ReportQueueStatusResponse>(status, status.Status);
+                    if (IsTerminalCrawlState(status.Status))
                     {
                         yield break;
                     }
@@ -849,6 +831,30 @@ public static class ReportHandlers
             .Find(job => job.PlayerKey == key)
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    internal static ReportQueueStatusResponse? ReconcileQueueStatus(
+        CrawlJob? job,
+        ReportQueueStatusResponse? redisStatus)
+    {
+        if (job is null)
+        {
+            return redisStatus;
+        }
+
+        var jobStatus = BuildQueueStatusFromJob(job);
+        if (redisStatus is null
+            || CrawlJob.IsTerminal(job.State)
+            || IsTerminalCrawlState(redisStatus.Status)
+            || !string.Equals(jobStatus.Status, redisStatus.Status, StringComparison.OrdinalIgnoreCase)
+            || !job.DispatchedToRedis
+            || (!string.IsNullOrWhiteSpace(job.StreamEntryId)
+                && !string.Equals(job.StreamEntryId, redisStatus.StreamEntryId, StringComparison.Ordinal)))
+        {
+            return jobStatus;
+        }
+
+        return redisStatus;
     }
 
     private static ReportQueueStatusResponse BuildQueueStatusFromJob(CrawlJob job)

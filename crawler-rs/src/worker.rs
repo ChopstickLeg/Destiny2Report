@@ -265,12 +265,14 @@ impl Worker {
         let expiry = DateTime::from_millis(
             now.timestamp_millis() + self.config.lease_duration.as_millis() as i64,
         );
-        Ok(database.collection::<CrawlJob>("crawl_jobs")
+        Ok(database
+            .collection::<CrawlJob>("crawl_jobs")
             .find_one_and_update(
-                doc! { "_id": player_key(message.membership_type_id, message.membership_id), "r": &message.run_id,
-                    "$or": [ { "s": STATE_QUEUED }, { "s": STATE_RUNNING, "le": { "$lt": now } } ] },
+                stream_claim_filter(message, now),
                 claim_update(&self.config.consumer_name, expiry, now, Some(message)),
-            ).return_document(ReturnDocument::After).await?)
+            )
+            .return_document(ReturnDocument::After)
+            .await?)
     }
 
     async fn claim_fallback(&self) -> anyhow::Result<Option<CrawlJob>> {
@@ -282,10 +284,7 @@ impl Worker {
         Ok(database
             .collection::<CrawlJob>("crawl_jobs")
             .find_one_and_update(
-                doc! { "$or": [
-                    { "s": STATE_QUEUED, "d": false },
-                    { "s": STATE_RUNNING, "le": { "$lt": now } }
-                ] },
+                mongo_fallback_claim_filter(now),
                 claim_update(&self.config.consumer_name, expiry, now, None),
             )
             .sort(doc! { "qa": 1 })
@@ -467,18 +466,26 @@ impl Worker {
 
     async fn fail(&self, job: &CrawlJob, error: &str) -> anyhow::Result<bool> {
         let database = self.mongo.database(&self.config.mongo_database);
-        let result = database.collection::<CrawlJob>("crawl_jobs")
+        let mut session = self.mongo.start_session().await?;
+        session.start_transaction().await?;
+        let result = database
+            .collection::<CrawlJob>("crawl_jobs")
             .update_one(
                 doc! { "_id": &job.player_key, "r": &job.run_id, "f": job.fence, "lo": &job.lease_owner, "s": STATE_RUNNING },
                 doc! { "$set": { "s": "failed", "e": error, "lo": "", "le": null, "ua": DateTime::now(), "fa": DateTime::now() } },
-            ).await?;
+            )
+            .session(&mut session)
+            .await?;
         if result.modified_count != 1 {
+            session.abort_transaction().await?;
             return Ok(false);
         }
         database
             .collection::<Document>("destiny_reports")
             .update_one(failed_report_filter(job), failed_report_update(error))
+            .session(&mut session)
             .await?;
+        session.commit_transaction().await?;
         Ok(true)
     }
 
@@ -677,6 +684,28 @@ fn malformed_dispatch_filter(entry_id: &str) -> Document {
     doc! { "s": STATE_QUEUED, "d": true, "se": entry_id }
 }
 
+fn stream_claim_filter(message: &CrawlMessage, now: DateTime) -> Document {
+    doc! {
+        "_id": player_key(message.membership_type_id, message.membership_id),
+        "v": PROTOCOL_VERSION,
+        "r": &message.run_id,
+        "$or": [
+            { "s": STATE_QUEUED },
+            { "s": STATE_RUNNING, "le": { "$lt": now } }
+        ]
+    }
+}
+
+fn mongo_fallback_claim_filter(now: DateTime) -> Document {
+    doc! {
+        "v": PROTOCOL_VERSION,
+        "$or": [
+            { "s": STATE_QUEUED, "d": false },
+            { "s": STATE_RUNNING, "le": { "$lt": now } }
+        ]
+    }
+}
+
 async fn renew_loop(
     mongo: Client,
     mut redis: ConnectionManager,
@@ -860,5 +889,28 @@ mod tests {
 
         assert!(!set.contains_key("d"));
         assert!(!set.contains_key("se"));
+    }
+
+    #[test]
+    fn stream_claim_requires_the_supported_protocol_version() {
+        let message = CrawlMessage {
+            protocol_version: PROTOCOL_VERSION,
+            run_id: "run".into(),
+            membership_type_id: 3,
+            membership_id: 42,
+            stream_entry_id: "123-0".into(),
+        };
+
+        let filter = stream_claim_filter(&message, DateTime::now());
+
+        assert_eq!(filter.get_i32("v").unwrap(), PROTOCOL_VERSION);
+        assert_eq!(filter.get_str("r").unwrap(), "run");
+    }
+
+    #[test]
+    fn mongo_fallback_requires_the_supported_protocol_version() {
+        let filter = mongo_fallback_claim_filter(DateTime::now());
+
+        assert_eq!(filter.get_i32("v").unwrap(), PROTOCOL_VERSION);
     }
 }
