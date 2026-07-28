@@ -5,7 +5,7 @@ import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
-import { cloudflare } from "@cloudflare/vite-plugin";
+import { cloudflare } from '@cloudflare/vite-plugin'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -25,7 +25,7 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    plugins: [vue(), vueDevTools(), cloudflare()],
+    plugins: [vue(), vueDevTools(), ...(mode === 'test' ? [] : [cloudflare()])],
     // For local development, reuse the public client id from the workspace's
     // ignored .env file. Only this public value is exposed; the client secret
     // remains available exclusively to the backend.
@@ -53,5 +53,5 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
-  };
+  }
 })

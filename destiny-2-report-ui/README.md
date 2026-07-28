@@ -27,6 +27,14 @@ single origin (the intended production shape). By default it targets
 `http://localhost:5063` (the API's `launchSettings.json` HTTP profile); override
 with `VITE_DEV_API_PROXY` in `.env.local`.
 
+Production uses the same browser-facing shape. The Cloudflare Worker handles
+`/api/*` before static assets and proxies those requests to `API_ORIGIN`, which
+is configured in `wrangler.jsonc`. The API origin must be a separate hostname
+that reaches the ASP.NET Core service (for example, a Cloudflare Tunnel
+published application route), but it is never used directly by browser code.
+Because browser requests remain on `https://destiny-2.report`, this does not
+require CORS configuration in the API.
+
 Report-completion notifications use the browser Push API and a service worker.
 The backend only advertises the opt-in control when all three `WebPush` settings
 are configured. Generate a VAPID key pair once, keep the private key server-side,
