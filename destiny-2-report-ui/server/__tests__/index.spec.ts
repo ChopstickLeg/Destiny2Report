@@ -6,7 +6,7 @@ function createEnv(assetResponse = new Response('asset response')) {
   return {
     API_ORIGIN: 'https://api.destiny-2.report',
     ASSETS: {
-      fetch: vi.fn(async () => assetResponse),
+      fetch: vi.fn<(request: Request) => Promise<Response>>(async () => assetResponse),
     },
   }
 }
@@ -18,7 +18,7 @@ describe('frontend worker routing', () => {
 
   it('proxies API requests without changing the method, path, query, or body', async () => {
     let upstreamRequest: Request | undefined
-    const fetchMock = vi.fn(async (request: Request) => {
+    const fetchMock = vi.fn<(request: Request) => Promise<Response>>(async (request) => {
       upstreamRequest = request
       return Response.json({ ok: true })
     })
@@ -49,7 +49,7 @@ describe('frontend worker routing', () => {
   })
 
   it('serves non-API requests from the static asset binding', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = vi.fn<() => void>()
     vi.stubGlobal('fetch', fetchMock)
     const env = createEnv()
     const request = new Request('https://destiny-2.report/faq')
@@ -64,7 +64,7 @@ describe('frontend worker routing', () => {
   it('returns Problem Details when the API origin cannot be reached', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => {
+      vi.fn<() => Promise<never>>(async () => {
         throw new Error('origin unavailable')
       }),
     )
