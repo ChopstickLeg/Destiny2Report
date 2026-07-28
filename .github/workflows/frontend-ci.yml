@@ -18,7 +18,7 @@ defaults:
 
 jobs:
   lint-test-and-build:
-    name: Lint, test, and build
+    name: Frontend lint, test, and build
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
