@@ -32,6 +32,11 @@ const GROUP: &str = "crawler-workers";
 const MANIFEST_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MANIFEST_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const REDIS_RECLAIM_GRACE: Duration = Duration::from_secs(5);
+const ACK_AND_DELETE_SCRIPT: &str = r#"
+local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+local deleted = redis.call('XDEL', KEYS[1], ARGV[2])
+return { acknowledged, deleted }
+"#;
 
 pub struct Worker {
     config: Config,
@@ -515,16 +520,11 @@ impl Worker {
     }
 
     async fn ack(&mut self, entry_id: &str) -> anyhow::Result<()> {
-        let _: i64 = redis::cmd("XACK")
-            .arg(STREAM)
+        let _: Value = redis::Script::new(ACK_AND_DELETE_SCRIPT)
+            .key(STREAM)
             .arg(GROUP)
             .arg(entry_id)
-            .query_async(&mut self.redis)
-            .await?;
-        let _: i64 = redis::cmd("XDEL")
-            .arg(STREAM)
-            .arg(entry_id)
-            .query_async(&mut self.redis)
+            .invoke_async(&mut self.redis)
             .await?;
         Ok(())
     }

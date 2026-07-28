@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import LeaderboardsView from '../LeaderboardsView.vue'
 
 const { fetchLeaderboard, fetchLeaderboardCatalog } = vi.hoisted(() => ({
-  fetchLeaderboard: vi.fn<(key: string, offset: number) => Promise<unknown>>(),
+  fetchLeaderboard: vi.fn<(key: string) => Promise<unknown>>(),
   fetchLeaderboardCatalog: vi.fn<() => Promise<unknown>>(),
 }))
 
@@ -131,7 +131,7 @@ describe('LeaderboardsView', () => {
     wrapper.unmount()
   })
 
-  it('loads the next 250 Guardians after scrolling through 150 entries', async () => {
+  it('loads all retained Guardians and filters them by display name', async () => {
     fetchLeaderboardCatalog.mockResolvedValue({
       isReady: true,
       completedPlayerCount: 1000,
@@ -149,26 +149,26 @@ describe('LeaderboardsView', () => {
         },
       ],
     })
-    fetchLeaderboard.mockImplementation(async (key, offset) => ({
+    fetchLeaderboard.mockImplementation(async (key) => ({
       key,
       category: 'Time',
       title: 'Raid playtime',
       description: '',
       unit: 'seconds',
-      offset,
-      limit: 250,
+      offset: 0,
+      limit: 1000,
       retainedEntryCount: 1000,
       updatedAtUtc: '2026-01-01T00:00:00Z',
       isRepairing: false,
-      entries: Array.from({ length: 250 }, (_, index) => {
-        const rank = offset + index + 1
+      entries: Array.from({ length: 1000 }, (_, index) => {
+        const rank = index + 1
         return {
           rank,
           membershipTypeId: 3,
           membershipId: String(rank),
-          displayName: `Guardian ${rank}`,
+          displayName: rank === 777 ? 'Needle Guardian' : `Guardian ${rank}`,
           displayCode: rank,
-          fullDisplayName: `Guardian ${rank}#${rank}`,
+          fullDisplayName: rank === 777 ? `Needle Guardian#${rank}` : `Guardian ${rank}#${rank}`,
           emblemBackgroundUrl: '',
           score: 10_000 - rank,
         }
@@ -200,19 +200,16 @@ describe('LeaderboardsView', () => {
     })
     await flushPromises()
 
-    const list = wrapper.get('.ranking-list')
-    const trigger = wrapper.get('[data-entry-index="150"]')
-    Object.defineProperty(list.element, 'clientHeight', { value: 600 })
-    Object.defineProperty(list.element, 'scrollTop', { value: 9_600, writable: true })
-    Object.defineProperty(trigger.element, 'offsetTop', { value: 10_200 })
+    expect(fetchLeaderboard).toHaveBeenCalledWith('time.mode.4', expect.any(AbortSignal))
+    expect(wrapper.findAll('.ranking-row')).toHaveLength(1000)
 
-    await list.trigger('scroll')
+    await wrapper.get('input[aria-label="Search players by display name"]').setValue('needle')
     await flushPromises()
 
-    expect(fetchLeaderboard).toHaveBeenNthCalledWith(1, 'time.mode.4', 0, expect.any(AbortSignal))
-    expect(fetchLeaderboard).toHaveBeenNthCalledWith(2, 'time.mode.4', 250, expect.any(AbortSignal))
-    expect(wrapper.findAll('.ranking-row')).toHaveLength(500)
-    expect(wrapper.get('[data-entry-index="499"]').text()).toContain('Guardian 500')
+    expect(fetchLeaderboard).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('.ranking-row')).toHaveLength(1)
+    expect(wrapper.get('.ranking-row').text()).toContain('Needle Guardian#777')
+    expect(wrapper.get('.ranking-row').text()).toContain('#777')
     wrapper.unmount()
   })
 })

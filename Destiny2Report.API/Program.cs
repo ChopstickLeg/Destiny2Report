@@ -140,7 +140,6 @@ app.MapHealthChecks("/health", new HealthCheckOptions
 var api = app.MapGroup("/api")
     .RequireRateLimiting(RateLimitPolicies.PublicRead);
 
-api.MapStatusEndpoints();
 api.MapAuthEndpoints();
 api.MapAdminEndpoints();
 api.MapPlayerSearchEndpoints();

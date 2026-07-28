@@ -12,8 +12,7 @@ export function fetchLeaderboardCatalog(signal?: AbortSignal): Promise<Leaderboa
 
 export function fetchLeaderboard(
   key: string,
-  offset: number,
   signal?: AbortSignal,
 ): Promise<LeaderboardPageResponse> {
-  return apiFetch(`/leaderboards/${encodeURIComponent(key)}?offset=${offset}&limit=250`, { signal })
+  return apiFetch(`/leaderboards/${encodeURIComponent(key)}?offset=0&limit=1000`, { signal })
 }

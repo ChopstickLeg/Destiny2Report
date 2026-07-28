@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useInfiniteQuery, useQuery } from '@tanstack/vue-query'
+import { useQuery } from '@tanstack/vue-query'
 import AppSelect from '@/components/base/AppSelect.vue'
 import EmptyState from '@/components/base/EmptyState.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
@@ -19,12 +19,10 @@ import {
 } from './leaderboard-collections'
 import LeaderboardWarmingState from './LeaderboardWarmingState.vue'
 
-const BATCH_SIZE = 250
-const PREFETCH_AFTER = 150
-const MAX_ENTRIES = 1000
 const route = useRoute()
 const router = useRouter()
 const search = ref('')
+const playerSearch = ref('')
 const rankingList = ref<HTMLElement | null>(null)
 
 const catalogQuery = useQuery({
@@ -83,45 +81,25 @@ watch(selectedKey, (key) => {
   void router.replace({ query: { board: key } })
 })
 
-const boardQuery = useInfiniteQuery({
+const boardQuery = useQuery({
   queryKey: computed(() => leaderboardKeys.board(selectedKey.value)),
-  queryFn: ({ pageParam, signal }) => fetchLeaderboard(selectedKey.value, pageParam, signal),
-  initialPageParam: 0,
-  getNextPageParam: (lastPage) => {
-    const nextOffset = lastPage.offset + lastPage.entries.length
-    const maximum = Math.min(lastPage.retainedEntryCount, MAX_ENTRIES)
-    return lastPage.entries.length > 0 && nextOffset < maximum ? nextOffset : undefined
-  },
+  queryFn: ({ signal }) => fetchLeaderboard(selectedKey.value, signal),
   enabled: computed(() => catalogQuery.data.value?.isReady === true && !!selectedKey.value),
   staleTime: 60_000,
 })
 
-const board = computed(() => boardQuery.data.value?.pages[0])
-const entries = computed(() => boardQuery.data.value?.pages.flatMap((page) => page.entries) ?? [])
-const prefetchEntryIndex = computed(() =>
-  Math.max(0, entries.value.length - BATCH_SIZE + PREFETCH_AFTER),
-)
+const board = computed(() => boardQuery.data.value)
+const entries = computed(() => board.value?.entries ?? [])
+const visibleEntries = computed(() => {
+  const needle = playerSearch.value.trim().toLocaleLowerCase()
+  if (!needle) return entries.value
+  return entries.value.filter((entry) => entry.displayName.toLocaleLowerCase().includes(needle))
+})
 
 watch(selectedKey, async () => {
   await nextTick()
   rankingList.value?.scrollTo({ top: 0 })
 })
-
-function maybeLoadNextPage() {
-  if (!rankingList.value || !boardQuery.hasNextPage.value || boardQuery.isFetchingNextPage.value) {
-    return
-  }
-
-  const trigger = rankingList.value.querySelector<HTMLElement>(
-    `[data-entry-index="${prefetchEntryIndex.value}"]`,
-  )
-  if (
-    trigger &&
-    trigger.offsetTop <= rankingList.value.scrollTop + rankingList.value.clientHeight
-  ) {
-    void boardQuery.fetchNextPage()
-  }
-}
 
 function selectCollection(key: string) {
   search.value = ''
@@ -236,8 +214,17 @@ function rowStyle(entry: LeaderboardEntry): Record<string, string> | undefined {
         />
         <template v-else-if="board">
           <header class="board-heading">
-            <h2>{{ board.title }}</h2>
-            <span v-if="board.isRepairing" class="refreshing">Refreshing rankings</span>
+            <div class="board-title">
+              <h2>{{ board.title }}</h2>
+              <span v-if="board.isRepairing" class="refreshing">Refreshing rankings</span>
+            </div>
+            <input
+              v-model="playerSearch"
+              class="player-search"
+              type="search"
+              placeholder="Find a player"
+              aria-label="Search players by display name"
+            />
           </header>
 
           <EmptyState
@@ -245,25 +232,22 @@ function rowStyle(entry: LeaderboardEntry): Record<string, string> | undefined {
             title="No ranked Guardians yet"
             description="A positive score will appear here after a completed crawl."
           />
-          <div
-            v-else
-            ref="rankingList"
-            class="ranking-list"
-            role="table"
-            :aria-label="board.title"
-            @scroll.passive="maybeLoadNextPage"
-          >
+          <EmptyState
+            v-else-if="visibleEntries.length === 0"
+            title="No Guardians match"
+            :description="`No display names match “${playerSearch.trim()}”.`"
+          />
+          <div v-else ref="rankingList" class="ranking-list" role="table" :aria-label="board.title">
             <div class="ranking-header" role="row">
               <span role="columnheader">Rank</span>
               <span role="columnheader">Guardian</span>
               <span role="columnheader">Score</span>
             </div>
             <RouterLink
-              v-for="(entry, index) in entries"
+              v-for="entry in visibleEntries"
               :key="`${entry.membershipTypeId}:${entry.membershipId}`"
               class="ranking-row"
               :class="{ 'ranking-row--podium': entry.rank <= 3 }"
-              :data-entry-index="index"
               :style="rowStyle(entry)"
               role="row"
               :to="{
@@ -280,16 +264,6 @@ function rowStyle(entry: LeaderboardEntry): Record<string, string> | undefined {
                 {{ formatScore(entry.score, board.unit) }}
               </strong>
             </RouterLink>
-            <div v-if="boardQuery.isFetchingNextPage.value" class="ranking-status" role="status">
-              Loading more Guardians…
-            </div>
-            <div
-              v-else-if="!boardQuery.hasNextPage.value && entries.length < board.retainedEntryCount"
-              class="ranking-status"
-              role="status"
-            >
-              Showing the top {{ formatInteger(entries.length) }} Guardians
-            </div>
           </div>
         </template>
       </main>
@@ -409,15 +383,31 @@ function rowStyle(entry: LeaderboardEntry): Record<string, string> | undefined {
 }
 .board-heading {
   display: flex;
+  align-items: end;
   justify-content: space-between;
   gap: var(--space-4);
   margin-bottom: var(--space-5);
 }
+.board-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
 .board-heading h2 {
   font-size: var(--text-xl);
 }
+.player-search {
+  width: min(100%, 18rem);
+  height: 2.75rem;
+  padding: 0 var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+.player-search:focus-visible {
+  outline-color: var(--color-border-strong);
+}
 .refreshing {
-  align-self: start;
   padding: var(--space-1) var(--space-2);
   color: var(--color-warning);
   background: rgb(223 169 61 / 0.12);
@@ -511,12 +501,6 @@ function rowStyle(entry: LeaderboardEntry): Record<string, string> | undefined {
 .score {
   text-align: right;
 }
-.ranking-status {
-  padding: var(--space-4);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  text-align: center;
-}
 @media (max-width: 56rem) {
   .collection-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -556,7 +540,11 @@ function rowStyle(entry: LeaderboardEntry): Record<string, string> | undefined {
     min-height: auto;
   }
   .board-heading {
+    align-items: stretch;
     flex-direction: column;
+  }
+  .player-search {
+    width: 100%;
   }
   .ranking-header {
     display: none;

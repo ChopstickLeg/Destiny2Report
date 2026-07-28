@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let cancellation = CancellationToken::new();
     let signal = cancellation.clone();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        wait_for_shutdown_signal().await;
         signal.cancel();
     });
 
@@ -39,4 +39,20 @@ async fn main() -> anyhow::Result<()> {
         .await;
     telemetry.shutdown();
     result
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM signal handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = terminate.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
