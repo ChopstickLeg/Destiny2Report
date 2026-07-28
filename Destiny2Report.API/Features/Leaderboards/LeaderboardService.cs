@@ -134,9 +134,15 @@ public sealed class LeaderboardService(
             var definition = result.Definition;
             var replacement = new LeaderboardBoard
             {
-                MetricKey = key, Category = definition.Category, Title = definition.Title, Description = definition.Description,
-                Unit = definition.Unit, DisplayOrder = definition.DisplayOrder, UpdatedAtUtc = DateTime.UtcNow,
-                IsRepairing = false, Entries = LeaderboardRanking.SortAndLimit(result.Entries)
+                MetricKey = key,
+                Category = definition.Category,
+                Title = definition.Title,
+                Description = definition.Description,
+                Unit = definition.Unit,
+                DisplayOrder = definition.DisplayOrder,
+                UpdatedAtUtc = DateTime.UtcNow,
+                IsRepairing = false,
+                Entries = LeaderboardRanking.SortAndLimit(result.Entries)
             };
             await ReplaceBoardAsync(replacement, cancellationToken).ConfigureAwait(false);
         }
@@ -154,19 +160,30 @@ public sealed class LeaderboardService(
         {
             entries.Add(new LeaderboardStoredEntry
             {
-                MembershipTypeId = report.PlatformId, MembershipId = report.PlayerMembershipId, DisplayName = report.DisplayName,
-                DisplayCode = report.DisplayCode, EmblemBackgroundUrl = report.MostUsedEmblems.FirstOrDefault()?.BackgroundUrl ?? "",
-                Score = metric.Score, SourceCrawledAtUtc = report.LastCrawledAtUtc ?? report.CrawledAt
+                MembershipTypeId = report.PlatformId,
+                MembershipId = report.PlayerMembershipId,
+                DisplayName = report.DisplayName,
+                DisplayCode = report.DisplayCode,
+                EmblemBackgroundUrl = report.MostUsedEmblems.FirstOrDefault()?.BackgroundUrl ?? "",
+                Score = metric.Score,
+                SourceCrawledAtUtc = report.LastCrawledAtUtc ?? report.CrawledAt
             });
         }
         entries = LeaderboardRanking.SortAndLimit(entries);
         var definition = metric ?? new LeaderboardMetric(key, board!.Category, board.Title, board.Description, board.Unit, board.DisplayOrder, 0);
         var replacement = new LeaderboardBoard
         {
-            MetricKey = key, Category = definition.Category, Title = definition.Title, Description = definition.Description,
+            MetricKey = key,
+            Category = definition.Category,
+            Title = definition.Title,
+            Description = definition.Description,
             // Seed new boards from the metric definition, but preserve database-managed ordering thereafter.
-            Unit = definition.Unit, DisplayOrder = board?.DisplayOrder ?? definition.DisplayOrder, UpdatedAtUtc = DateTime.UtcNow,
-            IsRepairing = board?.IsRepairing ?? false, RepairError = board?.RepairError ?? "", Entries = entries
+            Unit = definition.Unit,
+            DisplayOrder = board?.DisplayOrder ?? definition.DisplayOrder,
+            UpdatedAtUtc = DateTime.UtcNow,
+            IsRepairing = board?.IsRepairing ?? false,
+            RepairError = board?.RepairError ?? "",
+            Entries = entries
         };
         await ReplaceBoardAsync(replacement, cancellationToken).ConfigureAwait(false);
         // A repair builds its replacement outside the board lock. If this publish

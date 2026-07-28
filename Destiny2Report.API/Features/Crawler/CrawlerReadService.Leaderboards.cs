@@ -167,6 +167,12 @@ public partial class CrawlerReadService
 
     private static string? DamageTypeName(int damageType) => damageType switch
     {
-        1 => "Kinetic", 2 => "Arc", 3 => "Solar", 4 => "Void", 6 => "Stasis", 7 => "Strand", _ => null
+        1 => "Kinetic",
+        2 => "Arc",
+        3 => "Solar",
+        4 => "Void",
+        6 => "Stasis",
+        7 => "Strand",
+        _ => null
     };
 }

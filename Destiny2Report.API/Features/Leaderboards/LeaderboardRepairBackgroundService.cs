@@ -64,10 +64,13 @@ public sealed class LeaderboardRepairBackgroundService(
                         if (!candidates.TryGetValue(metric.Key, out var set) || metric.Score <= 0) continue;
                         set.Add(new LeaderboardStoredEntry
                         {
-                            MembershipTypeId = player.MembershipTypeId, MembershipId = player.MembershipId,
-                            DisplayName = player.DisplayName, DisplayCode = player.DisplayCode,
+                            MembershipTypeId = player.MembershipTypeId,
+                            MembershipId = player.MembershipId,
+                            DisplayName = player.DisplayName,
+                            DisplayCode = player.DisplayCode,
                             EmblemBackgroundUrl = player.MostUsedEmblems.FirstOrDefault()?.BackgroundUrl ?? "",
-                            Score = metric.Score, SourceCrawledAtUtc = player.SourceCrawledAtUtc
+                            Score = metric.Score,
+                            SourceCrawledAtUtc = player.SourceCrawledAtUtc
                         });
                         if (set.Count > LeaderboardBoard.MaximumEntries) set.Remove(set.Max!);
                     }

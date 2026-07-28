@@ -201,23 +201,36 @@ public sealed class CrawlGenerationStore(IMongoClient mongoClient, IMongoDatabas
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         await ReplaceAsync(session, "weapon_aggregates", job, values.Where(x => x.Kind == CrawlArtifactKind.Weapon).Select(x => new WeaponAggregate
         {
-            OwnerMembershipType = job.MembershipTypeId, OwnerMembershipId = job.MembershipId,
-            ActivityMode = CrawlStorageMappings.FromStoredMode(x.ActivityMode), SpecificActivityMode = x.SpecificActivityMode,
-            ClassName = CrawlStorageMappings.FromStoredClass(x.CharacterClass), WeaponHash = x.Hash, Kills = checked((int)x.Value)
+            OwnerMembershipType = job.MembershipTypeId,
+            OwnerMembershipId = job.MembershipId,
+            ActivityMode = CrawlStorageMappings.FromStoredMode(x.ActivityMode),
+            SpecificActivityMode = x.SpecificActivityMode,
+            ClassName = CrawlStorageMappings.FromStoredClass(x.CharacterClass),
+            WeaponHash = x.Hash,
+            Kills = checked((int)x.Value)
         }), cancellationToken).ConfigureAwait(false);
         await ReplaceAsync(session, "death_aggregates", job, values.Where(x => x.Kind == CrawlArtifactKind.Death).Select(x => new DeathAggregate
         {
-            OwnerMembershipType = job.MembershipTypeId, OwnerMembershipId = job.MembershipId,
-            ActivityMode = CrawlStorageMappings.FromStoredMode(x.ActivityMode), SpecificActivityMode = x.SpecificActivityMode, Deaths = x.Value
+            OwnerMembershipType = job.MembershipTypeId,
+            OwnerMembershipId = job.MembershipId,
+            ActivityMode = CrawlStorageMappings.FromStoredMode(x.ActivityMode),
+            SpecificActivityMode = x.SpecificActivityMode,
+            Deaths = x.Value
         }), cancellationToken).ConfigureAwait(false);
         await ReplaceAsync(session, "emblem_aggregates", job, values.Where(x => x.Kind == CrawlArtifactKind.Emblem).Select(x => new EmblemAggregate
         {
-            OwnerMembershipType = job.MembershipTypeId, OwnerMembershipId = job.MembershipId, EmblemHash = x.Hash, TotalSeconds = x.Value
+            OwnerMembershipType = job.MembershipTypeId,
+            OwnerMembershipId = job.MembershipId,
+            EmblemHash = x.Hash,
+            TotalSeconds = x.Value
         }), cancellationToken).ConfigureAwait(false);
         await ReplaceAsync(session, "player_encounters", job, values.Where(x => x.Kind == CrawlArtifactKind.Encounter).Select(x => new PlayerEncounterAggregate
         {
-            OwnerMembershipType = job.MembershipTypeId, OwnerMembershipId = job.MembershipId,
-            EncounteredMembershipType = x.EncounteredMembershipType, EncounteredMembershipId = x.EncounteredMembershipId, Count = checked((int)x.Value)
+            OwnerMembershipType = job.MembershipTypeId,
+            OwnerMembershipId = job.MembershipId,
+            EncounteredMembershipType = x.EncounteredMembershipType,
+            EncounteredMembershipId = x.EncounteredMembershipId,
+            Count = checked((int)x.Value)
         }), cancellationToken).ConfigureAwait(false);
     }
 

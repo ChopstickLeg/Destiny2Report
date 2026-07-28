@@ -64,7 +64,6 @@ const questions = [
 
 <style scoped>
 .faq {
-  width: min(100%, 52rem);
   padding-top: var(--space-7);
 }
 

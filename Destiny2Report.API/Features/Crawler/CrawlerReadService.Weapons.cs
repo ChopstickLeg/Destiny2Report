@@ -219,11 +219,23 @@ public partial class CrawlerReadService
         if (itemSubType is null || !int.TryParse(itemSubType.ToString(), out var value)) return UnknownWeaponCategoryName;
         return value switch
         {
-            6 => "Auto Rifle", 7 => "Shotgun", 8 => "Machine Gun", 9 => "Hand Cannon",
-            10 => "Rocket Launcher", 11 or 21 => "Fusion Rifle", 12 => "Sniper Rifle",
-            13 => "Pulse Rifle", 14 => "Scout Rifle", 16 => "Sidearm", 17 => "Sword",
-            22 => "Grenade Launcher", 23 => "Submachine Gun", 24 => "Trace Rifle",
-            30 => "Bow", 32 => "Glaive", _ => UnknownWeaponCategoryName
+            6 => "Auto Rifle",
+            7 => "Shotgun",
+            8 => "Machine Gun",
+            9 => "Hand Cannon",
+            10 => "Rocket Launcher",
+            11 or 21 => "Fusion Rifle",
+            12 => "Sniper Rifle",
+            13 => "Pulse Rifle",
+            14 => "Scout Rifle",
+            16 => "Sidearm",
+            17 => "Sword",
+            22 => "Grenade Launcher",
+            23 => "Submachine Gun",
+            24 => "Trace Rifle",
+            30 => "Bow",
+            32 => "Glaive",
+            _ => UnknownWeaponCategoryName
         };
     }
 }

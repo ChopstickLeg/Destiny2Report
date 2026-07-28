@@ -1,0 +1,49 @@
+name: Rust CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: crawler-rs
+
+jobs:
+  lint-test-and-build:
+    name: Lint, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt --no-self-update
+          rustup default 1.88.0
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: crawler-rs -> target
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --all-features
+
+      - name: Build release binary
+        run: cargo build --locked --release
