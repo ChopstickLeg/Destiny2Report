@@ -7,12 +7,27 @@ public static class DestinyDisplayNames
 {
     private static readonly IReadOnlyDictionary<string, string> PatrolDestinations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
-        ["Arcadian Valley"] = "Nessus", ["Echo Mesa"] = "IO", ["Hellas Basin"] = "Mars", ["New Pacific Arcology"] = "Titan",
-        ["Nessus"] = "Nessus", ["IO"] = "IO", ["Mars"] = "Mars", ["Titan"] = "Titan", ["The Pale Heart"] = "The Pale Heart",
-        ["European Dead Zone"] = "European Dead Zone", ["The Moon"] = "The Moon", ["Europa"] = "Europa", ["Neomuna"] = "Neomuna",
-        ["Kepler"] = "Kepler", ["The Dreaming City"] = "The Dreaming City", ["The Tangled Shore"] = "The Tangled Shore",
-        ["Savathûn's Throne World"] = "Savathûn's Throne World", ["Cosmodrome"] = "Cosmodrome", ["Mercury"] = "Mercury",
-        ["Tharsis Expanse"] = "Tharsis Expanse", ["Eternity"] = "Eternity"
+        ["Arcadian Valley"] = "Nessus",
+        ["Echo Mesa"] = "IO",
+        ["Hellas Basin"] = "Mars",
+        ["New Pacific Arcology"] = "Titan",
+        ["Nessus"] = "Nessus",
+        ["IO"] = "IO",
+        ["Mars"] = "Mars",
+        ["Titan"] = "Titan",
+        ["The Pale Heart"] = "The Pale Heart",
+        ["European Dead Zone"] = "European Dead Zone",
+        ["The Moon"] = "The Moon",
+        ["Europa"] = "Europa",
+        ["Neomuna"] = "Neomuna",
+        ["Kepler"] = "Kepler",
+        ["The Dreaming City"] = "The Dreaming City",
+        ["The Tangled Shore"] = "The Tangled Shore",
+        ["Savathûn's Throne World"] = "Savathûn's Throne World",
+        ["Cosmodrome"] = "Cosmodrome",
+        ["Mercury"] = "Mercury",
+        ["Tharsis Expanse"] = "Tharsis Expanse",
+        ["Eternity"] = "Eternity"
     };
 
     public static bool TryCanonicalPatrolDestination(string? name, out string canonical) => PatrolDestinations.TryGetValue(name ?? "", out canonical!);

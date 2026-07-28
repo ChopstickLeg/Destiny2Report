@@ -16,10 +16,10 @@ onMounted(() => {
 <template>
   <div class="home container">
     <div class="hero">
-      <h1 class="hero-title display">See the story behind a Guardian's history.</h1>
+      <h1 class="hero-title display">Explore a Guardian's Destiny 2 history.</h1>
       <p class="hero-copy">
         Destiny 2 Report crawls every raid, Crucible match, and patrol hour in a player's full
-        activity history, then turns it into one honest, shareable report.
+        activity history and organizes the results into one shareable report.
       </p>
       <GlobalSearch size="large" class="hero-search" />
     </div>
@@ -77,12 +77,6 @@ onMounted(() => {
 
 .hero-search {
   margin-top: var(--space-5);
-}
-
-.hero-hint {
-  margin-top: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
 }
 
 .recent {

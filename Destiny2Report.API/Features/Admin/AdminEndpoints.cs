@@ -33,6 +33,11 @@ public static class AdminEndpoints
             .WithSummary("Marks every stored player report for a full recrawl with an audit reason.")
             .RequireRateLimiting(RateLimitPolicies.PublicWrite);
 
+        admin.MapPost("/crawler/jobs", AdminHandlers.QueueCrawls)
+            .WithName("QueueAdminCrawlerJobs")
+            .WithSummary("Queues Rust crawler jobs.")
+            .RequireRateLimiting(RateLimitPolicies.PublicWrite);
+
         return api;
     }
 }

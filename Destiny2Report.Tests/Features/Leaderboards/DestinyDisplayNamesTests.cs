@@ -19,8 +19,8 @@ public sealed class DestinyDisplayNamesTests
     [Fact]
     public void Mode_94_is_sparrow_racing_league()
     {
-        Assert.Equal("SparrowRacingLeague", CrawlerService.GetSpecificActivityModeName(94));
-        Assert.Equal("Sparrow Racing League", DestinyDisplayNames.HumanizeIdentifier(CrawlerService.GetSpecificActivityModeName(94)));
+        Assert.Equal("SparrowRacingLeague", CrawlerReadService.GetSpecificActivityModeName(94));
+        Assert.Equal("Sparrow Racing League", DestinyDisplayNames.HumanizeIdentifier(CrawlerReadService.GetSpecificActivityModeName(94)));
     }
 
     [Fact]

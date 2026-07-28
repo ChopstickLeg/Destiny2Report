@@ -12,9 +12,10 @@
 import { computed, onBeforeUnmount, ref, type ComputedRef } from 'vue'
 import { queueReport, type ReportIdentity } from '@/lib/api/reports'
 import { watchQueue } from '@/lib/api/sse'
+import { isApiError } from '@/lib/api/http'
 import type { ReportQueueStatusResponse } from '@/lib/api/types'
 
-export type QueueWatchPhase =
+type QueueWatchPhase =
   | 'idle'
   | 'submitting'
   | 'watching'
@@ -24,6 +25,11 @@ export type QueueWatchPhase =
   | 'not-found'
   | 'connection-lost'
   | 'submit-error'
+
+interface SubmitAndWatchOptions {
+  suppressCooldownError?: boolean
+  watchOnSuppressedCooldown?: boolean
+}
 
 export function useQueueWatcher(
   identity: ComputedRef<ReportIdentity>,
@@ -80,13 +86,25 @@ export function useQueueWatcher(
   }
 
   /** POST a new crawl request, then watch it. */
-  async function submitAndWatch() {
+  async function submitAndWatch(options: SubmitAndWatchOptions = {}) {
     phase.value = 'submitting'
     submitError.value = null
     startedAt.value = Date.now()
     try {
       await queueReport(identity.value)
     } catch (error) {
+      if (
+        options.suppressCooldownError &&
+        isApiError(error) &&
+        error.problem?.code === 'crawl_cooldown'
+      ) {
+        if (options.watchOnSuppressedCooldown) {
+          await watch()
+          return
+        }
+        phase.value = 'idle'
+        return
+      }
       submitError.value = error
       phase.value = 'submit-error'
       return

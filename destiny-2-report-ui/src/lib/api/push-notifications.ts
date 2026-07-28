@@ -1,7 +1,7 @@
 import type { ReportIdentity } from './reports'
 import { apiFetch } from './http'
 
-export interface PushNotificationConfig {
+interface PushNotificationConfig {
   enabled: boolean
   publicKey: string | null
 }

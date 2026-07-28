@@ -45,7 +45,7 @@ public sealed class LeaderboardRepairBackgroundService(
             }
 
             using var scope = serviceProvider.CreateScope();
-            var crawler = scope.ServiceProvider.GetRequiredService<ICrawlerService>();
+            var crawler = scope.ServiceProvider.GetRequiredService<ICrawlerReadService>();
             var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
             var filter = Builders<DestinyReport>.Filter.Eq(report => report.HasCompletedCrawl, true)
                 & Builders<DestinyReport>.Filter.Ne(report => report.CrawlState, DestinyReport.CrawlStatePrivate);
@@ -64,10 +64,13 @@ public sealed class LeaderboardRepairBackgroundService(
                         if (!candidates.TryGetValue(metric.Key, out var set) || metric.Score <= 0) continue;
                         set.Add(new LeaderboardStoredEntry
                         {
-                            MembershipTypeId = player.MembershipTypeId, MembershipId = player.MembershipId,
-                            DisplayName = player.DisplayName, DisplayCode = player.DisplayCode,
+                            MembershipTypeId = player.MembershipTypeId,
+                            MembershipId = player.MembershipId,
+                            DisplayName = player.DisplayName,
+                            DisplayCode = player.DisplayCode,
                             EmblemBackgroundUrl = player.MostUsedEmblems.FirstOrDefault()?.BackgroundUrl ?? "",
-                            Score = metric.Score, SourceCrawledAtUtc = player.SourceCrawledAtUtc
+                            Score = metric.Score,
+                            SourceCrawledAtUtc = player.SourceCrawledAtUtc
                         });
                         if (set.Count > LeaderboardBoard.MaximumEntries) set.Remove(set.Max!);
                     }

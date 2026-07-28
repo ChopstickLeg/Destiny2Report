@@ -37,6 +37,3 @@ export function canonicalPatrolDestination(name: string): string | null {
 export function humanizeModeName(name: string): string {
   return ACTIVITY_MODE_NAMES[name] ?? name.replace(MODE_NAME_PATTERN, ' ')
 }
-
-export const patrolDestinationAliases = PATROL_DESTINATION_NAMES
-export const activityModeAliases = ACTIVITY_MODE_NAMES

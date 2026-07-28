@@ -2,13 +2,12 @@
 import { computed } from 'vue'
 import ExplainedLabel from '@/components/base/ExplainedLabel.vue'
 
-export interface BarListItem {
+interface BarListItem {
   key: string
   label: string
   value: number
   /** Pre-formatted value shown to users (units included). */
   display: string
-  sublabel?: string
   /** Small qualifier tag, e.g. "Deleted". */
   tag?: string
   /** Stable CSS color; defaults to the neutral bar color. */
@@ -18,22 +17,13 @@ export interface BarListItem {
   tooltip?: string
 }
 
-const props = withDefaults(
-  defineProps<{
-    items: BarListItem[]
-    /** Scale bars against this value; defaults to the largest item. */
-    max?: number
-    /** Accessible description of what the values measure, e.g. "kills". */
-    unit: string
-  }>(),
-  { max: undefined },
-)
+const props = defineProps<{
+  items: BarListItem[]
+  /** Accessible description of what the values measure, e.g. "kills". */
+  unit: string
+}>()
 
-const scale = computed(() => {
-  const provided = props.max
-  if (provided !== undefined && provided > 0) return provided
-  return Math.max(...props.items.map((item) => item.value), 1)
-})
+const scale = computed(() => Math.max(...props.items.map((item) => item.value), 1))
 
 function widthFor(item: BarListItem): string {
   const fraction = Math.max(0, Math.min(1, item.value / scale.value))
@@ -56,7 +46,6 @@ function widthFor(item: BarListItem): string {
           <ExplainedLabel v-if="item.tooltip" :text="item.label" :explanation="item.tooltip" />
           <template v-else>{{ item.label }}</template>
           <span v-if="item.tag" class="bar-tag">{{ item.tag }}</span>
-          <span v-if="item.sublabel" class="bar-sublabel">{{ item.sublabel }}</span>
         </span>
         <span class="bar-value tnum">{{ item.display }}</span>
       </div>
@@ -109,12 +98,6 @@ function widthFor(item: BarListItem): string {
   color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-}
-
-.bar-sublabel {
-  margin-left: var(--space-1);
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
 }
 
 .bar-value {

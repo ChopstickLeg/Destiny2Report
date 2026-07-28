@@ -95,10 +95,10 @@ const router = createRouter({
         ]
       : []),
     {
-      path: '/status',
-      name: 'status',
-      component: () => import('@/features/status/StatusView.vue'),
-      meta: { title: 'Service status' },
+      path: '/faq',
+      name: 'faq',
+      component: () => import('@/features/faq/FaqView.vue'),
+      meta: { title: 'Frequently asked questions' },
     },
     {
       path: '/leaderboards',

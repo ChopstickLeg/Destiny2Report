@@ -128,7 +128,6 @@ const storyPreviewRoute = computed(() =>
   inset: 0;
   z-index: -1;
   background:
-    var(--background-atmosphere),
     linear-gradient(
       to right,
       rgb(var(--color-bg-rgb) / 0.92),

@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
-import AppButton from '@/components/base/AppButton.vue'
 import AppSelect from '@/components/base/AppSelect.vue'
 import EmptyState from '@/components/base/EmptyState.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
@@ -20,10 +19,11 @@ import {
 } from './leaderboard-collections'
 import LeaderboardWarmingState from './LeaderboardWarmingState.vue'
 
-const PAGE_SIZE = 50
 const route = useRoute()
 const router = useRouter()
 const search = ref('')
+const playerSearch = ref('')
+const rankingList = ref<HTMLElement | null>(null)
 
 const catalogQuery = useQuery({
   queryKey: leaderboardKeys.catalog,
@@ -81,17 +81,24 @@ watch(selectedKey, (key) => {
   void router.replace({ query: { board: key } })
 })
 
-const page = computed(() => {
-  const parsed = Number(route.query.page)
-  return Number.isInteger(parsed) && parsed > 1 ? parsed : 1
-})
-const offset = computed(() => (page.value - 1) * PAGE_SIZE)
-
 const boardQuery = useQuery({
-  queryKey: computed(() => leaderboardKeys.board(selectedKey.value, offset.value)),
-  queryFn: ({ signal }) => fetchLeaderboard(selectedKey.value, offset.value, signal),
+  queryKey: computed(() => leaderboardKeys.board(selectedKey.value)),
+  queryFn: ({ signal }) => fetchLeaderboard(selectedKey.value, signal),
   enabled: computed(() => catalogQuery.data.value?.isReady === true && !!selectedKey.value),
   staleTime: 60_000,
+})
+
+const board = computed(() => boardQuery.data.value)
+const entries = computed(() => board.value?.entries ?? [])
+const visibleEntries = computed(() => {
+  const needle = playerSearch.value.trim().toLocaleLowerCase()
+  if (!needle) return entries.value
+  return entries.value.filter((entry) => entry.displayName.toLocaleLowerCase().includes(needle))
+})
+
+watch(selectedKey, async () => {
+  await nextTick()
+  rankingList.value?.scrollTo({ top: 0 })
 })
 
 function selectCollection(key: string) {
@@ -115,12 +122,6 @@ function selectBoard(key: string) {
   void router.replace({ query: { board: key } })
 }
 
-function goToPage(nextPage: number) {
-  void router.replace({
-    query: { board: selectedKey.value, ...(nextPage > 1 ? { page: String(nextPage) } : {}) },
-  })
-}
-
 function formatScore(score: number, unit: string): string {
   if (unit === 'seconds') return formatHours(score)
   if (unit === 'days') return `${formatInteger(score)} ${score === 1 ? 'day' : 'days'}`
@@ -131,10 +132,6 @@ function rowStyle(entry: LeaderboardEntry): Record<string, string> | undefined {
   const background = bungieUrl(entry.emblemBackgroundUrl)
   return background ? { '--emblem-background': `url("${background}")` } : undefined
 }
-
-const totalPages = computed(() =>
-  Math.max(1, Math.ceil((boardQuery.data.value?.retainedEntryCount ?? 0) / PAGE_SIZE)),
-)
 </script>
 
 <template>
@@ -215,27 +212,39 @@ const totalPages = computed(() =>
           context="This leaderboard could not be loaded"
           @retry="boardQuery.refetch()"
         />
-        <template v-else-if="boardQuery.data.value">
+        <template v-else-if="board">
           <header class="board-heading">
-            <h2>{{ boardQuery.data.value.title }}</h2>
-            <span v-if="boardQuery.data.value.isRepairing" class="refreshing"
-              >Refreshing rankings</span
-            >
+            <div class="board-title">
+              <h2>{{ board.title }}</h2>
+              <span v-if="board.isRepairing" class="refreshing">Refreshing rankings</span>
+            </div>
+            <input
+              v-model="playerSearch"
+              class="player-search"
+              type="search"
+              placeholder="Find a player"
+              aria-label="Search players by display name"
+            />
           </header>
 
           <EmptyState
-            v-if="boardQuery.data.value.entries.length === 0"
+            v-if="entries.length === 0"
             title="No ranked Guardians yet"
             description="A positive score will appear here after a completed crawl."
           />
-          <div v-else class="ranking-list" role="table" :aria-label="boardQuery.data.value.title">
+          <EmptyState
+            v-else-if="visibleEntries.length === 0"
+            title="No Guardians match"
+            :description="`No display names match “${playerSearch.trim()}”.`"
+          />
+          <div v-else ref="rankingList" class="ranking-list" role="table" :aria-label="board.title">
             <div class="ranking-header" role="row">
               <span role="columnheader">Rank</span>
               <span role="columnheader">Guardian</span>
               <span role="columnheader">Score</span>
             </div>
             <RouterLink
-              v-for="entry in boardQuery.data.value.entries"
+              v-for="entry in visibleEntries"
               :key="`${entry.membershipTypeId}:${entry.membershipId}`"
               class="ranking-row"
               :class="{ 'ranking-row--podium': entry.rank <= 3 }"
@@ -252,20 +261,10 @@ const totalPages = computed(() =>
               <span class="rank tnum" role="cell">#{{ entry.rank }}</span>
               <span class="guardian" role="cell">{{ entry.fullDisplayName }}</span>
               <strong class="score tnum" role="cell">
-                {{ formatScore(entry.score, boardQuery.data.value.unit) }}
+                {{ formatScore(entry.score, board.unit) }}
               </strong>
             </RouterLink>
           </div>
-
-          <nav v-if="totalPages > 1" class="pagination" aria-label="Leaderboard pages">
-            <AppButton size="sm" :disabled="page <= 1" @click="goToPage(page - 1)"
-              >Previous</AppButton
-            >
-            <span class="tnum">Page {{ page }} of {{ totalPages }}</span>
-            <AppButton size="sm" :disabled="page >= totalPages" @click="goToPage(page + 1)"
-              >Next</AppButton
-            >
-          </nav>
         </template>
       </main>
     </template>
@@ -384,15 +383,31 @@ const totalPages = computed(() =>
 }
 .board-heading {
   display: flex;
+  align-items: end;
   justify-content: space-between;
   gap: var(--space-4);
   margin-bottom: var(--space-5);
 }
+.board-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
 .board-heading h2 {
   font-size: var(--text-xl);
 }
+.player-search {
+  width: min(100%, 18rem);
+  height: 2.75rem;
+  padding: 0 var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+.player-search:focus-visible {
+  outline-color: var(--color-border-strong);
+}
 .refreshing {
-  align-self: start;
   padding: var(--space-1) var(--space-2);
   color: var(--color-warning);
   background: rgb(223 169 61 / 0.12);
@@ -401,9 +416,15 @@ const totalPages = computed(() =>
   white-space: nowrap;
 }
 .ranking-list {
-  overflow: hidden;
+  position: relative;
+  height: min(65vh, 42rem);
+  min-height: 20rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  scrollbar-gutter: stable;
 }
 .ranking-header,
 .ranking-row {
@@ -413,6 +434,9 @@ const totalPages = computed(() =>
   gap: var(--space-3);
 }
 .ranking-header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
   padding: var(--space-2) var(--space-4);
   color: var(--color-text-muted);
   background: var(--color-surface-sunken);
@@ -477,15 +501,6 @@ const totalPages = computed(() =>
 .score {
   text-align: right;
 }
-.pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-top: var(--space-5);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
 @media (max-width: 56rem) {
   .collection-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -525,7 +540,11 @@ const totalPages = computed(() =>
     min-height: auto;
   }
   .board-heading {
+    align-items: stretch;
     flex-direction: column;
+  }
+  .player-search {
+    width: 100%;
   }
   .ranking-header {
     display: none;

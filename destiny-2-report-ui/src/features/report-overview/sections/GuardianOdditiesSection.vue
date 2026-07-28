@@ -45,7 +45,7 @@ const oddities = computed<Oddity[]>(() => {
 </script>
 
 <template>
-  <ReportSection id="guardian-oddities" title="Guardian oddities">
+  <ReportSection id="guardian-oddities" title="Miscellaneous stats">
     <dl class="oddity-grid">
       <div v-for="item in oddities" :key="item.key" class="oddity">
         <dt class="oddity-label">{{ item.label }}</dt>

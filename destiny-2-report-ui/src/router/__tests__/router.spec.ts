@@ -13,3 +13,10 @@ describe('story routes', () => {
     expect(route.href).not.toContain('4611686018467000000')
   })
 })
+
+describe('footer routes', () => {
+  it('provides an FAQ page and retires the public status page', () => {
+    expect(router.resolve({ name: 'faq' }).href).toBe('/faq')
+    expect(router.resolve('/status').name).toBe('not-found')
+  })
+})

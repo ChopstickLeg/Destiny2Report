@@ -2,10 +2,10 @@
 withDefaults(
   defineProps<{
     width?: string
-    height?: string
+    height: string
     radius?: string
   }>(),
-  { width: '100%', height: '1rem', radius: 'var(--radius-sm)' },
+  { width: '100%', radius: 'var(--radius-sm)' },
 )
 </script>
 

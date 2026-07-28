@@ -15,7 +15,7 @@ services:
       WebPush__Subject: ${WEB_PUSH_SUBJECT:-}
       WebPush__PublicKey: ${WEB_PUSH_PUBLIC_KEY:-}
       WebPush__PrivateKey: ${WEB_PUSH_PRIVATE_KEY:-}
-      ConnectionStrings__MongoDb: mongodb://mongo:27017
+      ConnectionStrings__MongoDb: mongodb://mongo:27017/?replicaSet=rs0
       ConnectionStrings__Redis: redis:6379
       OpenTelemetry__Endpoint: http://jaeger:4317
       OpenTelemetry__Protocol: Grpc
@@ -36,6 +36,51 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  crawler-rust:
+    build:
+      context: .
+      dockerfile: crawler-rs/Dockerfile
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/?replicaSet=rs0
+      MONGODB_DATABASE: Destiny2Report
+      REDIS_URI: redis://redis:6379/
+      BUNGIE_API_KEY: ${BUNGIE_API_KEY:-}
+      CRAWLER__ORDINARY_REQUESTS_PER_SECOND_PER_INSTANCE: ${RUST_CRAWLER_ORDINARY_RPS:-20}
+      CRAWLER__PGCR_REQUESTS_PER_SECOND_PER_INSTANCE: ${RUST_CRAWLER_PGCR_RPS:-50}
+      CRAWLER__SHERPA_HISTORY_REQUESTS_PER_SECOND_PER_INSTANCE: ${RUST_CRAWLER_SHERPA_RPS:-20}
+      CRAWLER__ORDINARY_RATE_LIMIT_QUEUE_LIMIT_PER_INSTANCE: ${RUST_CRAWLER_ORDINARY_QUEUE_LIMIT:-1000}
+      CRAWLER__PGCR_RATE_LIMIT_QUEUE_LIMIT_PER_INSTANCE: ${RUST_CRAWLER_PGCR_QUEUE_LIMIT:-1000}
+      CRAWLER__SHERPA_HISTORY_RATE_LIMIT_QUEUE_LIMIT_PER_INSTANCE: ${RUST_CRAWLER_SHERPA_QUEUE_LIMIT:-1000}
+      CRAWLER__MAX_IN_FLIGHT_REQUESTS_PER_INSTANCE: ${RUST_CRAWLER_MAX_IN_FLIGHT:-32}
+      CRAWLER__MAX_IN_FLIGHT_PGCRS_PER_INSTANCE: ${RUST_CRAWLER_MAX_IN_FLIGHT_PGCRS:-64}
+      CRAWLER__MAX_BUFFERED_PGCRS: ${RUST_CRAWLER_MAX_BUFFERED_PGCRS:-128}
+      RUST_LOG: ${RUST_LOG:-info}
+      OTEL_SERVICE_NAME: ${RUST_CRAWLER_OTEL_SERVICE_NAME:-Destiny2Report.Crawler}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
   jaeger:
     image: cr.jaegertracing.io/jaegertracing/jaeger:2.19.0
     ports:
@@ -45,13 +90,17 @@ services:
 
   mongo:
     image: mongo:8.3
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo-data:/data/db
     healthcheck:
       test:
-        ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --eval \"try { rs.status().ok } catch (error) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }\" | grep 1"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10

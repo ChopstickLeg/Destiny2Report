@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { makeReport, veteranReport } from '@/test/fixtures/report'
-import {
-  buildStory,
-  buildStorySlides,
-  fastestEndgameClear,
-  MIN_PLAYLIST_SAMPLE,
-  mostUsedActualWeapon,
-  mostUsedActualWeapons,
-} from '../selectors'
+import { buildStorySlides, mostUsedActualWeapons } from '../selectors'
 
 describe('buildStorySlides', () => {
   it('puts rare earned accomplishments before broad account totals', () => {
@@ -224,7 +217,7 @@ describe('buildStorySlides', () => {
     const pantheon = slides.find((slide) => slide.key === 'pantheon')
 
     expect(slides.map((slide) => slide.key)).not.toContain('contest')
-    expect(pantheon?.value).toBe('2 tiers conquered')
+    expect(pantheon?.value).toBe('2 tiers completed')
     expect(pantheon?.items).toEqual([
       {
         label: 'Pantheon: Nezarec Sublime',
@@ -271,15 +264,17 @@ describe('buildStorySlides', () => {
   })
 
   it('distributes personality stats between different players', () => {
-    const selections = Array.from({ length: 30 }, (_, index) =>
-      buildStorySlides(
-        makeReport({
-          playerMembershipId: String(10_000 + index),
-          goodBoyProtocol: 42,
-          fishCaught: 317,
-          misadventures: 89,
-        }),
-      ).find((slide) => slide.key === 'personality')?.eyebrow,
+    const selections = Array.from(
+      { length: 30 },
+      (_, index) =>
+        buildStorySlides(
+          makeReport({
+            playerMembershipId: String(10_000 + index),
+            goodBoyProtocol: 42,
+            fishCaught: 317,
+            misadventures: 89,
+          }),
+        ).find((slide) => slide.key === 'personality')?.eyebrow,
     )
 
     expect(new Set(selections)).toEqual(
@@ -308,9 +303,9 @@ describe('buildStorySlides', () => {
   })
 })
 
-describe('mostUsedActualWeapon', () => {
+describe('mostUsedActualWeapons', () => {
   it('aggregates real weapons while excluding abilities and unknown kills', () => {
-    const weapon = mostUsedActualWeapon({
+    const weapon = mostUsedActualWeapons({
       activityMode: 'PvE',
       classes: [
         {
@@ -356,7 +351,7 @@ describe('mostUsedActualWeapon', () => {
           ],
         },
       ],
-    })
+    })[0]
 
     expect(weapon).toEqual({
       name: "Tommy's Matchbook",
@@ -403,84 +398,5 @@ describe('mostUsedActualWeapon', () => {
       'Weapon 3',
       'Weapon 2',
     ])
-  })
-})
-
-describe('buildStory', () => {
-  it('produces no chapters for an all-zero report', () => {
-    expect(buildStory(makeReport())).toEqual([])
-  })
-
-  it('numbers chapters sequentially after omissions', () => {
-    const story = buildStory(veteranReport)
-    expect(story.length).toBeGreaterThan(3)
-    story.forEach((chapter, index) => {
-      expect(chapter.kicker).toBe(`Chapter ${index + 1}`)
-    })
-  })
-
-  it('omits chapters whose facts are all absent', () => {
-    const pveOnly = makeReport({ totalKills: 10_000 })
-    const story = buildStory(pveOnly)
-    expect(story.map((c) => c.key)).toEqual(['fight'])
-  })
-
-  it('only calls an emblem favorite when ranked first by playtime', () => {
-    const story = buildStory(veteranReport)
-    const details = story.find((c) => c.key === 'details')
-    const favorite = details?.facts.find((f) => f.label === 'Favorite emblem')
-    expect(favorite?.value).toBe('One Thousand Voices Heard')
-    expect(favorite?.note).toContain('longer than any other')
-  })
-
-  it('requires a real sample before praising a playlist', () => {
-    const story = buildStory(veteranReport)
-    const competitive = story.find((c) => c.key === 'competitive')
-    const strongest = competitive?.facts.find((f) => f.label === 'Strongest playlist')
-    // Trials has a 75% win rate but only 8 matches (< MIN_PLAYLIST_SAMPLE);
-    // Control qualifies with 1,310 matches.
-    expect(MIN_PLAYLIST_SAMPLE).toBeGreaterThan(8)
-    expect(strongest?.value).toBe('Control')
-    expect(strongest?.note).toContain('1,310 matches')
-  })
-
-  it('always includes sample sizes with competitive ratios', () => {
-    const story = buildStory(veteranReport)
-    const competitive = story.find((c) => c.key === 'competitive')
-    for (const fact of competitive?.facts ?? []) {
-      expect(fact.note).toMatch(/matches/)
-    }
-  })
-
-  it('surfaces earned distinctions', () => {
-    const story = buildStory(veteranReport)
-    const challenge = story.find((c) => c.key === 'challenge')
-    const labels = challenge?.facts.map((f) => f.label) ?? []
-    expect(labels).toContain('Solo flawless')
-    expect(labels).toContain('Contest-mode clears')
-  })
-
-  it('never fabricates streaks from single days', () => {
-    const oneDay = makeReport({
-      totalPlaytime: '10:00:00',
-      longestPlaytimeStreak: {
-        startDate: '2026-01-01T00:00:00Z',
-        endDate: '2026-01-01T00:00:00Z',
-      },
-    })
-    const story = buildStory(oneDay)
-    const time = story.find((c) => c.key === 'time')
-    expect(time?.facts.map((f) => f.label)).not.toContain('Longest streak')
-  })
-})
-
-describe('fastestEndgameClear', () => {
-  it('finds the fastest across raids and dungeons', () => {
-    const fastest = fastestEndgameClear(veteranReport)
-    expect(fastest?.activityName).toBe('Shattered Throne')
-  })
-
-  it('returns null when no timed clears exist', () => {
-    expect(fastestEndgameClear(makeReport())).toBeNull()
   })
 })

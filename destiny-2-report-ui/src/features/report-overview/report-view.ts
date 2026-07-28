@@ -22,7 +22,7 @@ export { humanizeModeName } from '@/lib/destiny-display'
 // Time spent
 // ---------------------------------------------------------------------------
 
-export interface RankedDuration {
+interface RankedDuration {
   key: string
   label: string
   seconds: number
@@ -64,7 +64,7 @@ export function rankPatrolTime(patrolTimeByPlanet: Record<string, string>): Rank
     .sort((a, b) => b.seconds - a.seconds)
 }
 
-export interface StreakSummary {
+interface StreakSummary {
   days: number
   start: Date
   end: Date
@@ -99,7 +99,7 @@ export function sortCompletions(
   })
 }
 
-export interface Distinction {
+interface Distinction {
   key: string
   label: string
 }
@@ -120,7 +120,7 @@ export function distinctions(summary: ActivityCompletionSummary): Distinction[] 
 // Ranked dictionaries (Crucible kills by mode, motes, sherpas)
 // ---------------------------------------------------------------------------
 
-export interface RankedCount {
+interface RankedCount {
   key: string
   label: string
   value: number

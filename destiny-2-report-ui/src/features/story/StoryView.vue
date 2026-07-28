@@ -129,6 +129,15 @@ const reportRoute = computed(() =>
     : null,
 )
 
+const generateReportRoute = computed(() =>
+  reportRoute.value
+    ? {
+        ...reportRoute.value,
+        query: { generate: '1' },
+      }
+    : null,
+)
+
 const resolving = computed(
   () =>
     !hasRouteIdentity.value &&
@@ -263,8 +272,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <div v-else-if="!session.isSignedIn && !hasRouteIdentity" class="container story-gate">
       <h1 class="gate-title display">Your Story</h1>
       <p class="gate-copy">
-        The clears, people, and strange little details that made your Destiny 2 history yours, told
-        one moment at a time. Sign in with Bungie to begin.
+        Review notable clears, frequent teammates, most-used gear, and other highlights from your
+        report. Sign in with Bungie to continue.
       </p>
       <AppButton v-if="session.signInAvailable" variant="primary" @click="signIn">
         Sign in with Bungie
@@ -293,12 +302,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     </div>
 
     <div v-else-if="!reportReady" class="container story-gate">
-      <h1 class="gate-title display">Your Story needs a report first</h1>
+      <h1 class="gate-title display">Generate a report first</h1>
       <p class="gate-copy">
-        Your story is built from your generated report. Create it once, then come back. It only takes
-        a few minutes.
+        This view uses data from your generated report. Create one, then return here when it is
+        ready.
       </p>
-      <AppButton v-if="reportRoute" variant="primary" :to="reportRoute">
+      <AppButton v-if="generateReportRoute" variant="primary" :to="generateReportRoute">
         Generate my report
       </AppButton>
     </div>
@@ -375,7 +384,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           >
             <template v-if="currentSlide.layout === 'achievement-list'">
               <div class="layout-copy">
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                 <p class="highlight-value display">{{ currentSlide.value }}</p>
                 <p class="highlight-body">{{ currentSlide.body }}</p>
@@ -393,7 +401,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
             <template v-else-if="currentSlide.layout === 'contest-gallery'">
               <header class="contest-heading">
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                 <p class="highlight-value display">{{ currentSlide.value }}</p>
                 <p class="highlight-body">{{ currentSlide.body }}</p>
@@ -427,7 +434,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <template v-else-if="currentSlide.layout === 'pantheon-gallery'">
               <header class="pantheon-heading">
                 <div>
-                  <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                   <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                   <p class="highlight-body">{{ currentSlide.body }}</p>
                 </div>
@@ -468,7 +474,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
             <template v-else-if="currentSlide.layout === 'seal-gallery'">
               <div class="seal-heading">
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                 <p class="highlight-value display">{{ currentSlide.value }}</p>
                 <p class="highlight-body">{{ currentSlide.body }}</p>
@@ -482,7 +487,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
             <template v-else-if="currentSlide.layout === 'split-tally'">
               <header class="tally-heading">
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                 <p class="highlight-body">{{ currentSlide.detail }}</p>
               </header>
@@ -512,7 +516,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <span>Guardians guided</span>
               </div>
               <div class="sherpa-copy">
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                 <p class="highlight-body">{{ currentSlide.body }}</p>
                 <ol class="mini-ranking">
@@ -523,7 +526,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
             <template v-else-if="currentSlide.layout === 'class-breakdown'">
               <header class="breakdown-heading">
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <p class="time-total display">{{ currentSlide.value }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
               </header>
@@ -538,7 +540,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
             <template v-else-if="currentSlide.layout === 'weapon-leaderboard'">
               <header class="leaderboard-heading">
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                 <p>{{ currentSlide.detail }}</p>
               </header>
@@ -556,7 +557,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <img v-if="bungieUrl(currentSlide.imageUrl)" :src="bungieUrl(currentSlide.imageUrl)!" :alt="currentSlide.imageAlt ?? ''" @error="hideBrokenImage" />
               </div>
               <div class="teammate-copy">
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                 <p class="highlight-value display">{{ currentSlide.value }}</p>
                 <p class="highlight-body">{{ currentSlide.body }}</p>
@@ -566,7 +566,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <template v-else-if="currentSlide.layout === 'match-scoreboard'">
               <header class="score-heading">
                 <img v-if="bungieUrl(currentSlide.iconUrl)" :src="bungieUrl(currentSlide.iconUrl)!" alt="" @error="hideBrokenImage" />
-                <div><p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p><h2 class="highlight-title display">{{ currentSlide.title }}</h2></div>
+                <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
               </header>
               <div class="score-grid">
                 <article v-for="stat in currentSlide.stats" :key="stat.label"><span>{{ stat.label }}</span><strong class="display">{{ stat.value }}</strong></article>
@@ -577,13 +577,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <template v-else-if="currentSlide.layout === 'emblem-banner'">
               <img v-if="bungieUrl(currentSlide.imageUrl)" class="emblem-backdrop" :src="bungieUrl(currentSlide.imageUrl)!" :alt="currentSlide.imageAlt ?? ''" @error="hideBrokenImage" />
               <div class="emblem-scrim" />
-              <div class="emblem-copy"><p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p><h2 class="highlight-title display">{{ currentSlide.value }}</h2><p>{{ currentSlide.body }}</p></div>
+              <div class="emblem-copy"><h2 class="highlight-title display">{{ currentSlide.value }}</h2><p>{{ currentSlide.body }}</p></div>
             </template>
 
             <template v-else>
               <div class="personality-copy">
                 <img v-if="bungieUrl(currentSlide.iconUrl)" :src="bungieUrl(currentSlide.iconUrl)!" alt="" @error="hideBrokenImage" />
-                <p class="panel-eyebrow">{{ currentSlide.eyebrow }}</p>
                 <p class="personality-value display">{{ currentSlide.value }}</p>
                 <h2 class="highlight-title display">{{ currentSlide.title }}</h2>
                 <p class="highlight-body">{{ currentSlide.body }}</p>
@@ -600,20 +599,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               @error="hideBrokenImage"
             />
             <div class="closing-scrim" aria-hidden="true" />
-            <p class="panel-eyebrow">For now</p>
-            <h2 class="closing-title display">That’s the Guardian you became.</h2>
+            <p class="panel-eyebrow">Report summary</p>
+            <h2 class="closing-title display">That’s your Destiny 2 history so far.</h2>
             <p class="closing-copy">
-              The rare clears matter. So do the people who stayed, the places you returned to, and
-              the small rituals between battles. Your story is still being written.
+              These highlights are based on the activity data currently available in your report.
+              The full report includes more detailed breakdowns.
             </p>
             <div class="closing-actions">
               <AppButton variant="primary" @click="shareStory">
-                {{ shared ? 'Story link copied' : 'Share my story' }}
+                {{ shared ? 'Share link copied' : 'Copy share link' }}
               </AppButton>
               <AppButton v-if="reportRoute" variant="secondary" :to="reportRoute">
                 Explore the full report
               </AppButton>
-              <AppButton variant="ghost" @click="goTo(0)">Watch again</AppButton>
+              <AppButton variant="ghost" @click="goTo(0)">Start over</AppButton>
             </div>
           </section>
         </Transition>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
-import { RouterView } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
 import SkeletonBlock from '@/components/base/SkeletonBlock.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
 import GenerationExperience from '@/features/report-generation/GenerationExperience.vue'
@@ -11,6 +11,7 @@ import ReportMasthead from './ReportMasthead.vue'
 import { useInvalidateReport, useReportIdentity, useReportQuery } from './useReport'
 
 const identity = useReportIdentity()
+const route = useRoute()
 const reportQuery = useReportQuery(identity)
 const invalidate = useInvalidateReport(identity)
 
@@ -51,20 +52,43 @@ function startRefresh() {
   void refreshWatcher.submitAndWatch()
 }
 
+// Request one refresh when each readable report is visited. The server owns
+// the six-hour cooldown; an automatic cooldown response should leave the
+// existing report quietly visible, while manual refresh errors remain visible.
+const lastAutoRefreshKey = ref<string | null>(null)
+watch(
+  [() => identity.value.membershipTypeId, () => identity.value.membershipId, report],
+  ([membershipTypeId, membershipId, currentReport]) => {
+    if (
+      !currentReport ||
+      !hasReadableReport.value ||
+      currentReport.platformId !== membershipTypeId ||
+      currentReport.playerMembershipId !== membershipId ||
+      currentReport.crawlState === 'queued' ||
+      currentReport.crawlState === 'running'
+    ) {
+      return
+    }
+
+    const refreshKey = `${membershipTypeId}:${membershipId}`
+    if (lastAutoRefreshKey.value === refreshKey) return
+
+    lastAutoRefreshKey.value = refreshKey
+    void refreshWatcher.submitAndWatch({ suppressCooldownError: true })
+  },
+  { immediate: true },
+)
+
 // If the loaded report shows an in-flight recrawl, attach to it quietly.
 watch(
-  () => [report.value?.crawlState, report.value?.queuedInRedis] as const,
-  ([state, queuedInRedis]) => {
+  () => report.value?.crawlState,
+  (state) => {
     if (
       hasReadableReport.value &&
       (state === 'queued' || state === 'running') &&
       !refreshWatcher.isActive.value
     ) {
-      if (state === 'queued' && !queuedInRedis) {
-        void refreshWatcher.submitAndWatch()
-      } else {
-        void refreshWatcher.watch()
-      }
+      void refreshWatcher.watch()
     }
   },
   { immediate: true },
@@ -125,7 +149,7 @@ function refetchReport() {
       :initial-state="pendingState"
       :player-name="knownName"
       :crawl-error="report?.crawlError ?? ''"
-      :queued-in-redis="report?.queuedInRedis ?? false"
+      :auto-start="route.query.generate === '1'"
       @refresh="refetchReport"
     />
 

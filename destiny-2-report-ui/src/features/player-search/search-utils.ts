@@ -8,7 +8,7 @@
 
 import type { PlayerSearchResult } from '@/lib/api/types'
 
-export interface ParsedSearchQuery {
+interface ParsedSearchQuery {
   prefix: string
   code: number | null
 }
@@ -25,7 +25,7 @@ export function parseSearchQuery(raw: string): ParsedSearchQuery {
   return { prefix: trimmed, code: null }
 }
 
-export const MIN_SEARCH_LENGTH = 2
+const MIN_SEARCH_LENGTH = 2
 
 export function isSearchable(query: ParsedSearchQuery): boolean {
   return query.prefix.length >= MIN_SEARCH_LENGTH

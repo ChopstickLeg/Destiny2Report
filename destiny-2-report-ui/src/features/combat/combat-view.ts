@@ -15,18 +15,18 @@ import type {
 
 export const ALL = 'All'
 
-export interface WeaponFilters {
+interface WeaponFilters {
   className: string // ALL or a class name present in the data
   specificMode: string // ALL or a mode name present in the selected class(es)
 }
 
-export interface CategoryTotal {
+interface CategoryTotal {
   key: string
   name: string
   kills: number
 }
 
-export interface WeaponRow {
+interface WeaponRow {
   key: string
   name: string
   iconUrl: string
@@ -34,7 +34,7 @@ export interface WeaponRow {
   kills: number
 }
 
-export interface FlattenedWeapons {
+interface FlattenedWeapons {
   categories: CategoryTotal[]
   weapons: WeaponRow[]
   totalKills: number
@@ -116,7 +116,7 @@ export function flattenWeapons(
   }
 }
 
-export interface CategoryShare {
+interface CategoryShare {
   key: string
   label: string
   value: number

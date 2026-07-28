@@ -23,7 +23,7 @@ interface PendingOAuth {
   returnTo: string
 }
 
-export type SessionStatus = 'unknown' | 'resolving' | 'signed-in' | 'signed-out'
+type SessionStatus = 'unknown' | 'resolving' | 'signed-in' | 'signed-out'
 
 export const useSessionStore = defineStore('session', {
   state: () => ({

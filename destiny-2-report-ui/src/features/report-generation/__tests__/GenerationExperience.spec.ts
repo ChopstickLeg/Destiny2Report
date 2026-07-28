@@ -26,14 +26,45 @@ describe('GenerationExperience', () => {
     watchQueue.mockReset()
   })
 
-  it('promotes a Mongo-queued profile by submitting it to Redis', () => {
+  it('quietly re-submits a queued profile before watching it', () => {
     mount(GenerationExperience, {
       props: {
         identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
         initialState: 'queued',
         playerName: null,
         crawlError: '',
-        queuedInRedis: false,
+      },
+    })
+
+    expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({
+      suppressCooldownError: true,
+      watchOnSuppressedCooldown: true,
+    })
+    expect(watchQueue).not.toHaveBeenCalled()
+  })
+
+  it('only watches a running profile without submitting it again', () => {
+    mount(GenerationExperience, {
+      props: {
+        identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
+        initialState: 'running',
+        playerName: null,
+        crawlError: '',
+      },
+    })
+
+    expect(watchQueue).toHaveBeenCalledOnce()
+    expect(submitAndWatch).not.toHaveBeenCalled()
+  })
+
+  it('starts a missing report when navigation requested generation', () => {
+    mount(GenerationExperience, {
+      props: {
+        identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
+        initialState: 'missing',
+        playerName: null,
+        crawlError: '',
+        autoStart: true,
       },
     })
 
@@ -41,18 +72,18 @@ describe('GenerationExperience', () => {
     expect(watchQueue).not.toHaveBeenCalled()
   })
 
-  it('only watches a profile that is already queued in Redis', () => {
+  it('does not automatically retry a failed report', () => {
     mount(GenerationExperience, {
       props: {
         identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
-        initialState: 'queued',
+        initialState: 'failed',
         playerName: null,
-        crawlError: '',
-        queuedInRedis: true,
+        crawlError: 'Bungie was unavailable',
+        autoStart: true,
       },
     })
 
-    expect(watchQueue).toHaveBeenCalledOnce()
     expect(submitAndWatch).not.toHaveBeenCalled()
+    expect(watchQueue).not.toHaveBeenCalled()
   })
 })

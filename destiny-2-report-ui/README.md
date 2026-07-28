@@ -11,8 +11,8 @@ signed-in "Your Story" retrospective. The product and architecture plan lives in
 - [TanStack Query](https://tanstack.com/query) for all server state (caching,
   cancellation, retries, invalidation after crawl completion)
 - Pinia only for durable client state (the Bungie session)
-- Project-owned chart components (`src/components/charts/`) for ranked bars, split
-  bars, and one small donut; no chart framework
+- Project-owned chart components (`src/components/charts/`) for ranked and split
+  bars; no chart framework
 - A small token-based design system (`src/styles/tokens.css`); no UI framework
 
 ## Development
@@ -80,7 +80,7 @@ npm run format      # prettier over src/
 src/
   components/
     base/       # buttons, skeletons, empty/error states, segmented control
-    charts/     # BarList, SplitBar, DonutChart (accessible, project-owned)
+    charts/     # BarList, SplitBar (accessible, project-owned)
     shell/      # header, global search, account menu, footer
   features/     # behavior-organized: player-search, report-overview,
                 # report-generation, combat, activities, auth, story, status

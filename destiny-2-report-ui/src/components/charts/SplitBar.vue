@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { formatInteger, formatShare } from '@/lib/formatting/numbers'
 
-export interface SplitSegment {
+interface SplitSegment {
   label: string
   value: number
   color: string
