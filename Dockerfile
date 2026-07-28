@@ -31,6 +31,6 @@ ENV ASPNETCORE_HTTP_PORTS=8080 \
 EXPOSE 8080
 COPY --link --from=build --chown=$APP_UID:$APP_UID /app/publish .
 USER $APP_UID
-HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5m --retries=3 \
     CMD ["wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
 ENTRYPOINT ["dotnet", "Destiny2Report.API.dll"]
