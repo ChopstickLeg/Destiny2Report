@@ -1,12 +1,21 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "destiny2report",
+  "main": "./server/index.ts",
   "compatibility_date": "2026-07-25",
   "observability": {
     "enabled": true
   },
+  "vars": {
+    "API_ORIGIN": "https://api.destiny-2.report"
+  },
   "assets": {
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api",
+      "/api/*"
+    ]
   },
   "compatibility_flags": [
     "nodejs_compat"
