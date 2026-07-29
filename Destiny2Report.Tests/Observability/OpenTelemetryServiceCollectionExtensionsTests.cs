@@ -94,4 +94,23 @@ public sealed class OpenTelemetryServiceCollectionExtensionsTests
             "organization=default,stream-name=default,authorization=Bearer%20token-value",
             exporterOptions.Headers);
     }
+
+    [Fact]
+    public void ConfigureOtlpExporter_ComposesConfiguredHeadersAndAuthorization()
+    {
+        var exporterOptions = new OtlpExporterOptions();
+        var telemetryOptions = new TelemetryOptions
+        {
+            Headers = " organization=default,stream-name=default ",
+            AuthorizationHeader = "Basic dXNlcjpwYXNzd29yZA=="
+        };
+
+        OpenTelemetryServiceCollectionExtensions.ConfigureOtlpExporter(
+            exporterOptions,
+            telemetryOptions);
+
+        Assert.Equal(
+            "organization=default,stream-name=default,authorization=Basic%20dXNlcjpwYXNzd29yZA%3D%3D",
+            exporterOptions.Headers);
+    }
 }

@@ -12,6 +12,8 @@ public sealed class TelemetryOptions
 
     public string Protocol { get; set; } = "Grpc";
 
+    public string? Headers { get; set; }
+
     public string? AuthorizationHeader { get; set; }
 
     public string? AuthorizationBearerToken { get; set; }
