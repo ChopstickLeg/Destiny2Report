@@ -34,14 +34,14 @@ public static class OpenTelemetryServiceCollectionExtensions
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
                 .AddRedisInstrumentation()
-                .AddOtlpExporter(options => ConfigureOtlpExporter(options, telemetryOptions)))
+                .AddOtlpExporter(options => ConfigureOtlpExporter(options, telemetryOptions, "traces")))
             .WithMetrics(metrics => metrics
                 .AddMeter(AppTelemetry.MeterName)
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
                 .AddProcessInstrumentation()
                 .AddRuntimeInstrumentation()
-                .AddOtlpExporter(options => ConfigureOtlpExporter(options, telemetryOptions)));
+                .AddOtlpExporter(options => ConfigureOtlpExporter(options, telemetryOptions, "metrics")));
 
         builder.Logging.AddOpenTelemetry(logging =>
         {
@@ -49,19 +49,25 @@ public static class OpenTelemetryServiceCollectionExtensions
             logging.IncludeScopes = true;
             logging.ParseStateValues = true;
             logging.SetResourceBuilder(resourceBuilder);
-            logging.AddOtlpExporter(options => ConfigureOtlpExporter(options, telemetryOptions));
+            logging.AddOtlpExporter(options => ConfigureOtlpExporter(options, telemetryOptions, "logs"));
         });
 
         return builder;
     }
 
-    internal static void ConfigureOtlpExporter(OtlpExporterOptions exporterOptions, TelemetryOptions telemetryOptions)
+    internal static void ConfigureOtlpExporter(
+        OtlpExporterOptions exporterOptions,
+        TelemetryOptions telemetryOptions,
+        string? httpSignal = null)
     {
-        exporterOptions.Endpoint = new Uri(telemetryOptions.Endpoint);
         exporterOptions.Protocol = telemetryOptions.Protocol.Equals("http", StringComparison.OrdinalIgnoreCase)
             || telemetryOptions.Protocol.Equals("http/protobuf", StringComparison.OrdinalIgnoreCase)
             ? OtlpExportProtocol.HttpProtobuf
             : OtlpExportProtocol.Grpc;
+        exporterOptions.Endpoint = exporterOptions.Protocol == OtlpExportProtocol.HttpProtobuf
+            && !string.IsNullOrWhiteSpace(httpSignal)
+                ? new Uri($"{telemetryOptions.Endpoint.TrimEnd('/')}/v1/{httpSignal}")
+                : new Uri(telemetryOptions.Endpoint);
 
         var authorizationValue = !string.IsNullOrWhiteSpace(telemetryOptions.AuthorizationHeader)
             ? telemetryOptions.AuthorizationHeader.Trim()
