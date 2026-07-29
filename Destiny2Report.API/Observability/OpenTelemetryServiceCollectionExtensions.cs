@@ -63,9 +63,15 @@ public static class OpenTelemetryServiceCollectionExtensions
             ? OtlpExportProtocol.HttpProtobuf
             : OtlpExportProtocol.Grpc;
 
-        if (!string.IsNullOrWhiteSpace(telemetryOptions.AuthorizationBearerToken))
+        var authorizationValue = !string.IsNullOrWhiteSpace(telemetryOptions.AuthorizationHeader)
+            ? telemetryOptions.AuthorizationHeader.Trim()
+            : !string.IsNullOrWhiteSpace(telemetryOptions.AuthorizationBearerToken)
+                ? $"Bearer {telemetryOptions.AuthorizationBearerToken.Trim()}"
+                : null;
+
+        if (authorizationValue is not null)
         {
-            var authorizationHeader = $"authorization={Uri.EscapeDataString($"Bearer {telemetryOptions.AuthorizationBearerToken.Trim()}")}";
+            var authorizationHeader = $"authorization={Uri.EscapeDataString(authorizationValue)}";
             exporterOptions.Headers = string.IsNullOrWhiteSpace(exporterOptions.Headers)
                 ? authorizationHeader
                 : $"{exporterOptions.Headers},{authorizationHeader}";
