@@ -55,13 +55,21 @@ public static class OpenTelemetryServiceCollectionExtensions
         return builder;
     }
 
-    private static void ConfigureOtlpExporter(OtlpExporterOptions exporterOptions, TelemetryOptions telemetryOptions)
+    internal static void ConfigureOtlpExporter(OtlpExporterOptions exporterOptions, TelemetryOptions telemetryOptions)
     {
         exporterOptions.Endpoint = new Uri(telemetryOptions.Endpoint);
         exporterOptions.Protocol = telemetryOptions.Protocol.Equals("http", StringComparison.OrdinalIgnoreCase)
             || telemetryOptions.Protocol.Equals("http/protobuf", StringComparison.OrdinalIgnoreCase)
             ? OtlpExportProtocol.HttpProtobuf
             : OtlpExportProtocol.Grpc;
+
+        if (!string.IsNullOrWhiteSpace(telemetryOptions.AuthorizationBearerToken))
+        {
+            var authorizationHeader = $"authorization={Uri.EscapeDataString($"Bearer {telemetryOptions.AuthorizationBearerToken.Trim()}")}";
+            exporterOptions.Headers = string.IsNullOrWhiteSpace(exporterOptions.Headers)
+                ? authorizationHeader
+                : $"{exporterOptions.Headers},{authorizationHeader}";
+        }
     }
 
     private static Sampler CreateTraceSampler(TelemetryOptions telemetryOptions)

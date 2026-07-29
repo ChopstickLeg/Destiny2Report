@@ -1,6 +1,7 @@
 use std::{env, time::Duration};
 
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
+use opentelemetry_otlp::{WithTonicConfig, tonic_types::metadata::MetadataMap};
 use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use tracing_subscriber::{
     EnvFilter, Registry,
@@ -10,6 +11,7 @@ use tracing_subscriber::{
 };
 
 const DEFAULT_SERVICE_NAME: &str = "Destiny2Report.Crawler";
+const OTEL_EXPORTER_OTLP_BEARER_TOKEN: &str = "OTEL_EXPORTER_OTLP_BEARER_TOKEN";
 
 pub struct TelemetryGuard {
     provider: Option<SdkTracerProvider>,
@@ -40,9 +42,21 @@ pub fn init() -> anyhow::Result<TelemetryGuard> {
         return Ok(TelemetryGuard { provider: None });
     }
 
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .build()?;
+    let mut exporter_builder = opentelemetry_otlp::SpanExporter::builder().with_tonic();
+    let bearer_token = env::var(OTEL_EXPORTER_OTLP_BEARER_TOKEN).ok();
+    if let Some(authorization) = bearer_authorization_value(bearer_token.as_deref()) {
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            "authorization",
+            authorization.parse().map_err(|error| {
+                anyhow::anyhow!(
+                    "{OTEL_EXPORTER_OTLP_BEARER_TOKEN} is not a valid gRPC metadata value: {error}"
+                )
+            })?,
+        );
+        exporter_builder = exporter_builder.with_metadata(metadata);
+    }
+    let exporter = exporter_builder.build()?;
     let service_name =
         env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| DEFAULT_SERVICE_NAME.to_owned());
     let provider = SdkTracerProvider::builder()
@@ -70,4 +84,30 @@ pub fn init() -> anyhow::Result<TelemetryGuard> {
     Ok(TelemetryGuard {
         provider: Some(provider),
     })
+}
+
+fn bearer_authorization_value(token: Option<&str>) -> Option<String> {
+    token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("Bearer {token}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bearer_authorization_value;
+
+    #[test]
+    fn bearer_authorization_is_absent_without_a_token() {
+        assert_eq!(bearer_authorization_value(None), None);
+        assert_eq!(bearer_authorization_value(Some("   ")), None);
+    }
+
+    #[test]
+    fn bearer_authorization_uses_a_trimmed_token() {
+        assert_eq!(
+            bearer_authorization_value(Some("  token-value  ")),
+            Some("Bearer token-value".to_owned())
+        );
+    }
 }
