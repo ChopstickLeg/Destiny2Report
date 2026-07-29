@@ -64,6 +64,10 @@ builder.Services.AddHybridCache(options =>
 });
 builder.Services.AddScoped<CrawlerReadService>();
 builder.Services.AddScoped<ICrawlerReadService>(provider => provider.GetRequiredService<CrawlerReadService>());
+builder.Services.AddOptions<CrawlerOptions>()
+    .Bind(builder.Configuration.GetSection(CrawlerOptions.SectionName))
+    .Validate(options => options.BackgroundConcurrency > 0, "Crawler:BackgroundConcurrency must be positive.")
+    .ValidateOnStart();
 builder.Services.AddHostedService<CrawlerIdleMongoScheduler>();
 builder.Services.AddHostedService<CrawlerFinalizerBackgroundService>();
 builder.Services.AddHostedService<CrawlGenerationCleanupService>();
