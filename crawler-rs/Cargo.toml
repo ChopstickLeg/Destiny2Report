@@ -9,9 +9,10 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 mongodb = "3"
-opentelemetry = { version = "0.32", features = ["trace"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic", "tls-ring", "tls-roots"] }
-opentelemetry_sdk = { version = "0.32", features = ["trace"] }
+opentelemetry = { version = "0.32", features = ["logs", "trace"] }
+opentelemetry-appender-tracing = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["logs", "trace", "grpc-tonic", "http-proto", "reqwest-blocking-client", "tls-ring", "tls-roots"] }
+opentelemetry_sdk = { version = "0.32", features = ["logs", "trace"] }
 rand = "0.9"
 redis = { version = "0.32", features = ["aio", "tokio-comp", "connection-manager"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
