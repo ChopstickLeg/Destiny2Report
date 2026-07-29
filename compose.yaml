@@ -19,6 +19,7 @@ services:
       ConnectionStrings__Redis: redis:6379
       OpenTelemetry__Endpoint: http://jaeger:4317
       OpenTelemetry__Protocol: Grpc
+      Crawler__BackgroundConcurrency: ${CRAWLER_BACKGROUND_CONCURRENCY:-1}
     ports:
       - "${API_PORT:-8080}:8080"
     depends_on:

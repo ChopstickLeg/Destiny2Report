@@ -37,3 +37,9 @@ Every Rust process owns independent ordinary, PGCR, and sherpa-history limiters.
 Settings are `CRAWLER__ORDINARY_REQUESTS_PER_SECOND_PER_INSTANCE`, `CRAWLER__PGCR_REQUESTS_PER_SECOND_PER_INSTANCE`, `CRAWLER__SHERPA_HISTORY_REQUESTS_PER_SECOND_PER_INSTANCE`, their corresponding queue limits, `CRAWLER__MAX_IN_FLIGHT_REQUESTS_PER_INSTANCE`, `CRAWLER__MAX_IN_FLIGHT_PGCRS_PER_INSTANCE`, and `CRAWLER__MAX_BUFFERED_PGCRS`.
 
 Run multiple workers with `docker compose up --scale crawler-rust=3`.
+
+The API background scheduler fills up to `Crawler:BackgroundConcurrency` queued
+or running jobs. Foreground jobs count against that capacity first so they retain
+priority over Mongo-only background work. Set it with the
+`Crawler__BackgroundConcurrency` environment variable; the production Compose
+file exposes `CRAWLER_BACKGROUND_CONCURRENCY` and defaults it to `2`.

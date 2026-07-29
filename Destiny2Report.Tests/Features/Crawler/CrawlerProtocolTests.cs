@@ -225,6 +225,27 @@ public sealed class CrawlerProtocolTests
         Assert.DoesNotContain("awaiting_finalization", json);
     }
 
+    [Theory]
+    [InlineData(0, 2, true)]
+    [InlineData(1, 2, true)]
+    [InlineData(2, 2, false)]
+    [InlineData(3, 2, false)]
+    public void Idle_scheduler_fills_only_available_crawler_capacity(
+        long activeJobs,
+        int backgroundConcurrency,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CrawlerIdleMongoScheduler.HasAvailableCapacity(activeJobs, backgroundConcurrency));
+    }
+
+    [Fact]
+    public void Crawler_options_default_to_one_background_job()
+    {
+        Assert.Equal(1, new CrawlerOptions().BackgroundConcurrency);
+    }
+
     [Fact]
     public void Durable_terminal_job_overrides_stale_running_redis_status()
     {

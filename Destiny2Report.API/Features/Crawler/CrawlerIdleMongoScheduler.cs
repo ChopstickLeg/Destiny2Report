@@ -1,21 +1,24 @@
 using Destiny2Report.API.Features.Crawler.Models;
+using Microsoft.Extensions.Options;
 using MongoDB.Driver;
 
 namespace Destiny2Report.API.Features.Crawler;
 
 /// <summary>
 /// Bridges the legacy Mongo-only background queue into the durable Rust crawler
-/// job protocol. It admits one background player only while no crawler job is
-/// queued or running, preserving foreground crawl priority.
+/// job protocol. It fills the configured crawler capacity with background players
+/// while counting foreground jobs first, preserving foreground crawl priority.
 /// </summary>
 public sealed class CrawlerIdleMongoScheduler(
     ILogger<CrawlerIdleMongoScheduler> logger,
     IMongoDatabase mongoDatabase,
-    ICrawlerJobQueue crawlerJobQueue) : BackgroundService
+    ICrawlerJobQueue crawlerJobQueue,
+    IOptions<CrawlerOptions> options) : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan ClaimLeaseDuration = TimeSpan.FromMinutes(5);
     private readonly string _owner = $"{Environment.MachineName}-{Environment.ProcessId}-idle-scheduler-{Guid.NewGuid():N}";
+    private readonly int _backgroundConcurrency = options.Value.BackgroundConcurrency;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -23,7 +26,7 @@ public sealed class CrawlerIdleMongoScheduler(
         {
             try
             {
-                if (await HasActiveCrawlerJobAsync(stoppingToken).ConfigureAwait(false))
+                if (!await HasAvailableCapacityAsync(stoppingToken).ConfigureAwait(false))
                 {
                     await Task.Delay(PollInterval, stoppingToken).ConfigureAwait(false);
                     continue;
@@ -50,11 +53,16 @@ public sealed class CrawlerIdleMongoScheduler(
         }
     }
 
-    private Task<bool> HasActiveCrawlerJobAsync(CancellationToken cancellationToken) =>
-        mongoDatabase.GetCollection<CrawlJob>("crawl_jobs")
-            .Find(BuildActiveCrawlerFilter())
-            .Limit(1)
-            .AnyAsync(cancellationToken);
+    private async Task<bool> HasAvailableCapacityAsync(CancellationToken cancellationToken)
+    {
+        var activeJobs = await mongoDatabase.GetCollection<CrawlJob>("crawl_jobs")
+            .CountDocumentsAsync(BuildActiveCrawlerFilter(), cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        return HasAvailableCapacity(activeJobs, _backgroundConcurrency);
+    }
+
+    internal static bool HasAvailableCapacity(long activeJobs, int backgroundConcurrency) =>
+        activeJobs < backgroundConcurrency;
 
     private async Task<DestinyReport?> TryClaimReportAsync(CancellationToken cancellationToken)
     {
