@@ -50,11 +50,17 @@ public sealed class CrawlerProtocolTests
     }
 
     [Fact]
-    public void Dispatch_status_does_not_overwrite_a_worker_with_a_newer_fence()
+    public void Dispatch_status_backfills_identity_without_overwriting_a_worker_with_a_newer_fence()
     {
-        Assert.Contains(
-            "if currentRun == ARGV[1] and currentFence > tonumber(ARGV[2]) then return 0 end",
-            CrawlerJobQueue.DispatchStatusScript);
+        var newerFenceBranch = CrawlerJobQueue.DispatchStatusScript[
+            CrawlerJobQueue.DispatchStatusScript.IndexOf(
+                "if currentRun == ARGV[1] and currentFence > tonumber(ARGV[2]) then",
+                StringComparison.Ordinal)..];
+
+        Assert.Contains("'streamEntryId', ARGV[6]", newerFenceBranch);
+        Assert.True(
+            newerFenceBranch.IndexOf("'streamEntryId', ARGV[6]", StringComparison.Ordinal)
+            < newerFenceBranch.IndexOf("return 0", StringComparison.Ordinal));
         Assert.Contains("redis.call('EXPIRE', KEYS[1], ARGV[9])", CrawlerJobQueue.DispatchStatusScript);
     }
 

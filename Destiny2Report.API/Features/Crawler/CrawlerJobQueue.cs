@@ -22,7 +22,15 @@ public sealed class CrawlerJobQueue(
     internal const string DispatchStatusScript = """
         local currentRun = redis.call('HGET', KEYS[1], 'runId')
         local currentFence = tonumber(redis.call('HGET', KEYS[1], 'fence') or '-1')
-        if currentRun == ARGV[1] and currentFence > tonumber(ARGV[2]) then return 0 end
+        if currentRun == ARGV[1] and currentFence > tonumber(ARGV[2]) then
+            redis.call('HSET', KEYS[1],
+                'protocolVersion', ARGV[3],
+                'membershipTypeId', ARGV[4],
+                'membershipId', ARGV[5],
+                'streamEntryId', ARGV[6])
+            redis.call('EXPIRE', KEYS[1], ARGV[9])
+            return 0
+        end
         redis.call('HSET', KEYS[1],
             'runId', ARGV[1],
             'fence', ARGV[2],

@@ -32,6 +32,25 @@ const GROUP: &str = "crawler-workers";
 const MANIFEST_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MANIFEST_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const REDIS_RECLAIM_GRACE: Duration = Duration::from_secs(5);
+const PUBLISH_PROGRESS_SCRIPT: &str = r#"
+local currentRun = redis.call('HGET', KEYS[1], 'runId')
+local currentFence = tonumber(redis.call('HGET', KEYS[1], 'fence') or '-1')
+if currentRun and currentRun ~= ARGV[1] then return 0 end
+if currentFence > tonumber(ARGV[2]) then return 0 end
+redis.call('HSET', KEYS[1], 'runId', ARGV[1], 'fence', ARGV[2],
+  'status', ARGV[3],
+  'progressPhase', ARGV[4],
+  'progressLabel', ARGV[5],
+  'progressCurrent', ARGV[6],
+  'progressTotal', ARGV[7],
+  'progressStartedAtUtc', ARGV[8],
+  'progressUpdatedAtUtc', ARGV[8],
+  'updatedAtUtc', ARGV[8],
+  'error', ARGV[9],
+  'streamEntryId', ARGV[10])
+redis.call('EXPIRE', KEYS[1], 86400)
+return 1
+"#;
 const ACK_AND_DELETE_SCRIPT: &str = r#"
 local acknowledged = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
 local deleted = redis.call('XDEL', KEYS[1], ARGV[2])
@@ -548,31 +567,13 @@ impl Worker {
         progress: (i64, Option<i64>),
     ) -> anyhow::Result<bool> {
         let (current, total) = progress;
-        const LUA: &str = r#"
-local currentRun = redis.call('HGET', KEYS[1], 'runId')
-local currentFence = tonumber(redis.call('HGET', KEYS[1], 'fence') or '-1')
-if currentRun and currentRun ~= ARGV[1] then return 0 end
-if currentFence > tonumber(ARGV[2]) then return 0 end
-redis.call('HSET', KEYS[1], 'runId', ARGV[1], 'fence', ARGV[2],
-  'status', ARGV[3],
-  'progressPhase', ARGV[4],
-  'progressLabel', ARGV[5],
-  'progressCurrent', ARGV[6],
-  'progressTotal', ARGV[7],
-  'progressStartedAtUtc', ARGV[8],
-  'progressUpdatedAtUtc', ARGV[8],
-  'updatedAtUtc', ARGV[8],
-  'error', ARGV[9])
-redis.call('EXPIRE', KEYS[1], 86400)
-return 1
-"#;
         let key = format!(
             "crawler:job:{}:{}",
             job.membership_type_id, job.membership_id
         );
         let now = chrono::Utc::now().to_rfc3339();
         let total_text = total.map(|value| value.to_string()).unwrap_or_default();
-        let accepted: i32 = redis::Script::new(LUA)
+        let accepted: i32 = redis::Script::new(PUBLISH_PROGRESS_SCRIPT)
             .key(&key)
             .arg(&job.run_id)
             .arg(job.fence)
@@ -583,6 +584,7 @@ return 1
             .arg(&total_text)
             .arg(&now)
             .arg(error.unwrap_or(""))
+            .arg(&job.stream_entry_id)
             .invoke_async(&mut self.redis)
             .await?;
         if accepted == 1 {
@@ -807,6 +809,11 @@ mod tests {
             redis_reclaim_idle(Duration::from_secs(300)),
             Duration::from_secs(305).as_millis() as u64
         );
+    }
+
+    #[test]
+    fn progress_status_persists_stream_entry_identity() {
+        assert!(PUBLISH_PROGRESS_SCRIPT.contains("'streamEntryId', ARGV[10]"));
     }
 
     #[test]
