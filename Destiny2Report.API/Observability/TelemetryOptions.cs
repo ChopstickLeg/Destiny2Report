@@ -12,6 +12,8 @@ public sealed class TelemetryOptions
 
     public string Protocol { get; set; } = "Grpc";
 
+    public string? AuthorizationHeader { get; set; }
+
     public string? AuthorizationBearerToken { get; set; }
 
     public double TraceSampleRatio { get; set; } = 0.1;

@@ -20,6 +20,7 @@ services:
       ConnectionStrings__Redis: redis:6379,password=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       OpenTelemetry__Endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT is required}
       OpenTelemetry__Protocol: ${OTEL_EXPORTER_OTLP_PROTOCOL:-Grpc}
+      OpenTelemetry__AuthorizationHeader: ${OTEL_EXPORTER_OTLP_AUTHORIZATION_HEADER:-}
       OpenTelemetry__AuthorizationBearerToken: ${OTEL_EXPORTER_OTLP_BEARER_TOKEN:-}
     ports:
       - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8080}:8080"
@@ -72,6 +73,7 @@ services:
       OTEL_SERVICE_NAME: ${RUST_CRAWLER_OTEL_SERVICE_NAME:-Destiny2Report.Crawler}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT is required}
       OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
+      OTEL_EXPORTER_OTLP_AUTHORIZATION_HEADER: ${OTEL_EXPORTER_OTLP_AUTHORIZATION_HEADER:-}
       OTEL_EXPORTER_OTLP_BEARER_TOKEN: ${OTEL_EXPORTER_OTLP_BEARER_TOKEN:-}
     depends_on:
       mongo:
