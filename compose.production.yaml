@@ -20,6 +20,7 @@ services:
       ConnectionStrings__Redis: redis:6379,password=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       OpenTelemetry__Endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT is required}
       OpenTelemetry__Protocol: ${OTEL_EXPORTER_OTLP_PROTOCOL:-Grpc}
+      OpenTelemetry__Headers: ${OTEL_EXPORTER_OTLP_HEADERS:-}
       OpenTelemetry__AuthorizationHeader: ${OTEL_EXPORTER_OTLP_AUTHORIZATION_HEADER:-}
       OpenTelemetry__AuthorizationBearerToken: ${OTEL_EXPORTER_OTLP_BEARER_TOKEN:-}
     ports:

@@ -69,12 +69,22 @@ public static class OpenTelemetryServiceCollectionExtensions
                 ? $"Bearer {telemetryOptions.AuthorizationBearerToken.Trim()}"
                 : null;
 
-        if (authorizationValue is not null)
+        var headers = new[]
         {
-            var authorizationHeader = $"authorization={Uri.EscapeDataString(authorizationValue)}";
-            exporterOptions.Headers = string.IsNullOrWhiteSpace(exporterOptions.Headers)
-                ? authorizationHeader
-                : $"{exporterOptions.Headers},{authorizationHeader}";
+            exporterOptions.Headers,
+            telemetryOptions.Headers?.Trim(),
+            authorizationValue is null
+                ? null
+                : $"authorization={Uri.EscapeDataString(authorizationValue)}"
+        };
+
+        exporterOptions.Headers = string.Join(
+            ',',
+            headers.Where(header => !string.IsNullOrWhiteSpace(header)));
+
+        if (exporterOptions.Headers.Length == 0)
+        {
+            exporterOptions.Headers = null;
         }
     }
 
