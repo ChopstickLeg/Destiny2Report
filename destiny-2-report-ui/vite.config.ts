@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => {
   // In development the UI proxies /api to the ASP.NET Core backend so the
   // browser sees a single origin (matching the intended production shape).
   // Override with VITE_DEV_API_PROXY if the API runs elsewhere.
-  const apiProxyTarget = env.VITE_DEV_API_PROXY ?? 'http://localhost:8080'
+  const apiProxyTarget = env.VITE_DEV_API_PROXY ?? 'http://localhost:5063'
   const clientId = env.VITE_BUNGIE_CLIENT_ID || workspaceEnv.BUNGIE_CLIENT_ID
   const httpsPfxPath = env.DEV_HTTPS_PFX_PATH
   const httpsPfxPassword = env.DEV_HTTPS_PFX_PASSWORD
@@ -25,7 +25,10 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    plugins: [vue(), vueDevTools(), ...(mode === 'test' ? [] : [cloudflare()])],
+    // The Cloudflare worker owns /api in production. Enabling it under `vite`
+    // would make its production API_ORIGIN intercept requests before this
+    // dev server's localhost proxy.
+    plugins: [vue(), vueDevTools(), ...(mode === 'production' ? [cloudflare()] : [])],
     // For local development, reuse the public client id from the workspace's
     // ignored .env file. Only this public value is exposed; the client secret
     // remains available exclusively to the backend.

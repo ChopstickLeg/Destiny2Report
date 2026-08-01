@@ -37,3 +37,13 @@ export function canonicalPatrolDestination(name: string): string | null {
 export function humanizeModeName(name: string): string {
   return ACTIVITY_MODE_NAMES[name] ?? name.replace(MODE_NAME_PATTERN, ' ')
 }
+
+/** Matches the API's stable leaderboard key slugging. */
+export function destinySlug(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('en-US')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+}

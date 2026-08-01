@@ -41,6 +41,7 @@ builder.Services.AddOptions<LeaderboardsOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton<ILeaderboardService, LeaderboardService>();
 builder.Services.AddHostedService<LeaderboardRepairBackgroundService>();
+builder.Services.AddHostedService<LeaderboardThresholdBackgroundService>();
 builder.Services.AddOptions<WebPushOptions>()
     .Bind(builder.Configuration.GetSection(WebPushOptions.SectionName))
     .Validate(options =>

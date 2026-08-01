@@ -3,6 +3,7 @@ using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
 using StackExchange.Redis;
+using System.Text.Json;
 
 namespace Destiny2Report.API.Features.Leaderboards;
 
@@ -15,9 +16,11 @@ public sealed class LeaderboardService(
 {
     private const string CollectionName = "leaderboard_boards";
     private const string RepairSetKey = "leaderboards:repairs";
+    private const string ThresholdsKey = "leaderboards:percentile-thresholds:v1";
     private static readonly TimeSpan LockExpiry = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
     private readonly IMongoCollection<LeaderboardBoard> boards = mongoDatabase.GetCollection<LeaderboardBoard>(CollectionName);
+    private readonly IMongoCollection<PlayerLeaderboardSnapshot> snapshots = mongoDatabase.GetCollection<PlayerLeaderboardSnapshot>("leaderboard_player_scores");
     private readonly IDatabase redisDatabase = redis.GetDatabase();
 
     public async Task PublishPlayerAsync(DestinyReport report, IReadOnlyCollection<LeaderboardMetric> metrics, CancellationToken cancellationToken)
@@ -37,6 +40,20 @@ public sealed class LeaderboardService(
             positiveMetrics.TryGetValue(key, out var metric);
             await UpdatePlayerOnBoardAsync(report, key, metric, ct).ConfigureAwait(false);
         }).ConfigureAwait(false);
+
+        var snapshot = new PlayerLeaderboardSnapshot
+        {
+            PlayerKey = PlayerKey(report.PlatformId, report.PlayerMembershipId),
+            MembershipTypeId = report.PlatformId,
+            MembershipId = report.PlayerMembershipId,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Scores = positiveMetrics.Values
+                .Select(metric => new PlayerLeaderboardScore(metric.Key, metric.Score))
+                .OrderBy(score => score.MetricKey, StringComparer.Ordinal)
+                .ToList()
+        };
+        await snapshots.ReplaceOneAsync(item => item.PlayerKey == snapshot.PlayerKey, snapshot,
+            new ReplaceOptions { IsUpsert = true }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RemovePlayerAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken)
@@ -56,6 +73,89 @@ public sealed class LeaderboardService(
             await ReplaceBoardAsync(board with { Entries = entries, UpdatedAtUtc = DateTime.UtcNow }, ct).ConfigureAwait(false);
             await redisDatabase.SetAddAsync(RepairSetKey, key).ConfigureAwait(false);
         }).ConfigureAwait(false);
+        await snapshots.DeleteOneAsync(item => item.PlayerKey == PlayerKey(membershipTypeId, membershipId), cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PlayerLeaderboardStandingsResponse> GetPlayerStandingsAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken)
+    {
+        var snapshot = await snapshots.Find(item => item.PlayerKey == PlayerKey(membershipTypeId, membershipId))
+            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var thresholds = await ReadThresholdsAsync().ConfigureAwait(false);
+        var candidates = new List<(PlayerLeaderboardStanding Standing, double Strength)>();
+
+        var exactBoards = await boards.Find(board => board.Entries.Any(entry =>
+                entry.MembershipTypeId == membershipTypeId && entry.MembershipId == membershipId))
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var board in exactBoards.Where(board => LeaderboardMetricRules.IsPublishedMetric(board.MetricKey)))
+        {
+            var entry = LeaderboardRanking.Rank(board.Entries).First(item =>
+                item.MembershipTypeId == membershipTypeId && item.MembershipId == membershipId);
+            var playerCount = thresholds?.Values.GetValueOrDefault(board.MetricKey)?.PlayerCount;
+            var strength = playerCount > 0 ? (double)entry.Rank / playerCount.Value : entry.Rank / 1000d;
+            candidates.Add((
+                new PlayerLeaderboardStanding(board.MetricKey, board.Category, board.Title, board.Unit, entry.Score, "top-1000", entry.Rank),
+                strength));
+        }
+
+        var exactKeys = candidates.Select(item => item.Standing.MetricKey).ToHashSet(StringComparer.Ordinal);
+        var remainingScores = (snapshot?.Scores ?? []).Where(score => !exactKeys.Contains(score.MetricKey)).ToArray();
+        var remainingKeys = remainingScores.Select(score => score.MetricKey).ToArray();
+        var definitions = remainingKeys.Length == 0
+            ? new Dictionary<string, LeaderboardBoard>(StringComparer.Ordinal)
+            : (await boards.Find(Builders<LeaderboardBoard>.Filter.In(board => board.MetricKey, remainingKeys))
+                .ToListAsync(cancellationToken).ConfigureAwait(false))
+                .ToDictionary(board => board.MetricKey, StringComparer.Ordinal);
+
+        foreach (var score in remainingScores)
+        {
+            if (thresholds is null || !thresholds.Values.TryGetValue(score.MetricKey, out var cutoff)) continue;
+            var tier = LeaderboardStandingRules.PercentileTier(score.Score, cutoff);
+            if (tier is null || !definitions.TryGetValue(score.MetricKey, out var board)) continue;
+            var strength = tier == "top-0.1" ? .001 : tier == "top-1" ? .01 : .05;
+            candidates.Add((
+                new PlayerLeaderboardStanding(score.MetricKey, board.Category, board.Title, board.Unit, score.Score, tier, null),
+                strength));
+        }
+
+        return new PlayerLeaderboardStandingsResponse(thresholds?.UpdatedAtUtc,
+            candidates
+                .OrderBy(item => item.Standing.Rank is null ? 1 : 0)
+                .ThenBy(item => item.Standing.Rank ?? int.MaxValue)
+                .ThenBy(item => item.Strength)
+                .ThenBy(item => item.Standing.Title, StringComparer.Ordinal)
+                .Take(5)
+                .Select(item => item.Standing)
+                .ToArray());
+    }
+
+    public async Task RefreshPercentileThresholdsAsync(CancellationToken cancellationToken)
+    {
+        var scores = new Dictionary<string, List<long>>(StringComparer.Ordinal);
+        using var cursor = await snapshots.Find(FilterDefinition<PlayerLeaderboardSnapshot>.Empty)
+            .Project(item => item.Scores).ToCursorAsync(cancellationToken).ConfigureAwait(false);
+        while (await cursor.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+            foreach (var playerScores in cursor.Current)
+                foreach (var score in playerScores)
+                    if (LeaderboardMetricRules.IsPublishedMetric(score.MetricKey) && score.Score > 0)
+                    {
+                        if (!scores.TryGetValue(score.MetricKey, out var values)) scores[score.MetricKey] = values = [];
+                        values.Add(score.Score);
+                    }
+
+        var updatedAt = DateTimeOffset.UtcNow;
+        var valuesByMetric = scores.ToDictionary(pair => pair.Key, pair =>
+        {
+            pair.Value.Sort((left, right) => right.CompareTo(left));
+            return new LeaderboardPercentileThresholds(
+                LeaderboardStandingRules.Cutoff(pair.Value, .001),
+                LeaderboardStandingRules.Cutoff(pair.Value, .01),
+                LeaderboardStandingRules.Cutoff(pair.Value, .05),
+                pair.Value.Count,
+                updatedAt);
+        }, StringComparer.Ordinal);
+        var payload = new CachedThresholds(updatedAt, valuesByMetric);
+        await redisDatabase.StringSetAsync(ThresholdsKey, JsonSerializer.Serialize(payload), TimeSpan.FromDays(2)).ConfigureAwait(false);
+        logger.LogInformation("Refreshed percentile thresholds for {MetricCount} leaderboard metrics.", valuesByMetric.Count);
     }
 
     public async Task<LeaderboardCatalogResponse> GetCatalogAsync(CancellationToken cancellationToken)
@@ -218,6 +318,15 @@ public sealed class LeaderboardService(
     }
 
     private static string CacheKey(string metricKey) => $"leaderboards:board:{metricKey}";
+    private static string PlayerKey(int membershipTypeId, long membershipId) => $"{membershipTypeId}:{membershipId}";
+
+    private async Task<CachedThresholds?> ReadThresholdsAsync()
+    {
+        var value = await redisDatabase.StringGetAsync(ThresholdsKey).ConfigureAwait(false);
+        return value.IsNullOrEmpty ? null : JsonSerializer.Deserialize<CachedThresholds>(value.ToString());
+    }
+
+    private sealed record CachedThresholds(DateTimeOffset UpdatedAtUtc, Dictionary<string, LeaderboardPercentileThresholds> Values);
 
     private sealed class RedisLock(IDatabase database, string key, string token, ILogger logger) : IAsyncDisposable
     {

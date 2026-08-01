@@ -8,6 +8,9 @@ public static class LeaderboardEndpoints
         leaderboards.MapGet("", LeaderboardHandlers.GetCatalog)
             .WithName("GetLeaderboards")
             .WithSummary("Returns leaderboard readiness and the available catalog.");
+        leaderboards.MapGet("/players/{membershipTypeId:int}/{membershipId:long}", LeaderboardHandlers.GetPlayerStandings)
+            .WithName("GetPlayerLeaderboardStandings")
+            .WithSummary("Returns a player's exact top-1,000 ranks and cached percentile distinctions.");
         leaderboards.MapGet("/{metricKey}", LeaderboardHandlers.GetBoard)
             .WithName("GetLeaderboard")
             .WithSummary("Returns one page from a bounded top-1,000 leaderboard.");
