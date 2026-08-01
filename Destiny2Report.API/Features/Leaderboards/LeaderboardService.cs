@@ -78,31 +78,51 @@ public sealed class LeaderboardService(
 
     public async Task<PlayerLeaderboardStandingsResponse> GetPlayerStandingsAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken)
     {
-        var snapshot = await snapshots.Find(item => item.PlayerKey == PlayerKey(membershipTypeId, membershipId))
-            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        var thresholds = await ReadThresholdsAsync().ConfigureAwait(false);
+        var snapshotTask = snapshots.Find(item => item.PlayerKey == PlayerKey(membershipTypeId, membershipId))
+            .FirstOrDefaultAsync(cancellationToken);
+        var thresholdsTask = ReadThresholdsAsync();
+        var exactBoardProjection = Builders<LeaderboardBoard>.Projection
+            .Include(board => board.MetricKey)
+            .Include(board => board.Category)
+            .Include(board => board.Title)
+            .Include(board => board.Unit)
+            .Include("Entries.MembershipTypeId")
+            .Include("Entries.MembershipId")
+            .Include("Entries.Score");
+        var exactBoardsTask = boards.Find(board => board.Entries.Any(entry =>
+                entry.MembershipTypeId == membershipTypeId && entry.MembershipId == membershipId))
+            .Project<LeaderboardBoard>(exactBoardProjection)
+            .ToListAsync(cancellationToken);
+
+        await Task.WhenAll(snapshotTask, thresholdsTask, exactBoardsTask).ConfigureAwait(false);
+        var snapshot = await snapshotTask.ConfigureAwait(false);
+        var thresholds = await thresholdsTask.ConfigureAwait(false);
+        var exactBoards = await exactBoardsTask.ConfigureAwait(false);
         var candidates = new List<(PlayerLeaderboardStanding Standing, double Strength)>();
 
-        var exactBoards = await boards.Find(board => board.Entries.Any(entry =>
-                entry.MembershipTypeId == membershipTypeId && entry.MembershipId == membershipId))
-            .ToListAsync(cancellationToken).ConfigureAwait(false);
         foreach (var board in exactBoards.Where(board => LeaderboardMetricRules.IsPublishedMetric(board.MetricKey)))
         {
-            var entry = LeaderboardRanking.Rank(board.Entries).First(item =>
-                item.MembershipTypeId == membershipTypeId && item.MembershipId == membershipId);
+            var standing = LeaderboardRanking.FindPlayerStanding(board.Entries, membershipTypeId, membershipId);
+            if (standing is null) continue;
             var playerCount = thresholds?.Values.GetValueOrDefault(board.MetricKey)?.PlayerCount;
-            var strength = playerCount > 0 ? (double)entry.Rank / playerCount.Value : entry.Rank / 1000d;
+            var strength = playerCount > 0 ? (double)standing.Value.Rank / playerCount.Value : standing.Value.Rank / 1000d;
             candidates.Add((
-                new PlayerLeaderboardStanding(board.MetricKey, board.Category, board.Title, board.Unit, entry.Score, "top-1000", entry.Rank),
+                new PlayerLeaderboardStanding(board.MetricKey, board.Category, board.Title, board.Unit, standing.Value.Score, "top-1000", standing.Value.Rank),
                 strength));
         }
 
         var exactKeys = candidates.Select(item => item.Standing.MetricKey).ToHashSet(StringComparer.Ordinal);
         var remainingScores = (snapshot?.Scores ?? []).Where(score => !exactKeys.Contains(score.MetricKey)).ToArray();
         var remainingKeys = remainingScores.Select(score => score.MetricKey).ToArray();
+        var definitionProjection = Builders<LeaderboardBoard>.Projection
+            .Include(board => board.MetricKey)
+            .Include(board => board.Category)
+            .Include(board => board.Title)
+            .Include(board => board.Unit);
         var definitions = remainingKeys.Length == 0
             ? new Dictionary<string, LeaderboardBoard>(StringComparer.Ordinal)
             : (await boards.Find(Builders<LeaderboardBoard>.Filter.In(board => board.MetricKey, remainingKeys))
+                .Project<LeaderboardBoard>(definitionProjection)
                 .ToListAsync(cancellationToken).ConfigureAwait(false))
                 .ToDictionary(board => board.MetricKey, StringComparer.Ordinal);
 
