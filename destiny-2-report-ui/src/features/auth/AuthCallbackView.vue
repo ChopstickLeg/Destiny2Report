@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppButton from '@/components/base/AppButton.vue'
+import { getErrorMessage } from '@/lib/api/http'
 import { useSessionStore } from '@/stores/session'
 
 const route = useRoute()
@@ -34,7 +35,7 @@ onMounted(async () => {
     session.showStoryPrompt()
   } catch (error) {
     state.value = 'error'
-    errorMessage.value = error instanceof Error ? error.message : 'Sign-in could not be completed.'
+    errorMessage.value = getErrorMessage(error, 'Sign-in could not be completed.')
   }
 })
 

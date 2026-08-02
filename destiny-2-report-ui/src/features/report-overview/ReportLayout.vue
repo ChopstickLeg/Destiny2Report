@@ -6,7 +6,7 @@ import ErrorState from '@/components/base/ErrorState.vue'
 import GenerationExperience from '@/features/report-generation/GenerationExperience.vue'
 import { useQueueWatcher } from '@/features/report-generation/useQueueWatcher'
 import { rememberPlayer, loadRecentPlayers } from '@/lib/recent-players'
-import { isApiError } from '@/lib/api/http'
+import { getErrorMessage } from '@/lib/api/http'
 import ReportMasthead from './ReportMasthead.vue'
 import { useInvalidateReport, useReportIdentity, useReportQuery } from './useReport'
 
@@ -44,8 +44,7 @@ const refreshing = computed(() => refreshWatcher.isActive.value)
 
 const refreshError = computed(() => {
   const error = refreshWatcher.submitError.value
-  if (isApiError(error)) return error.message
-  return error ? 'The report could not be queued. Please try again.' : null
+  return error ? getErrorMessage(error, 'The report could not be queued. Please try again.') : null
 })
 
 function startRefresh() {

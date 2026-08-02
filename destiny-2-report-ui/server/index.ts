@@ -22,11 +22,22 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     request.method === 'GET' || request.method === 'HEAD' || request.body === null
       ? undefined
       : await request.arrayBuffer()
+  const headers = new Headers(request.headers)
+  const clientIp = request.headers.get('CF-Connecting-IP')
+
+  // The API trusts X-Forwarded-For only from its private tunnel proxy. Always
+  // derive it from Cloudflare's visitor header instead of forwarding a value
+  // that a browser supplied.
+  if (clientIp) {
+    headers.set('X-Forwarded-For', clientIp)
+  } else {
+    headers.delete('X-Forwarded-For')
+  }
 
   try {
     const upstreamRequest = new Request(upstreamUrl, {
       method: request.method,
-      headers: request.headers,
+      headers,
       body,
       redirect: request.redirect,
     })
