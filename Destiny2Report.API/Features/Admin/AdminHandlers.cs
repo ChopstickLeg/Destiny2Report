@@ -24,9 +24,10 @@ public static class AdminHandlers
 
     public static IResult StreamOverview(
         IMongoDatabase mongoDatabase,
+        IConnectionMultiplexer redis,
         CancellationToken cancellationToken)
     {
-        return TypedResults.ServerSentEvents(StreamOverviewEvents(mongoDatabase, cancellationToken));
+        return TypedResults.ServerSentEvents(StreamOverviewEvents(mongoDatabase, redis, cancellationToken));
     }
 
     public static async Task<IResult> QueueCrawls(
@@ -201,11 +202,12 @@ public static class AdminHandlers
 
     private static async IAsyncEnumerable<SseItem<AdminOverviewResponse>> StreamOverviewEvents(
         IMongoDatabase mongoDatabase,
+        IConnectionMultiplexer redis,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var overview = await BuildOverviewAsync(mongoDatabase, cancellationToken).ConfigureAwait(false);
+            var overview = await BuildOverviewAsync(mongoDatabase, redis, cancellationToken).ConfigureAwait(false);
             yield return new SseItem<AdminOverviewResponse>(overview, "overview");
             await Task.Delay(OverviewInterval, cancellationToken).ConfigureAwait(false);
         }
@@ -213,6 +215,7 @@ public static class AdminHandlers
 
     private static async Task<AdminOverviewResponse> BuildOverviewAsync(
         IMongoDatabase mongoDatabase,
+        IConnectionMultiplexer redis,
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
@@ -221,11 +224,12 @@ public static class AdminHandlers
             [CrawlJob.StateQueued, CrawlJob.StateRunning, CrawlJob.StateAwaitingFinalization]);
 
         var activeTask = jobs.Find(activeFilter)
-            .SortBy(job => job.StartedAtUtc)
+            .Sort(BuildActiveCrawlSort())
             .Project(job => new ActiveCrawlProjection(
                 job.MembershipTypeId,
                 job.MembershipId,
                 job.DisplayName,
+                job.State,
                 job.QueuedAtUtc,
                 job.StartedAtUtc,
                 job.LeaseExpiresAtUtc,
@@ -248,7 +252,11 @@ public static class AdminHandlers
                 activeReports,
                 cancellationToken)
             .ConfigureAwait(false);
-        var activeCrawls = activeReports.Select(report => new AdminActiveCrawlResponse(
+        var progressTasks = activeReports
+            .Select(report => LoadProgressAsync(redis.GetDatabase(), report, cancellationToken))
+            .ToArray();
+        var progressSnapshots = await Task.WhenAll(progressTasks).ConfigureAwait(false);
+        var activeCrawls = activeReports.Select((report, index) => new AdminActiveCrawlResponse(
             report.MembershipTypeId,
             report.MembershipId,
             string.IsNullOrWhiteSpace(report.DisplayName)
@@ -260,7 +268,8 @@ public static class AdminHandlers
             report.LeaseOwner ?? "",
             report.QueuedInRedis,
             report.RunId,
-            report.Fence)).ToArray();
+            report.Fence,
+            progressSnapshots[index])).ToArray();
 
         var countsByStatus = countTask.Result
             .GroupBy(count => count.Status == CrawlJob.StateAwaitingFinalization
@@ -275,6 +284,57 @@ public static class AdminHandlers
             .ToArray();
 
         return new AdminOverviewResponse(now, activeCrawls, statusCounts);
+    }
+
+    internal static SortDefinition<CrawlJob> BuildActiveCrawlSort() =>
+        Builders<CrawlJob>.Sort
+            .Ascending(job => job.QueuedAtUtc)
+            .Ascending(job => job.MembershipTypeId)
+            .Ascending(job => job.MembershipId);
+
+    private static async Task<CrawlProgressSnapshot?> LoadProgressAsync(
+        IDatabase redisDatabase,
+        ActiveCrawlProjection crawl,
+        CancellationToken cancellationToken)
+    {
+        if (crawl.State is not (CrawlJob.StateRunning or CrawlJob.StateAwaitingFinalization))
+        {
+            return null;
+        }
+
+        var values = await redisDatabase.HashGetAllAsync(
+                CrawlerQueue.JobStatusKey(crawl.MembershipTypeId, crawl.MembershipId))
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (values.Length == 0)
+        {
+            return null;
+        }
+
+        var fields = values.ToDictionary(
+            item => item.Name.ToString(),
+            item => item.Value.ToString(),
+            StringComparer.OrdinalIgnoreCase);
+        return BuildProgressSnapshotForActiveCrawl(fields, crawl.RunId, crawl.Fence);
+    }
+
+    internal static CrawlProgressSnapshot? BuildProgressSnapshotForActiveCrawl(
+        IReadOnlyDictionary<string, string> fields,
+        string expectedRunId,
+        long fence)
+    {
+        if (!fields.TryGetValue("status", out var status)
+            || status != DestinyReport.CrawlStateRunning
+            || !fields.TryGetValue("runId", out var fieldRunId)
+            || !string.Equals(fieldRunId, expectedRunId, StringComparison.Ordinal)
+            || !fields.TryGetValue("fence", out var fenceValue)
+            || !long.TryParse(fenceValue, out var parsedFence)
+            || parsedFence != fence)
+        {
+            return null;
+        }
+
+        return CrawlProgressSnapshot.FromFields(fields);
     }
 
     private static async Task<IReadOnlyDictionary<(int MembershipTypeId, long MembershipId), string>> LoadDisplayNamesAsync(
@@ -321,6 +381,7 @@ public static class AdminHandlers
         int MembershipTypeId,
         long MembershipId,
         string? DisplayName,
+        string State,
         DateTime? QueuedAtUtc,
         DateTime? StartedAtUtc,
         DateTime? LeaseExpiresAtUtc,
