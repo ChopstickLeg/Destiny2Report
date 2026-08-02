@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseApiJson } from '../http'
+import { ApiError, formatRetryAfter, getErrorMessage, parseApiJson } from '../http'
 
 describe('parseApiJson', () => {
   it('preserves 64-bit membership ids as strings', () => {
@@ -32,5 +32,20 @@ describe('parseApiJson', () => {
       '4611686018467284386',
       '4611686018400000001',
     ])
+  })
+})
+
+describe('rate-limit errors', () => {
+  it('formats Retry-After for every rate-limit error message', () => {
+    const error = new ApiError(429, { code: 'rate_limited' }, 3_661)
+
+    expect(getErrorMessage(error, 'fallback')).toBe(
+      'Too many requests right now. Try again in 1 hour 2 minutes.',
+    )
+  })
+
+  it('formats short retry windows without rounding them to a minute', () => {
+    expect(formatRetryAfter(1)).toBe('1 second')
+    expect(formatRetryAfter(45)).toBe('45 seconds')
   })
 })
