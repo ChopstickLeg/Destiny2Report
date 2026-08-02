@@ -8,6 +8,7 @@ import {
   watchAdminOverview,
 } from '@/lib/api/admin'
 import type { AdminMutationResponse, AdminOverview } from '@/lib/api/types'
+import { getErrorMessage } from '@/lib/api/http'
 import { formatInteger } from '@/lib/formatting/numbers'
 
 const overview = ref<AdminOverview | null>(null)
@@ -73,7 +74,7 @@ async function runAction(
     const result = await action()
     actionMessage.value = result.message
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : 'The admin action failed.'
+    actionError.value = getErrorMessage(error, 'The admin action failed.')
   } finally {
     busyAction.value = null
   }
