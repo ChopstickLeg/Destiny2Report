@@ -25,9 +25,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   const headers = new Headers(request.headers)
   const clientIp = request.headers.get('CF-Connecting-IP')
 
-  // The API trusts X-Forwarded-For only from its private tunnel proxy. Always
-  // derive it from Cloudflare's visitor header instead of forwarding a value
-  // that a browser supplied.
+  // Normalize the standard forwarded address from Cloudflare's visitor header
+  // instead of passing through a value that a browser supplied. The API also
+  // reads CF-Connecting-IP directly from its trusted tunnel proxy.
   if (clientIp) {
     headers.set('X-Forwarded-For', clientIp)
   } else {

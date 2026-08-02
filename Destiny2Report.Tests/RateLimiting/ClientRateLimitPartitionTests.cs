@@ -30,7 +30,7 @@ public sealed class ClientRateLimitPartitionTests
         var diagnostics = ClientRateLimitPartition.GetDiagnostics(context);
 
         Assert.Equal("203.0.113.42", diagnostics.PartitionKey);
-        Assert.Equal("x-forwarded-for", diagnostics.Source);
+        Assert.Equal("cf-connecting-ip", diagnostics.Source);
         Assert.Equal("172.18.0.1:54321", diagnostics.ProxyPeerAddress);
         Assert.Equal("203.0.113.42", diagnostics.CloudflareClientAddress);
     }

@@ -16,7 +16,9 @@ public static class ClientRateLimitPartition
         var cloudflareClientAddress = httpContext.Request.Headers["CF-Connecting-IP"].FirstOrDefault();
         var source = string.IsNullOrWhiteSpace(proxyPeerAddress)
             ? "connection.remote_ip"
-            : "x-forwarded-for";
+            : string.IsNullOrWhiteSpace(cloudflareClientAddress)
+                ? "forwarded-client-ip"
+                : "cf-connecting-ip";
 
         return new ClientRateLimitDiagnostics(
             partitionKey,

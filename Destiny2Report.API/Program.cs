@@ -97,17 +97,9 @@ builder.Services.AddHealthChecks()
     .AddCheck<RedisHealthCheck>("redis", tags: ["ready"]);
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
-{
-    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
-    options.ForwardLimit = 1;
-
-    foreach (var network in builder.Configuration
-        .GetSection("ForwardedHeaders:KnownIPNetworks")
-        .Get<string[]>() ?? [])
-    {
-        options.KnownIPNetworks.Add(System.Net.IPNetwork.Parse(network));
-    }
-});
+    CloudflareForwardedHeaders.Configure(
+        options,
+        builder.Configuration.GetSection("RateLimiting:TrustedProxyNetworks").Get<string[]>() ?? []));
 
 builder.Services.AddRateLimiter(options =>
 {
