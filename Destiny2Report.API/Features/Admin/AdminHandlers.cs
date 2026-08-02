@@ -224,7 +224,7 @@ public static class AdminHandlers
             [CrawlJob.StateQueued, CrawlJob.StateRunning, CrawlJob.StateAwaitingFinalization]);
 
         var activeTask = jobs.Find(activeFilter)
-            .SortBy(job => job.StartedAtUtc)
+            .Sort(BuildActiveCrawlSort())
             .Project(job => new ActiveCrawlProjection(
                 job.MembershipTypeId,
                 job.MembershipId,
@@ -285,6 +285,12 @@ public static class AdminHandlers
 
         return new AdminOverviewResponse(now, activeCrawls, statusCounts);
     }
+
+    internal static SortDefinition<CrawlJob> BuildActiveCrawlSort() =>
+        Builders<CrawlJob>.Sort
+            .Ascending(job => job.QueuedAtUtc)
+            .Ascending(job => job.MembershipTypeId)
+            .Ascending(job => job.MembershipId);
 
     private static async Task<CrawlProgressSnapshot?> LoadProgressAsync(
         IDatabase redisDatabase,
