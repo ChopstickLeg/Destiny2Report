@@ -22,11 +22,22 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     request.method === 'GET' || request.method === 'HEAD' || request.body === null
       ? undefined
       : await request.arrayBuffer()
+  const headers = new Headers(request.headers)
+  const clientIp = request.headers.get('CF-Connecting-IP')
+
+  // Normalize the standard forwarded address from Cloudflare's visitor header
+  // instead of passing through a value that a browser supplied. The API also
+  // reads CF-Connecting-IP directly from its trusted tunnel proxy.
+  if (clientIp) {
+    headers.set('X-Forwarded-For', clientIp)
+  } else {
+    headers.delete('X-Forwarded-For')
+  }
 
   try {
     const upstreamRequest = new Request(upstreamUrl, {
       method: request.method,
-      headers: request.headers,
+      headers,
       body,
       redirect: request.redirect,
     })

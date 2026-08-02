@@ -13,6 +13,7 @@ using Destiny2Report.API.RateLimiting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using StackExchange.Redis;
+using System.Diagnostics;
 using System.Threading.RateLimiting;
 using WebPush;
 
@@ -94,6 +95,7 @@ builder.Services.AddScoped<AdminAuthorizationFilter>();
 builder.Services.AddHealthChecks()
     .AddCheck<MongoHealthCheck>("mongodb", tags: ["ready"])
     .AddCheck<RedisHealthCheck>("redis", tags: ["ready"]);
+
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
     CloudflareForwardedHeaders.Configure(
         options,
@@ -102,10 +104,43 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, _) =>
+    {
+        var diagnostics = ClientRateLimitPartition.GetDiagnostics(context.HttpContext);
+        var retryAfterSeconds = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
+            ? Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds))
+            : EnsureRetryAfterHeaderMiddleware.DefaultRetryAfterSeconds;
+        var logger = context.HttpContext.RequestServices
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("Destiny2Report.API.RateLimiting");
+
+        logger.LogWarning(
+            "Rate limit rejected {Method} {Path} for partition {RateLimitPartitionKey} " +
+            "resolved from {RateLimitPartitionSource}; proxy peer {ProxyPeerAddress}; " +
+            "Cloudflare client {CloudflareClientAddress}.",
+            context.HttpContext.Request.Method,
+            context.HttpContext.Request.Path,
+            diagnostics.PartitionKey,
+            diagnostics.Source,
+            diagnostics.ProxyPeerAddress,
+            diagnostics.CloudflareClientAddress);
+
+        context.HttpContext.Response.Headers.RetryAfter =
+            retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        await Results.Problem(
+            title: "Too many requests",
+            detail: $"Try again in {retryAfterSeconds} seconds.",
+            statusCode: StatusCodes.Status429TooManyRequests,
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = "rate_limited",
+                ["retryAfterSeconds"] = retryAfterSeconds
+            }).ExecuteAsync(context.HttpContext);
+    };
 
     options.AddPolicy(RateLimitPolicies.PublicRead, httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            partitionKey: ClientRateLimitPartition.GetKey(httpContext),
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 60,
@@ -115,7 +150,7 @@ builder.Services.AddRateLimiter(options =>
 
     options.AddPolicy(RateLimitPolicies.PublicWrite, httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            partitionKey: ClientRateLimitPartition.GetKey(httpContext),
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 10,
@@ -125,6 +160,8 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+var rateLimitLogger = app.Services.GetRequiredService<ILoggerFactory>()
+    .CreateLogger("Destiny2Report.API.RateLimiting");
 
 if (!app.Environment.IsProduction())
 {
@@ -140,6 +177,44 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseForwardedHeaders();
+app.UseMiddleware<EnsureRetryAfterHeaderMiddleware>();
+app.Use(async (httpContext, next) =>
+{
+    if (!httpContext.Request.Path.StartsWithSegments("/api"))
+    {
+        await next(httpContext);
+        return;
+    }
+
+    var diagnostics = ClientRateLimitPartition.GetDiagnostics(httpContext);
+    Activity.Current?.SetTag("client.address", diagnostics.PartitionKey);
+    Activity.Current?.SetTag("rate_limit.partition.key", diagnostics.PartitionKey);
+    Activity.Current?.SetTag("rate_limit.partition.source", diagnostics.Source);
+    Activity.Current?.SetTag("proxy.peer.address", diagnostics.ProxyPeerAddress);
+    Activity.Current?.SetTag("cloudflare.client.address", diagnostics.CloudflareClientAddress);
+
+    rateLimitLogger.LogDebug(
+        "Resolved rate limit partition {RateLimitPartitionKey} from {RateLimitPartitionSource}; " +
+        "proxy peer {ProxyPeerAddress}; Cloudflare client {CloudflareClientAddress}.",
+        diagnostics.PartitionKey,
+        diagnostics.Source,
+        diagnostics.ProxyPeerAddress,
+        diagnostics.CloudflareClientAddress);
+
+    if (httpContext.Request.Path.Equals("/api/auth/bungie/oauth", StringComparison.OrdinalIgnoreCase))
+    {
+        rateLimitLogger.LogInformation(
+            "OAuth request uses rate limit partition {RateLimitPartitionKey} from " +
+            "{RateLimitPartitionSource}; proxy peer {ProxyPeerAddress}; " +
+            "Cloudflare client {CloudflareClientAddress}.",
+            diagnostics.PartitionKey,
+            diagnostics.Source,
+            diagnostics.ProxyPeerAddress,
+            diagnostics.CloudflareClientAddress);
+    }
+
+    await next(httpContext);
+});
 app.UseRateLimiter();
 
 app.MapHealthChecks("/health", new HealthCheckOptions

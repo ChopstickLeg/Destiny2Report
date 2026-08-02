@@ -24,14 +24,15 @@ describe('frontend worker routing', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const request = new Request(
-      'https://destiny-2.report/api/players/search?source=frontend',
-      {
-        method: 'QUERY',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ displayNamePrefix: 'ChopstickLeg' }),
+    const request = new Request('https://destiny-2.report/api/players/search?source=frontend', {
+      method: 'QUERY',
+      headers: {
+        'Content-Type': 'application/json',
+        'CF-Connecting-IP': '203.0.113.42',
+        'X-Forwarded-For': '198.51.100.99',
       },
-    )
+      body: JSON.stringify({ displayNamePrefix: 'ChopstickLeg' }),
+    })
 
     const response = await handleRequest(request, createEnv())
 
@@ -43,9 +44,30 @@ describe('frontend worker routing', () => {
     )
     expect(upstreamRequest!.method).toBe('QUERY')
     expect(upstreamRequest!.headers.get('Content-Type')).toBe('application/json')
+    expect(upstreamRequest!.headers.get('X-Forwarded-For')).toBe('203.0.113.42')
     await expect(upstreamRequest!.text()).resolves.toBe(
       JSON.stringify({ displayNamePrefix: 'ChopstickLeg' }),
     )
+  })
+
+  it('does not forward an unverified client-supplied address', async () => {
+    let upstreamRequest: Request | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<(request: Request) => Promise<Response>>(async (request) => {
+        upstreamRequest = request
+        return Response.json({ ok: true })
+      }),
+    )
+
+    await handleRequest(
+      new Request('https://destiny-2.report/api/auth/whoami', {
+        headers: { 'X-Forwarded-For': '198.51.100.99' },
+      }),
+      createEnv(),
+    )
+
+    expect(upstreamRequest!.headers.has('X-Forwarded-For')).toBe(false)
   })
 
   it('serves non-API requests from the static asset binding', async () => {

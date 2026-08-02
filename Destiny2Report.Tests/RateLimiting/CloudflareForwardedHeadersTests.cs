@@ -23,6 +23,18 @@ public sealed class CloudflareForwardedHeadersTests
     }
 
     [Fact]
+    public async Task Trusted_ipv4_network_also_matches_ipv4_mapped_proxy()
+    {
+        var middleware = CreateMiddleware("10.0.0.0/8");
+        var context = CreateContext("::ffff:10.0.1.16", "66.97.54.162");
+
+        await middleware.Invoke(context);
+
+        Assert.Equal(IPAddress.Parse("66.97.54.162"), context.Connection.RemoteIpAddress);
+        Assert.Equal("[::ffff:10.0.1.16]:0", context.Request.Headers["X-Original-For"]);
+    }
+
+    [Fact]
     public async Task Untrusted_peer_cannot_spoof_cloudflare_client_ip()
     {
         var middleware = CreateMiddleware("10.0.0.0/8");

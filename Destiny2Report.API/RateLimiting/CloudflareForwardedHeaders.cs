@@ -23,6 +23,12 @@ internal static class CloudflareForwardedHeaders
             }
 
             options.KnownIPNetworks.Add(network);
+            if (network.BaseAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                options.KnownIPNetworks.Add(new System.Net.IPNetwork(
+                    network.BaseAddress.MapToIPv6(),
+                    network.PrefixLength + 96));
+            }
         }
     }
 }
