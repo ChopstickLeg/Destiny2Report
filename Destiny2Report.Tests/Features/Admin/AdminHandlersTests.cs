@@ -66,6 +66,34 @@ public sealed class AdminHandlersTests
         Assert.Equal("", set["LeaseOwner"].AsString);
     }
 
+    [Fact]
+    public void Active_crawl_progress_requires_the_current_run_and_fence()
+    {
+        var fields = new Dictionary<string, string>
+        {
+            ["status"] = DestinyReport.CrawlStateRunning,
+            ["runId"] = "run-2",
+            ["fence"] = "7",
+            ["progressPhase"] = "activities",
+            ["progressLabel"] = "Reading activity history",
+            ["progressCurrent"] = "125",
+            ["progressTotal"] = "500",
+            ["progressStartedAtUtc"] = "2026-08-02T14:00:00Z",
+            ["progressUpdatedAtUtc"] = "2026-08-02T14:01:00Z"
+        };
+
+        var current = AdminHandlers.BuildProgressSnapshotForActiveCrawl(fields, "run-2", 7);
+        var staleRun = AdminHandlers.BuildProgressSnapshotForActiveCrawl(fields, "run-1", 7);
+        var staleFence = AdminHandlers.BuildProgressSnapshotForActiveCrawl(fields, "run-2", 8);
+
+        Assert.NotNull(current);
+        Assert.Equal("Reading activity history", current.Label);
+        Assert.Equal(125, current.Current);
+        Assert.Equal(500, current.Total);
+        Assert.Null(staleRun);
+        Assert.Null(staleFence);
+    }
+
     private sealed class RecordingCrawlerJobQueue : ICrawlerJobQueue
     {
         public List<(int MembershipTypeId, long MembershipId, bool ForceFullCrawl)> Requests { get; } = [];
