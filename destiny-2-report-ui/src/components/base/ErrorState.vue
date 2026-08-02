@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { isApiError } from '@/lib/api/http'
+import { getErrorMessage } from '@/lib/api/http'
 import AppButton from './AppButton.vue'
 
 const props = defineProps<{
@@ -11,25 +11,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{ retry: [] }>()
 
-const message = computed(() => {
-  if (isApiError(props.error)) {
-    if (props.error.isRateLimited) {
-      if (props.error.problem?.code === 'crawl_cooldown') return props.error.message
-      const wait = props.error.retryAfterSeconds
-      return wait
-        ? `Too many requests right now. Try again in about ${wait} seconds.`
-        : 'Too many requests right now. Give it a minute and try again.'
-    }
-    if (props.error.status >= 500) {
-      return 'The service hit a problem answering this request.'
-    }
-    return props.error.message
-  }
-  if (props.error instanceof TypeError) {
-    return 'The service could not be reached. Check your connection and try again.'
-  }
-  return 'Something went wrong loading this data.'
-})
+const message = computed(() =>
+  getErrorMessage(props.error, 'Something went wrong loading this data.'),
+)
 </script>
 
 <template>
