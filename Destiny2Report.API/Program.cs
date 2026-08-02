@@ -11,6 +11,7 @@ using Destiny2Report.API.Mongo;
 using Destiny2Report.API.Observability;
 using Destiny2Report.API.RateLimiting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using StackExchange.Redis;
 using System.Threading.RateLimiting;
 using WebPush;
@@ -93,6 +94,10 @@ builder.Services.AddScoped<AdminAuthorizationFilter>();
 builder.Services.AddHealthChecks()
     .AddCheck<MongoHealthCheck>("mongodb", tags: ["ready"])
     .AddCheck<RedisHealthCheck>("redis", tags: ["ready"]);
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    CloudflareForwardedHeaders.Configure(
+        options,
+        builder.Configuration.GetSection("RateLimiting:TrustedProxyNetworks").Get<string[]>() ?? []));
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -134,6 +139,7 @@ using (var scope = app.Services.CreateScope())
     await crawlerService.WarmReportReadModelsAsync(CancellationToken.None);
 }
 
+app.UseForwardedHeaders();
 app.UseRateLimiter();
 
 app.MapHealthChecks("/health", new HealthCheckOptions

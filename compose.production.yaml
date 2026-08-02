@@ -24,6 +24,7 @@ services:
       OpenTelemetry__AuthorizationHeader: ${OTEL_EXPORTER_OTLP_AUTHORIZATION_HEADER:-}
       OpenTelemetry__AuthorizationBearerToken: ${OTEL_EXPORTER_OTLP_BEARER_TOKEN:-}
       Crawler__BackgroundConcurrency: ${CRAWLER_BACKGROUND_CONCURRENCY:-2}
+      RateLimiting__TrustedProxyNetworks__0: ${TRUSTED_PROXY_NETWORK:-10.0.0.0/8}
     ports:
       - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8080}:8080"
     depends_on:
