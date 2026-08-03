@@ -8,7 +8,7 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 import { cloudflare } from '@cloudflare/vite-plugin'
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const workspaceEnv = loadEnv(mode, fileURLToPath(new URL('../', import.meta.url)), '')
 
@@ -25,7 +25,10 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    plugins: [vue(), vueDevTools(), ...(mode === 'test' ? [] : [cloudflare()])],
+    // During `vite dev`, let Vite's /api proxy below target the local API.
+    // The Cloudflare worker also handles /api and would otherwise take
+    // precedence, forwarding local requests to API_ORIGIN from wrangler.jsonc.
+    plugins: [vue(), vueDevTools(), ...(command === 'build' && mode !== 'test' ? [cloudflare()] : [])],
     // For local development, reuse the public client id from the workspace's
     // ignored .env file. Only this public value is exposed; the client secret
     // remains available exclusively to the backend.
