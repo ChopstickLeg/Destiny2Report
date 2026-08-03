@@ -45,8 +45,8 @@ const parsed = computed(() =>
 const enabled = computed(() => isSearchable(parsed.value))
 
 const query = useQuery({
-  queryKey: computed(() => ['player-search', parsed.value.prefix] as const),
-  queryFn: ({ signal }) => searchPlayers(parsed.value.prefix, signal),
+  queryKey: computed(() => ['player-search', parsed.value.prefix, parsed.value.code] as const),
+  queryFn: ({ signal }) => searchPlayers(parsed.value.prefix, parsed.value.code, signal),
   enabled,
   staleTime: 30_000,
   placeholderData: (previous) => previous,

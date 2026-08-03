@@ -25,7 +25,7 @@
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.47.0",
+    "@cloudflare/vite-plugin": "^1.50.0",
     "@tsconfig/node24": "^24.0.4",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^24.13.2",
@@ -49,12 +49,14 @@
     "vitest": "^4.1.9",
     "vue-eslint-parser": "^10.4.1",
     "vue-tsc": "^3.3.8",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.118.0"
   },
   "engines": {
     "node": "^22.18.0 || >=24.12.0"
   },
   "overrides": {
-    "js-beautify": "2.0.3"
+    "brace-expansion": "5.0.9",
+    "js-beautify": "2.0.3",
+    "undici": "7.29.0"
   }
 }
