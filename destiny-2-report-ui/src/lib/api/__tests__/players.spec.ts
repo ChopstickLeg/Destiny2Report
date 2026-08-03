@@ -7,7 +7,7 @@ afterEach(() => {
 
 describe('searchPlayers', () => {
   it('sends the Bungie display code to the API', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }),
     )
     vi.stubGlobal('fetch', fetchMock)
