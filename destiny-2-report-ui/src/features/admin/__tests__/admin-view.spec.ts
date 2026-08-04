@@ -34,6 +34,14 @@ describe('AdminView', () => {
           leaseExpiresAtUtc: '2026-07-24T19:11:29.327+00:00',
           leaseOwner: 'worker-1',
           queuedInRedis: true,
+          progress: {
+            phase: 'activities',
+            label: 'Reading activity history',
+            current: 125,
+            total: 500,
+            startedAtUtc: '2026-07-24T18:50:21.018+00:00',
+            updatedAtUtc: '2026-07-24T19:06:40.018+00:00',
+          },
         },
       ],
       statusCounts: [],
@@ -56,6 +64,9 @@ describe('AdminView', () => {
     await nextTick()
 
     expect(wrapper.find('.player-link').text()).toBe('Guardian')
+    expect(wrapper.find('.crawl-progress-heading').text()).toContain('Reading activity history')
+    expect(wrapper.find('.crawl-progress-heading').text()).toContain('125 of 500')
+    expect(wrapper.find('[role="progressbar"]').attributes('aria-valuenow')).toBe('25')
 
     wrapper.unmount()
   })
@@ -73,6 +84,7 @@ describe('AdminView', () => {
           leaseExpiresAtUtc: '2026-07-19T19:11:29.327+00:00',
           leaseOwner: 'worker-1',
           queuedInRedis: false,
+          progress: null,
         },
       ],
       statusCounts: [

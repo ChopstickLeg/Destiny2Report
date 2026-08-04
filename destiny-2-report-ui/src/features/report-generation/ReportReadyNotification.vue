@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import AppButton from '@/components/base/AppButton.vue'
 import type { ReportIdentity } from '@/lib/api/reports'
+import { getErrorMessage } from '@/lib/api/http'
 import {
   fetchPushNotificationConfig,
   fetchReportPushSubscriptionStatus,
@@ -18,14 +19,7 @@ import {
 const props = defineProps<{ identity: ReportIdentity }>()
 
 type NotificationState =
-  | 'checking'
-  | 'hidden'
-  | 'idle'
-  | 'enabling'
-  | 'enabled'
-  | 'disabling'
-  | 'denied'
-  | 'error'
+  'checking' | 'hidden' | 'idle' | 'enabling' | 'enabled' | 'disabling' | 'denied' | 'error'
 
 const state = ref<NotificationState>('checking')
 const publicKey = ref<string | null>(null)
@@ -107,8 +101,7 @@ async function enableNotifications() {
     state.value = 'enabled'
   } catch (error) {
     if (newlyCreated) await newlyCreated.unsubscribe().catch(() => false)
-    errorMessage.value =
-      error instanceof Error ? error.message : 'Notifications could not be enabled.'
+    errorMessage.value = getErrorMessage(error, 'Notifications could not be enabled.')
     state.value = 'error'
   }
 }
@@ -125,8 +118,7 @@ async function disableNotifications() {
     }
     state.value = 'idle'
   } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : 'Notifications could not be changed.'
+    errorMessage.value = getErrorMessage(error, 'Notifications could not be changed.')
     state.value = 'error'
   }
 }

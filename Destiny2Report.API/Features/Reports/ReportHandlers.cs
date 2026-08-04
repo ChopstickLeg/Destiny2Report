@@ -924,7 +924,7 @@ public static class ReportHandlers
         fields.TryGetValue("error", out var error);
         fields.TryGetValue("updatedAtUtc", out var updatedAtUtcValue);
         var progress = status == DestinyReport.CrawlStateRunning
-            ? BuildProgressSnapshot(fields)
+            ? CrawlProgressSnapshot.FromFields(fields)
             : null;
 
         var updatedAtUtc = DateTimeOffset.TryParse(updatedAtUtcValue, out var parsedUpdatedAtUtc)
@@ -1008,31 +1008,6 @@ public static class ReportHandlers
             or DestinyReport.CrawlStatePrivate;
     }
 
-
-    private static CrawlProgressSnapshot? BuildProgressSnapshot(IReadOnlyDictionary<string, string> fields)
-    {
-        if (!fields.TryGetValue("progressPhase", out var phase) || string.IsNullOrWhiteSpace(phase))
-        {
-            return null;
-        }
-
-        fields.TryGetValue("progressLabel", out var label);
-        fields.TryGetValue("progressCurrent", out var currentValue);
-        fields.TryGetValue("progressTotal", out var totalValue);
-        fields.TryGetValue("progressStartedAtUtc", out var startedAtUtcValue);
-        fields.TryGetValue("progressUpdatedAtUtc", out var progressUpdatedAtUtcValue);
-
-        var current = long.TryParse(currentValue, out var parsedCurrent) ? parsedCurrent : (long?)null;
-        var total = long.TryParse(totalValue, out var parsedTotal) ? parsedTotal : (long?)null;
-        var startedAtUtc = DateTimeOffset.TryParse(startedAtUtcValue, out var parsedStartedAtUtc)
-            ? parsedStartedAtUtc
-            : DateTimeOffset.UtcNow;
-        var updatedAtUtc = DateTimeOffset.TryParse(progressUpdatedAtUtcValue, out var parsedProgressUpdatedAtUtc)
-            ? parsedProgressUpdatedAtUtc
-            : startedAtUtc;
-
-        return new CrawlProgressSnapshot(phase, label ?? phase, current, total, startedAtUtc, updatedAtUtc);
-    }
 
     private static string QueueStatusLocation(int membershipTypeId, long membershipId)
     {

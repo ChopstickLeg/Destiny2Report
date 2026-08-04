@@ -44,6 +44,40 @@ export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError
 }
 
+export function formatRetryAfter(seconds: number): string {
+  const roundedSeconds = Math.max(1, Math.ceil(seconds))
+  if (roundedSeconds < 60) {
+    return `${roundedSeconds} ${roundedSeconds === 1 ? 'second' : 'seconds'}`
+  }
+
+  const totalMinutes = Math.ceil(roundedSeconds / 60)
+  if (totalMinutes < 60) {
+    return `${totalMinutes} ${totalMinutes === 1 ? 'minute' : 'minutes'}`
+  }
+
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  const hourText = `${hours} ${hours === 1 ? 'hour' : 'hours'}`
+  return minutes === 0 ? hourText : `${hourText} ${minutes} minutes`
+}
+
+export function getErrorMessage(error: unknown, fallback: string): string {
+  if (isApiError(error)) {
+    if (error.isRateLimited) {
+      if (error.problem?.code === 'crawl_cooldown') return error.message
+      return error.retryAfterSeconds !== null
+        ? `Too many requests right now. Try again in ${formatRetryAfter(error.retryAfterSeconds)}.`
+        : 'Too many requests right now. Give it a minute and try again.'
+    }
+    if (error.status >= 500) return 'The service hit a problem answering this request.'
+    return error.message
+  }
+  if (error instanceof TypeError) {
+    return 'The service could not be reached. Check your connection and try again.'
+  }
+  return fallback
+}
+
 export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
 /**
@@ -84,7 +118,10 @@ function readRetryAfter(response: Response): number | null {
   const header = response.headers.get('Retry-After')
   if (!header) return null
   const seconds = Number(header)
-  return Number.isFinite(seconds) ? seconds : null
+  if (Number.isFinite(seconds)) return Math.max(0, seconds)
+
+  const retryAt = Date.parse(header)
+  return Number.isNaN(retryAt) ? null : Math.max(0, Math.ceil((retryAt - Date.now()) / 1_000))
 }
 
 export async function apiFetch<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
@@ -100,7 +137,10 @@ export async function apiFetch<T>(path: string, options: ApiRequestOptions = {})
   })
 
   if (!response.ok) {
-    throw new ApiError(response.status, await readProblem(response), readRetryAfter(response))
+    const problem = await readProblem(response)
+    const bodyRetryAfter =
+      typeof problem?.retryAfterSeconds === 'number' ? problem.retryAfterSeconds : null
+    throw new ApiError(response.status, problem, readRetryAfter(response) ?? bodyRetryAfter)
   }
 
   const text = await response.text()

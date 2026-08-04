@@ -340,7 +340,7 @@ export interface ReportQueueResponse {
 
 export type QueueStatus = CrawlState | 'not_found'
 
-interface CrawlProgressSnapshot {
+export interface CrawlProgressSnapshot {
   phase: string
   label: string
   current: number | null
@@ -408,6 +408,7 @@ interface AdminActiveCrawl {
   leaseExpiresAtUtc: string | null
   leaseOwner: string
   queuedInRedis: boolean
+  progress: CrawlProgressSnapshot | null
 }
 
 interface AdminQueueStatusCount {

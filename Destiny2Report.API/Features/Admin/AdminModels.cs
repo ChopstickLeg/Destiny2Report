@@ -1,3 +1,5 @@
+using Destiny2Report.API.Features.Crawler;
+
 namespace Destiny2Report.API.Features.Admin;
 
 public sealed record AdminActiveCrawlResponse(
@@ -10,7 +12,8 @@ public sealed record AdminActiveCrawlResponse(
     string LeaseOwner,
     bool QueuedInRedis,
     string RunId = "",
-    long Fence = 0);
+    long Fence = 0,
+    CrawlProgressSnapshot? Progress = null);
 
 public sealed record AdminQueueStatusCountResponse(string Status, long Count);
 

@@ -7,12 +7,13 @@ import type { PlayerSearchResult } from './types'
  */
 export async function searchPlayers(
   displayNamePrefix: string,
+  displayCode: number | null = null,
   signal?: AbortSignal,
 ): Promise<PlayerSearchResult[]> {
   try {
     return await apiFetch<PlayerSearchResult[]>('/players/search', {
       method: 'QUERY',
-      body: { displayNamePrefix },
+      body: { displayNamePrefix, displayCode },
       signal,
     })
   } catch (error) {

@@ -8,6 +8,7 @@ import {
   watchAdminOverview,
 } from '@/lib/api/admin'
 import type { AdminMutationResponse, AdminOverview } from '@/lib/api/types'
+import { getErrorMessage } from '@/lib/api/http'
 import { formatInteger } from '@/lib/formatting/numbers'
 
 const overview = ref<AdminOverview | null>(null)
@@ -50,6 +51,16 @@ function playerLabel(displayName: string | null, membershipId: string): string {
   return displayName?.trim() || membershipId
 }
 
+function progressPercent(current: number | null, total: number | null): number | null {
+  if (current === null || total === null || total <= 0) return null
+  return Math.min(100, Math.max(0, (current / total) * 100))
+}
+
+function progressDetail(current: number | null, total: number | null): string | null {
+  if (current === null || total === null) return null
+  return `${formatInteger(current)} of ${formatInteger(total)}`
+}
+
 async function runAction(
   key: string,
   confirmation: string,
@@ -63,7 +74,7 @@ async function runAction(
     const result = await action()
     actionMessage.value = result.message
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : 'The admin action failed.'
+    actionError.value = getErrorMessage(error, 'The admin action failed.')
   } finally {
     busyAction.value = null
   }
@@ -141,6 +152,7 @@ onBeforeUnmount(() => {
                 <th>Player</th>
                 <th>Source</th>
                 <th>Started</th>
+                <th>Progress</th>
                 <th>Lease / worker</th>
               </tr>
             </thead>
@@ -170,6 +182,46 @@ onBeforeUnmount(() => {
                   <span class="source-chip">{{ crawl.queuedInRedis ? 'Redis' : 'Mongo' }}</span>
                 </td>
                 <td class="tnum">{{ formatTimestamp(crawl.startedAtUtc) }}</td>
+                <td class="progress-cell">
+                  <template v-if="crawl.progress">
+                    <div class="crawl-progress-heading">
+                      <span>{{ crawl.progress.label }}</span>
+                      <span
+                        v-if="progressDetail(crawl.progress.current, crawl.progress.total)"
+                        class="crawl-progress-detail tnum"
+                      >
+                        {{ progressDetail(crawl.progress.current, crawl.progress.total) }}
+                      </span>
+                    </div>
+                    <div
+                      class="crawl-progress-track"
+                      role="progressbar"
+                      aria-label="Player crawl progress"
+                      :aria-valuemin="0"
+                      :aria-valuemax="100"
+                      :aria-valuenow="
+                        progressPercent(crawl.progress.current, crawl.progress.total) ?? undefined
+                      "
+                      :aria-valuetext="
+                        progressPercent(crawl.progress.current, crawl.progress.total) === null
+                          ? crawl.progress.label
+                          : undefined
+                      "
+                    >
+                      <span
+                        v-if="
+                          progressPercent(crawl.progress.current, crawl.progress.total) !== null
+                        "
+                        class="crawl-progress-fill"
+                        :style="{
+                          width: `${progressPercent(crawl.progress.current, crawl.progress.total)}%`,
+                        }"
+                      />
+                      <span v-else class="crawl-progress-fill crawl-progress-fill--indeterminate" />
+                    </div>
+                  </template>
+                  <span v-else class="progress-unavailable">Waiting for worker…</span>
+                </td>
                 <td>
                   <span class="lease tnum">
                     {{
@@ -182,10 +234,10 @@ onBeforeUnmount(() => {
                 </td>
               </tr>
               <tr v-if="overview && activeCrawls.length === 0">
-                <td colspan="4" class="empty-row">No workers hold an active crawl.</td>
+                <td colspan="5" class="empty-row">No workers hold an active crawl.</td>
               </tr>
               <tr v-if="!overview">
-                <td colspan="4" class="empty-row">Waiting for the first worker snapshot…</td>
+                <td colspan="5" class="empty-row">Waiting for the first worker snapshot…</td>
               </tr>
             </tbody>
           </table>
@@ -411,6 +463,47 @@ tbody tr:last-child td {
 .lease {
   white-space: nowrap;
 }
+.progress-cell {
+  min-width: 13rem;
+}
+.crawl-progress-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--color-text);
+  font-size: var(--text-xs);
+}
+.crawl-progress-detail,
+.progress-unavailable {
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+.crawl-progress-track {
+  height: 0.35rem;
+  margin-top: var(--space-2);
+  overflow: hidden;
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-full);
+}
+.crawl-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+  border-radius: inherit;
+  transition: width 300ms ease;
+}
+.crawl-progress-fill--indeterminate {
+  width: 35%;
+  animation: crawl-progress-slide 1.4s ease-in-out infinite;
+}
+@keyframes crawl-progress-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
 .worker {
   max-width: 16rem;
   overflow: hidden;
@@ -508,6 +601,11 @@ textarea {
   }
   .action-feedback {
     grid-column: auto;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .crawl-progress-fill--indeterminate {
+    animation: none;
   }
 }
 </style>
