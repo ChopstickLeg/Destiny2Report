@@ -17,6 +17,7 @@ import {
   type ReportIdentity,
 } from '@/lib/api/reports'
 import { useSessionStore } from '@/stores/session'
+import MembershipSelector from '@/features/auth/MembershipSelector.vue'
 import { buildStorySlides } from './selectors'
 
 const session = useSessionStore()
@@ -286,6 +287,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         context="This story link is invalid or no longer available"
         @retry="storyShareQuery.refetch()"
       />
+    </div>
+
+    <div v-else-if="session.needsMembershipSelection" class="container story-gate">
+      <MembershipSelector />
     </div>
 
     <div v-else-if="!identity" class="container story-gate">

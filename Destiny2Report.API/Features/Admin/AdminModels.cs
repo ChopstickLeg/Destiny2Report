@@ -11,6 +11,7 @@ public sealed record AdminActiveCrawlResponse(
     DateTimeOffset? LeaseExpiresAtUtc,
     string LeaseOwner,
     bool QueuedInRedis,
+    bool IsPriority,
     string RunId = "",
     long Fence = 0,
     CrawlProgressSnapshot? Progress = null);

@@ -21,10 +21,13 @@ public sealed class CrawlerProtocolTests
     }
 
     [Fact]
-    public void Crawler_has_one_rust_worker_stream()
+    public void Crawler_has_normal_and_priority_streams_in_one_consumer_group()
     {
         Assert.Equal("crawler:jobs", CrawlerQueue.StreamName);
+        Assert.Equal("crawler:jobs:priority", CrawlerQueue.PriorityStreamName);
         Assert.Equal("crawler-workers", CrawlerQueue.ConsumerGroupName);
+        Assert.Equal(CrawlerQueue.PriorityStreamName, CrawlerQueue.StreamNameFor(priority: true));
+        Assert.Equal(CrawlerQueue.StreamName, CrawlerQueue.StreamNameFor(priority: false));
     }
 
     [Theory]
