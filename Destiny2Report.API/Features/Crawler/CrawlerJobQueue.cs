@@ -275,7 +275,7 @@ public sealed class CrawlerJobQueue(
         var filter = Builders<CrawlJob>.Filter.Eq(item => item.PlayerKey, job.PlayerKey)
             & Builders<CrawlJob>.Filter.Eq(item => item.RunId, job.RunId)
             & Builders<CrawlJob>.Filter.Eq(item => item.State, CrawlJob.StateQueued)
-            & Builders<CrawlJob>.Filter.Eq(item => item.IsPriority, false);
+            & BuildNormalPriorityFilter();
         var update = Builders<CrawlJob>.Update
             .Set(item => item.IsPriority, true)
             .Set(item => item.DispatchedToRedis, true)
@@ -347,4 +347,11 @@ public sealed class CrawlerJobQueue(
         job.MembershipId,
         job.State,
         new DateTimeOffset(DateTime.SpecifyKind(job.QueuedAtUtc, DateTimeKind.Utc)));
+
+    internal static FilterDefinition<CrawlJob> BuildNormalPriorityFilter()
+    {
+        var filters = Builders<CrawlJob>.Filter;
+        return filters.Eq(item => item.IsPriority, false)
+            | filters.Exists(item => item.IsPriority, false);
+    }
 }

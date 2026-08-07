@@ -43,7 +43,6 @@ public sealed class CrawlJob
     public string StreamEntryId { get; set; } = "";
 
     [BsonElement("p")]
-    [BsonIgnoreIfDefault]
     public bool IsPriority { get; set; }
 
     [BsonElement("f")]
