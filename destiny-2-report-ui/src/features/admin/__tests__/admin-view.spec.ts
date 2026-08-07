@@ -1,11 +1,13 @@
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AdminOverview } from '@/lib/api/types'
+import type { PriorityCrawlRequest } from '@/lib/api/admin'
+import type { AdminOverview, ReportQueueResponse } from '@/lib/api/types'
 import AdminView from '../AdminView.vue'
 
 const { queuePriorityCrawls, watchAdminOverview } = vi.hoisted(() => ({
-  queuePriorityCrawls: vi.fn(),
+  queuePriorityCrawls:
+    vi.fn<(requests: PriorityCrawlRequest[]) => Promise<ReportQueueResponse[]>>(),
   watchAdminOverview:
     vi.fn<(signal: AbortSignal, onOverview: (value: AdminOverview) => void) => Promise<void>>(),
 }))
@@ -127,8 +129,20 @@ describe('AdminView', () => {
   it('queues unique membership pairs through the priority admin endpoint', async () => {
     watchAdminOverview.mockReturnValue(new Promise<void>(() => {}))
     queuePriorityCrawls.mockResolvedValue([
-      { jobId: 'one', membershipTypeId: 3, membershipId: '42', status: 'queued' },
-      { jobId: 'two', membershipTypeId: 2, membershipId: '99', status: 'queued' },
+      {
+        jobId: 'one',
+        membershipTypeId: 3,
+        membershipId: '42',
+        status: 'queued',
+        queuedAtUtc: '2026-08-06T19:22:13Z',
+      },
+      {
+        jobId: 'two',
+        membershipTypeId: 2,
+        membershipId: '99',
+        status: 'queued',
+        queuedAtUtc: '2026-08-06T19:22:13Z',
+      },
     ])
     const wrapper = mount(AdminView, {
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },

@@ -203,7 +203,6 @@ impl Worker {
             }
         }
     }
-
 }
 
 fn parse_stream_message(entry: &StreamId, priority: bool) -> anyhow::Result<CrawlMessage> {
@@ -586,7 +585,11 @@ impl Worker {
             .await?)
     }
 
-    async fn release_malformed_dispatch(&self, entry_id: &str, priority: bool) -> anyhow::Result<()> {
+    async fn release_malformed_dispatch(
+        &self,
+        entry_id: &str,
+        priority: bool,
+    ) -> anyhow::Result<()> {
         self.mongo
             .database(&self.config.mongo_database)
             .collection::<CrawlJob>("crawl_jobs")
