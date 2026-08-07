@@ -1,0 +1,36 @@
+# Depot CI Migration
+# Source: .github/workflows/dotnet-ci.yml
+#
+# Changes made:
+# - Changed GitHub runs-on labels to their Depot equivalents
+
+name: .NET CI
+on:
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  build-and-test:
+    name: .NET Build and test
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore dependencies
+        run: dotnet restore Destiny2Report.sln
+      - name: Check formatting
+        run: dotnet format Destiny2Report.sln --verify-no-changes --no-restore
+      - name: Build
+        run: dotnet build Destiny2Report.sln --configuration Release --no-restore
+      - name: Test
+        run: dotnet test Destiny2Report.sln --configuration Release --no-build --logger "console;verbosity=normal"

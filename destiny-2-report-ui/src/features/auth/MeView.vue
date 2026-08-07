@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import AppButton from '@/components/base/AppButton.vue'
 import SkeletonBlock from '@/components/base/SkeletonBlock.vue'
 import { useSessionStore } from '@/stores/session'
+import MembershipSelector from './MembershipSelector.vue'
 
 const router = useRouter()
 const session = useSessionStore()
@@ -53,6 +54,8 @@ function signIn() {
       </p>
     </div>
 
+    <MembershipSelector v-else-if="session.needsMembershipSelection" />
+
     <div v-else class="me-panel">
       <h1 class="me-title">Your report is unavailable</h1>
       <p class="me-copy">No Destiny membership could be resolved for your Bungie account.</p>
@@ -89,5 +92,4 @@ function signIn() {
 .me-unconfigured {
   margin-top: var(--space-3);
 }
-
 </style>

@@ -68,16 +68,16 @@ public static class PlayerSearchHandlers
             && searchResponseBody.HasMore);
 
         var searchResults = matchingUsers
-            .Select(result => new
-            {
-                Result = result,
-                Membership = SelectMembership(result.DestinyMemberships)
-            })
-            .Where(result => result.Membership is not null)
+            .SelectMany(result => SelectMemberships(result.DestinyMemberships)
+                .Select(membership => new
+                {
+                    Result = result,
+                    Membership = membership
+                }))
             .ToArray();
 
         var bungieResultTasks = searchResults
-            .Select(result => CreateBungieResponseAsync(result.Result, result.Membership!, bungieClient, cancellationToken))
+            .Select(result => CreateBungieResponseAsync(result.Result, result.Membership, bungieClient, cancellationToken))
             .ToArray();
 
         var bungieResults = await Task.WhenAll(bungieResultTasks).ConfigureAwait(false);
@@ -147,20 +147,21 @@ public static class PlayerSearchHandlers
         }
     }
 
-    private static UserInfoCard? SelectMembership(IEnumerable<UserInfoCard>? memberships)
+    private static IReadOnlyList<UserInfoCard> SelectMemberships(IEnumerable<UserInfoCard>? memberships)
     {
         if (memberships is null)
         {
-            return null;
+            return [];
         }
 
         var publicMemberships = memberships
             .Where(membership => membership.IsPublic && membership.MembershipId > 0 && membership.MembershipType > 0)
             .ToArray();
 
-        return publicMemberships.FirstOrDefault(membership => membership.CrossSaveOverride == membership.MembershipType)
-            ?? publicMemberships.FirstOrDefault(membership => membership.CrossSaveOverride <= 0)
-            ?? publicMemberships.FirstOrDefault();
+        var crossSavePrimary = publicMemberships
+            .FirstOrDefault(membership => membership.CrossSaveOverride == membership.MembershipType);
+
+        return crossSavePrimary is null ? publicMemberships : [crossSavePrimary];
     }
 
     private static ProblemHttpResult BungieProblem(string operation, BungieResponse response)

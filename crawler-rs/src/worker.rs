@@ -28,6 +28,7 @@ use crate::{
 };
 
 const STREAM: &str = "crawler:jobs";
+const PRIORITY_STREAM: &str = "crawler:jobs:priority";
 const GROUP: &str = "crawler-workers";
 const MANIFEST_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MANIFEST_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -64,6 +65,7 @@ pub struct Worker {
     bungie: BungieClient,
     manifest: ManifestStore,
     pending_cursor: String,
+    priority_pending_cursor: String,
 }
 
 impl Worker {
@@ -77,6 +79,7 @@ impl Worker {
             bungie,
             manifest,
             pending_cursor: "0-0".into(),
+            priority_pending_cursor: "0-0".into(),
         }
     }
 
@@ -91,14 +94,16 @@ impl Worker {
             .refresh(&self.bungie)
             .await
             .context("prepare private SQLite manifest")?;
-        let _: Result<Value, _> = redis::cmd("XGROUP")
-            .arg("CREATE")
-            .arg(STREAM)
-            .arg(GROUP)
-            .arg("0-0")
-            .arg("MKSTREAM")
-            .query_async(&mut self.redis)
-            .await;
+        for stream in [PRIORITY_STREAM, STREAM] {
+            let _: Result<Value, _> = redis::cmd("XGROUP")
+                .arg("CREATE")
+                .arg(stream)
+                .arg(GROUP)
+                .arg("0-0")
+                .arg("MKSTREAM")
+                .query_async(&mut self.redis)
+                .await;
+        }
         tracing::info!(consumer = %self.config.consumer_name, "Rust crawler worker started");
         let mut next_manifest_refresh = Instant::now() + MANIFEST_REFRESH_INTERVAL;
 
@@ -134,35 +139,53 @@ impl Worker {
     }
 
     async fn read_message(&mut self) -> anyhow::Result<Option<CrawlMessage>> {
-        let entry = match self.reclaim_stale_message().await? {
-            Some(entry) => entry,
-            None => {
-                let reply: StreamReadReply = redis::cmd("XREADGROUP")
-                    .arg("GROUP")
-                    .arg(GROUP)
-                    .arg(&self.config.consumer_name)
-                    .arg("COUNT")
-                    .arg(1)
-                    .arg("BLOCK")
-                    .arg(1_000)
-                    .arg("STREAMS")
-                    .arg(STREAM)
-                    .arg(">")
-                    .query_async(&mut self.redis)
-                    .await?;
-                let Some(entry) = reply
-                    .keys
-                    .into_iter()
-                    .next()
-                    .and_then(|key| key.ids.into_iter().next())
-                else {
-                    return Ok(None);
-                };
-                entry
-            }
+        let (entry, priority) = if let Some(entry) = reclaim_stale_message(
+            &mut self.redis,
+            PRIORITY_STREAM,
+            GROUP,
+            &self.config.consumer_name,
+            self.config.lease_duration,
+            &mut self.priority_pending_cursor,
+        )
+        .await?
+        {
+            (entry, true)
+        } else if let Some(entry) = read_new_message(
+            &mut self.redis,
+            PRIORITY_STREAM,
+            GROUP,
+            &self.config.consumer_name,
+            1,
+        )
+        .await?
+        {
+            (entry, true)
+        } else if let Some(entry) = reclaim_stale_message(
+            &mut self.redis,
+            STREAM,
+            GROUP,
+            &self.config.consumer_name,
+            self.config.lease_duration,
+            &mut self.pending_cursor,
+        )
+        .await?
+        {
+            (entry, false)
+        } else if let Some(entry) = read_new_message(
+            &mut self.redis,
+            STREAM,
+            GROUP,
+            &self.config.consumer_name,
+            1_000,
+        )
+        .await?
+        {
+            (entry, false)
+        } else {
+            return Ok(None);
         };
 
-        match parse_stream_message(&entry) {
+        match parse_stream_message(&entry, priority) {
             Ok(message) => Ok(Some(message)),
             Err(error) => {
                 tracing::error!(
@@ -170,34 +193,19 @@ impl Worker {
                     stream_entry_id = %entry.id,
                     "discarding malformed crawler stream entry"
                 );
-                self.release_malformed_dispatch(&entry.id)
+                self.release_malformed_dispatch(&entry.id, priority)
                     .await
                     .context("release malformed crawler dispatch")?;
-                self.ack(&entry.id)
+                self.ack(&entry.id, priority)
                     .await
                     .context("discard malformed crawler stream entry")?;
                 Ok(None)
             }
         }
     }
-
-    async fn reclaim_stale_message(&mut self) -> anyhow::Result<Option<StreamId>> {
-        let reply: StreamAutoClaimReply = redis::cmd("XAUTOCLAIM")
-            .arg(STREAM)
-            .arg(GROUP)
-            .arg(&self.config.consumer_name)
-            .arg(redis_reclaim_idle(self.config.lease_duration))
-            .arg(&self.pending_cursor)
-            .arg("COUNT")
-            .arg(1)
-            .query_async(&mut self.redis)
-            .await?;
-        self.pending_cursor = reply.next_stream_id;
-        Ok(reply.claimed.into_iter().next())
-    }
 }
 
-fn parse_stream_message(entry: &StreamId) -> anyhow::Result<CrawlMessage> {
+fn parse_stream_message(entry: &StreamId, priority: bool) -> anyhow::Result<CrawlMessage> {
     let text = |name: &str| entry.map.get(name).and_then(redis_text);
     Ok(CrawlMessage {
         protocol_version: text("protocolVersion")
@@ -211,7 +219,57 @@ fn parse_stream_message(entry: &StreamId) -> anyhow::Result<CrawlMessage> {
             .context("stream membershipId")?
             .parse()?,
         stream_entry_id: entry.id.clone(),
+        priority,
     })
+}
+
+async fn read_new_message(
+    redis: &mut ConnectionManager,
+    stream: &str,
+    group: &str,
+    consumer: &str,
+    block_millis: usize,
+) -> anyhow::Result<Option<StreamId>> {
+    let reply: StreamReadReply = redis::cmd("XREADGROUP")
+        .arg("GROUP")
+        .arg(group)
+        .arg(consumer)
+        .arg("COUNT")
+        .arg(1)
+        .arg("BLOCK")
+        .arg(block_millis)
+        .arg("STREAMS")
+        .arg(stream)
+        .arg(">")
+        .query_async(redis)
+        .await?;
+    Ok(reply
+        .keys
+        .into_iter()
+        .next()
+        .and_then(|key| key.ids.into_iter().next()))
+}
+
+async fn reclaim_stale_message(
+    redis: &mut ConnectionManager,
+    stream: &str,
+    group: &str,
+    consumer: &str,
+    lease_duration: Duration,
+    cursor: &mut String,
+) -> anyhow::Result<Option<StreamId>> {
+    let reply: StreamAutoClaimReply = redis::cmd("XAUTOCLAIM")
+        .arg(stream)
+        .arg(group)
+        .arg(consumer)
+        .arg(redis_reclaim_idle(lease_duration))
+        .arg(&*cursor)
+        .arg("COUNT")
+        .arg(1)
+        .query_async(redis)
+        .await?;
+    *cursor = reply.next_stream_id;
+    Ok(reply.claimed.into_iter().next())
 }
 
 fn redis_reclaim_idle(lease_duration: Duration) -> u64 {
@@ -231,9 +289,9 @@ impl Worker {
                 "rejecting unsupported crawler protocol version"
             );
             let _ = self
-                .release_malformed_dispatch(&message.stream_entry_id)
+                .release_malformed_dispatch(&message.stream_entry_id, message.priority)
                 .await;
-            let _ = self.ack(&message.stream_entry_id).await;
+            let _ = self.ack(&message.stream_entry_id, message.priority).await;
             return;
         }
         match self.claim(&message).await {
@@ -244,9 +302,10 @@ impl Worker {
                     .await
                 {
                     if current.run_id != message.run_id
+                        || current.priority != message.priority
                         || !matches!(current.state.as_str(), STATE_QUEUED | STATE_RUNNING)
                     {
-                        let _ = self.ack(&message.stream_entry_id).await;
+                        let _ = self.ack(&message.stream_entry_id, message.priority).await;
                     }
                 }
             }
@@ -267,7 +326,7 @@ impl Worker {
                 destiny.membership_type_id = job.membership_type_id,
                 destiny.membership_id = job.membership_id,
                 messaging.system = "redis",
-                messaging.destination.name = STREAM,
+                messaging.destination.name = stream_name(job.priority),
                 messaging.message.id = %job.stream_entry_id,
             )
         } else {
@@ -311,7 +370,7 @@ impl Worker {
                 mongo_fallback_claim_filter(now),
                 claim_update(&self.config.consumer_name, expiry, now, None),
             )
-            .sort(doc! { "qa": 1 })
+            .sort(doc! { "p": -1, "qa": 1 })
             .return_document(ReturnDocument::After)
             .await?)
     }
@@ -445,7 +504,7 @@ impl Worker {
                                 )
                                 .await;
                             if !job.stream_entry_id.is_empty() {
-                                let _ = self.ack(&job.stream_entry_id).await;
+                                let _ = self.ack(&job.stream_entry_id, job.priority).await;
                             }
                             tracing::info!(run_id = %job.run_id, fence = job.fence, %generation, "candidate generation committed");
                         }
@@ -475,7 +534,7 @@ impl Worker {
                             )
                             .await;
                         if !job.stream_entry_id.is_empty() {
-                            let _ = self.ack(&job.stream_entry_id).await;
+                            let _ = self.ack(&job.stream_entry_id, job.priority).await;
                         }
                     }
                 }
@@ -526,21 +585,25 @@ impl Worker {
             .await?)
     }
 
-    async fn release_malformed_dispatch(&self, entry_id: &str) -> anyhow::Result<()> {
+    async fn release_malformed_dispatch(
+        &self,
+        entry_id: &str,
+        priority: bool,
+    ) -> anyhow::Result<()> {
         self.mongo
             .database(&self.config.mongo_database)
             .collection::<CrawlJob>("crawl_jobs")
             .update_one(
-                malformed_dispatch_filter(entry_id),
+                malformed_dispatch_filter(entry_id, priority),
                 doc! { "$set": { "d": false, "se": "", "ua": DateTime::now() } },
             )
             .await?;
         Ok(())
     }
 
-    async fn ack(&mut self, entry_id: &str) -> anyhow::Result<()> {
+    async fn ack(&mut self, entry_id: &str, priority: bool) -> anyhow::Result<()> {
         let _: Value = redis::Script::new(ACK_AND_DELETE_SCRIPT)
-            .key(STREAM)
+            .key(stream_name(priority))
             .arg(GROUP)
             .arg(entry_id)
             .invoke_async(&mut self.redis)
@@ -682,8 +745,8 @@ fn claim_update(
     doc! { "$set": set, "$inc": { "f": 1_i64 } }
 }
 
-fn malformed_dispatch_filter(entry_id: &str) -> Document {
-    doc! { "s": STATE_QUEUED, "d": true, "se": entry_id }
+fn malformed_dispatch_filter(entry_id: &str, priority: bool) -> Document {
+    doc! { "s": STATE_QUEUED, "d": true, "se": entry_id, "p": priority }
 }
 
 fn stream_claim_filter(message: &CrawlMessage, now: DateTime) -> Document {
@@ -691,6 +754,7 @@ fn stream_claim_filter(message: &CrawlMessage, now: DateTime) -> Document {
         "_id": player_key(message.membership_type_id, message.membership_id),
         "v": PROTOCOL_VERSION,
         "r": &message.run_id,
+        "p": message.priority,
         "$or": [
             { "s": STATE_QUEUED },
             { "s": STATE_RUNNING, "le": { "$lt": now } }
@@ -730,7 +794,7 @@ async fn renew_loop(
                 if !matches!(result, Ok(value) if value.modified_count == 1) { cancellation.cancel(); return; }
                 if !job.stream_entry_id.is_empty() {
                     let refreshed: Result<Value, _> = redis::cmd("XCLAIM")
-                        .arg(STREAM).arg(GROUP).arg(&config.consumer_name).arg(0)
+                        .arg(stream_name(job.priority)).arg(GROUP).arg(&config.consumer_name).arg(0)
                         .arg(&job.stream_entry_id).arg("JUSTID")
                         .query_async(&mut redis).await;
                     if refreshed.is_err() {
@@ -749,6 +813,10 @@ fn redis_text(value: &Value) -> Option<String> {
         Value::Int(value) => Some(value.to_string()),
         _ => None,
     }
+}
+
+fn stream_name(priority: bool) -> &'static str {
+    if priority { PRIORITY_STREAM } else { STREAM }
 }
 
 #[cfg(test)]
@@ -781,13 +849,14 @@ mod tests {
             ("membershipId", "42"),
         ]);
 
-        let message = parse_stream_message(&entry).unwrap();
+        let message = parse_stream_message(&entry, true).unwrap();
 
         assert_eq!(message.protocol_version, PROTOCOL_VERSION);
         assert_eq!(message.run_id, "run");
         assert_eq!(message.membership_type_id, 3);
         assert_eq!(message.membership_id, 42);
         assert_eq!(message.stream_entry_id, "123-0");
+        assert!(message.priority);
     }
 
     #[test]
@@ -799,7 +868,7 @@ mod tests {
             ("membershipId", "42"),
         ]);
 
-        assert!(parse_stream_message(&entry).is_err());
+        assert!(parse_stream_message(&entry, false).is_err());
         assert_eq!(entry.id, "123-0");
     }
 
@@ -838,6 +907,7 @@ mod tests {
             state: STATE_RUNNING.into(),
             dispatched: true,
             stream_entry_id: "123-0".into(),
+            priority: false,
             fence: 1,
             lease_owner: "worker".into(),
             lease_expires_at: None,
@@ -863,11 +933,12 @@ mod tests {
 
     #[test]
     fn malformed_dispatch_is_released_by_stream_entry_id() {
-        let filter = malformed_dispatch_filter("123-0");
+        let filter = malformed_dispatch_filter("123-0", true);
 
         assert_eq!(filter.get_str("s").unwrap(), STATE_QUEUED);
         assert!(filter.get_bool("d").unwrap());
         assert_eq!(filter.get_str("se").unwrap(), "123-0");
+        assert!(filter.get_bool("p").unwrap());
     }
 
     #[test]
@@ -879,6 +950,7 @@ mod tests {
             membership_type_id: 3,
             membership_id: 42,
             stream_entry_id: "123-0".into(),
+            priority: true,
         };
 
         let update = claim_update("worker", now, now, Some(&message));
@@ -906,12 +978,14 @@ mod tests {
             membership_type_id: 3,
             membership_id: 42,
             stream_entry_id: "123-0".into(),
+            priority: true,
         };
 
         let filter = stream_claim_filter(&message, DateTime::now());
 
         assert_eq!(filter.get_i32("v").unwrap(), PROTOCOL_VERSION);
         assert_eq!(filter.get_str("r").unwrap(), "run");
+        assert!(filter.get_bool("p").unwrap());
     }
 
     #[test]

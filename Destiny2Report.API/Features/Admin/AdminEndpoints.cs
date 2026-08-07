@@ -34,8 +34,8 @@ public static class AdminEndpoints
             .RequireRateLimiting(RateLimitPolicies.PublicWrite);
 
         admin.MapPost("/crawler/jobs", AdminHandlers.QueueCrawls)
-            .WithName("QueueAdminCrawlerJobs")
-            .WithSummary("Queues Rust crawler jobs.")
+            .WithName("QueuePriorityCrawlerJobs")
+            .WithSummary("Queues or promotes Rust crawler jobs ahead of public API work.")
             .RequireRateLimiting(RateLimitPolicies.PublicWrite);
 
         return api;

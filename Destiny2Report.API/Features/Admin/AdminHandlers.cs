@@ -11,6 +11,7 @@ namespace Destiny2Report.API.Features.Admin;
 
 public static class AdminHandlers
 {
+    private const int MaxPriorityBatchSize = 100;
     private const string QueueFlushedError = "Removed from the crawl queue by an administrator.";
     private static readonly TimeSpan OverviewInterval = TimeSpan.FromSeconds(3);
     private static readonly string[] CrawlStatuses =
@@ -40,6 +41,16 @@ public static class AdminHandlers
             return TypedResults.BadRequest(new ProblemDetails { Title = "Missing crawl requests", Status = StatusCodes.Status400BadRequest });
         }
 
+        if (requests.Count > MaxPriorityBatchSize)
+        {
+            return TypedResults.BadRequest(new ProblemDetails
+            {
+                Title = "Priority batch too large",
+                Detail = $"At most {MaxPriorityBatchSize} memberships can be queued at once.",
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+
         if (requests.Any(request => request.MembershipTypeId <= 0 || request.MembershipId <= 0))
         {
             return TypedResults.BadRequest(new ProblemDetails { Title = "Invalid membership", Status = StatusCodes.Status400BadRequest });
@@ -48,7 +59,7 @@ public static class AdminHandlers
         var responses = new List<Destiny2Report.API.Features.Reports.ReportQueueResponse>(requests.Count);
         foreach (var request in requests)
         {
-            responses.Add(await queue.EnqueueAsync(
+            responses.Add(await queue.EnqueuePriorityAsync(
                     request.MembershipTypeId,
                     request.MembershipId,
                     request.ForceFullCrawl,
@@ -68,7 +79,7 @@ public static class AdminHandlers
         var queuedFilter = Builders<CrawlJob>.Filter.Eq(job => job.State, CrawlJob.StateQueued)
             & Builders<CrawlJob>.Filter.Eq(job => job.DispatchedToRedis, true);
         var queuedPlayers = await jobs.Find(queuedFilter)
-            .Project(job => new QueuedPlayer(job.MembershipTypeId, job.MembershipId, job.RunId, job.StreamEntryId))
+            .Project(job => new QueuedPlayer(job.MembershipTypeId, job.MembershipId, job.RunId, job.StreamEntryId, job.IsPriority))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -110,7 +121,7 @@ public static class AdminHandlers
             var statusKey = CrawlerQueue.JobStatusKey(player.MembershipTypeId, player.MembershipId);
             if (!string.IsNullOrWhiteSpace(player.StreamEntryId))
             {
-                await redisDatabase.StreamDeleteAsync(CrawlerQueue.StreamName, [player.StreamEntryId])
+                await redisDatabase.StreamDeleteAsync(CrawlerQueue.StreamNameFor(player.IsPriority), [player.StreamEntryId])
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -235,6 +246,7 @@ public static class AdminHandlers
                 job.LeaseExpiresAtUtc,
                 job.LeaseOwner,
                 job.DispatchedToRedis,
+                job.IsPriority,
                 job.RunId,
                 job.Fence))
             .ToListAsync(cancellationToken);
@@ -267,6 +279,7 @@ public static class AdminHandlers
             ToDateTimeOffset(report.LeaseExpiresAtUtc),
             report.LeaseOwner ?? "",
             report.QueuedInRedis,
+            report.IsPriority,
             report.RunId,
             report.Fence,
             progressSnapshots[index])).ToArray();
@@ -370,7 +383,12 @@ public static class AdminHandlers
     private static DateTimeOffset? ToDateTimeOffset(DateTime? value) =>
         value is null ? null : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc));
 
-    private sealed record QueuedPlayer(int MembershipTypeId, long MembershipId, string RunId, string StreamEntryId);
+    private sealed record QueuedPlayer(
+        int MembershipTypeId,
+        long MembershipId,
+        string RunId,
+        string StreamEntryId,
+        bool IsPriority);
 
     private sealed record PlayerDisplayNameProjection(
         int MembershipTypeId,
@@ -387,6 +405,7 @@ public static class AdminHandlers
         DateTime? LeaseExpiresAtUtc,
         string? LeaseOwner,
         bool QueuedInRedis,
+        bool IsPriority,
         string RunId,
         long Fence);
 }

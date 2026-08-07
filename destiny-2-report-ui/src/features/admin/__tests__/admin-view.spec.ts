@@ -1,10 +1,13 @@
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AdminOverview } from '@/lib/api/types'
+import type { PriorityCrawlRequest } from '@/lib/api/admin'
+import type { AdminOverview, ReportQueueResponse } from '@/lib/api/types'
 import AdminView from '../AdminView.vue'
 
-const { watchAdminOverview } = vi.hoisted(() => ({
+const { queuePriorityCrawls, watchAdminOverview } = vi.hoisted(() => ({
+  queuePriorityCrawls:
+    vi.fn<(requests: PriorityCrawlRequest[]) => Promise<ReportQueueResponse[]>>(),
   watchAdminOverview:
     vi.fn<(signal: AbortSignal, onOverview: (value: AdminOverview) => void) => Promise<void>>(),
 }))
@@ -12,6 +15,7 @@ const { watchAdminOverview } = vi.hoisted(() => ({
 vi.mock('@/lib/api/admin', () => ({
   flushMongoQueue: vi.fn<() => Promise<void>>(),
   flushRedisQueue: vi.fn<() => Promise<void>>(),
+  queuePriorityCrawls,
   setAllFullRecrawl: vi.fn<() => Promise<void>>(),
   watchAdminOverview,
 }))
@@ -19,6 +23,7 @@ vi.mock('@/lib/api/admin', () => ({
 describe('AdminView', () => {
   beforeEach(() => {
     watchAdminOverview.mockReset()
+    queuePriorityCrawls.mockReset()
   })
 
   it('renders the display name for an active crawl', async () => {
@@ -34,6 +39,7 @@ describe('AdminView', () => {
           leaseExpiresAtUtc: '2026-07-24T19:11:29.327+00:00',
           leaseOwner: 'worker-1',
           queuedInRedis: true,
+          isPriority: true,
           progress: {
             phase: 'activities',
             label: 'Reading activity history',
@@ -84,6 +90,7 @@ describe('AdminView', () => {
           leaseExpiresAtUtc: '2026-07-19T19:11:29.327+00:00',
           leaseOwner: 'worker-1',
           queuedInRedis: false,
+          isPriority: false,
           progress: null,
         },
       ],
@@ -116,6 +123,39 @@ describe('AdminView', () => {
     expect(wrapper.text()).toContain('33,800')
     expect(wrapper.text()).not.toContain('Waiting for the first worker snapshot')
 
+    wrapper.unmount()
+  })
+
+  it('queues unique membership pairs through the priority admin endpoint', async () => {
+    watchAdminOverview.mockReturnValue(new Promise<void>(() => {}))
+    queuePriorityCrawls.mockResolvedValue([
+      {
+        jobId: 'one',
+        membershipTypeId: 3,
+        membershipId: '42',
+        status: 'queued',
+        queuedAtUtc: '2026-08-06T19:22:13Z',
+      },
+      {
+        jobId: 'two',
+        membershipTypeId: 2,
+        membershipId: '99',
+        status: 'queued',
+        queuedAtUtc: '2026-08-06T19:22:13Z',
+      },
+    ])
+    const wrapper = mount(AdminView, {
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+
+    await wrapper.find('#priority-memberships').setValue('3 / 42\n2,99\n3 42')
+    await wrapper.find('.priority-panel .btn').trigger('click')
+
+    expect(queuePriorityCrawls).toHaveBeenCalledWith([
+      { membershipTypeId: 3, membershipId: '42', forceFullCrawl: true },
+      { membershipTypeId: 2, membershipId: '99', forceFullCrawl: true },
+    ])
+    expect(wrapper.text()).toContain('Scheduled 2 players for priority crawling.')
     wrapper.unmount()
   })
 })

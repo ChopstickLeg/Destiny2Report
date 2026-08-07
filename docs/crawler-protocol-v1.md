@@ -4,7 +4,10 @@ The ASP.NET Core API admits crawl jobs and the Rust worker is the only crawler i
 
 ## Queue and ownership
 
-- Jobs use the `crawler:jobs` Redis stream and `crawler-workers` consumer group.
+- Public jobs use the `crawler:jobs` Redis stream. Administrator-expedited jobs use
+  `crawler:jobs:priority`; both streams use the `crawler-workers` consumer group.
+- Workers reclaim and read priority entries before normal entries. A queued normal
+  run can be promoted without creating a second active Mongo run.
 - Every Rust process has a unique consumer name.
 - Stream entries contain `protocolVersion`, `runId`, `membershipTypeId`, `membershipId`, `queuedAtUtc`, and `forceFullCrawl`.
 - The API creates one active `crawl_jobs` run per 12-byte binary player key before dispatching it.
