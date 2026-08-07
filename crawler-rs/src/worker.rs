@@ -117,20 +117,28 @@ impl Worker {
                     }
                 };
             }
+
+            // Mongo owns the lease. Recover expired work before consulting Redis so a
+            // busy stream, a lost pending entry, or a legacy dispatch cannot prevent
+            // an abandoned running job from being fenced and resumed after a restart.
+            // The compare-and-set filter excludes running jobs with a live lease.
+            match self.claim_fallback().await {
+                Ok(Some(job)) => {
+                    self.execute_instrumented(job, false, cancellation.clone())
+                        .await;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::error!(%error, "Mongo recovery scan failed; continuing with Redis");
+                }
+            }
+
             match self.read_message().await {
                 Ok(Some(message)) => self.process_message(message, cancellation.clone()).await,
-                Ok(None) => {
-                    if let Ok(Some(job)) = self.claim_fallback().await {
-                        self.execute_instrumented(job, false, cancellation.clone())
-                            .await;
-                    }
-                }
+                Ok(None) => {}
                 Err(error) => {
-                    tracing::error!(%error, "Redis read failed; checking Mongo fallback");
-                    if let Ok(Some(job)) = self.claim_fallback().await {
-                        self.execute_instrumented(job, false, cancellation.clone())
-                            .await;
-                    }
+                    tracing::error!(%error, "Redis read failed; retrying after Mongo recovery scan");
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -1044,5 +1052,23 @@ mod tests {
         let filter = mongo_fallback_claim_filter(DateTime::now());
 
         assert_eq!(filter.get_i32("v").unwrap(), PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn mongo_fallback_only_recovers_running_jobs_after_lease_expiry() {
+        let now = DateTime::now();
+        let filter = mongo_fallback_claim_filter(now);
+        let alternatives = filter.get_array("$or").unwrap();
+        let expired = alternatives[1].as_document().unwrap();
+
+        assert_eq!(expired.get_str("s").unwrap(), STATE_RUNNING);
+        assert_eq!(
+            expired
+                .get_document("le")
+                .unwrap()
+                .get_datetime("$lt")
+                .unwrap(),
+            &now
+        );
     }
 }
