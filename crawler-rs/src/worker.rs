@@ -1019,19 +1019,15 @@ mod tests {
             .get_array("$or")
             .unwrap();
 
-        assert_eq!(
-            priority[0].as_document().unwrap().get_bool("p").unwrap(),
-            false
-        );
-        assert_eq!(
-            priority[1]
+        assert!(!priority[0].as_document().unwrap().get_bool("p").unwrap());
+        assert!(
+            !priority[1]
                 .as_document()
                 .unwrap()
                 .get_document("p")
                 .unwrap()
                 .get_bool("$exists")
-                .unwrap(),
-            false
+                .unwrap()
         );
     }
 
