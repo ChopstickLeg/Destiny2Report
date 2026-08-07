@@ -876,12 +876,10 @@ public static class ReportHandlers
         int membershipTypeId,
         long membershipId)
     {
-        var entries = (await redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName).ConfigureAwait(false))
-            .OrderBy(entry => entry.Id)
-            .ToArray();
+        var entries = await LoadOrderedQueueEntriesAsync(redisDatabase).ConfigureAwait(false);
         for (var index = 0; index < entries.Length; index++)
         {
-            var entry = entries[index];
+            var entry = entries[index].Entry;
             if (!MatchesCrawlerJob(entry, membershipTypeId, membershipId))
             {
                 continue;
@@ -947,14 +945,11 @@ public static class ReportHandlers
             return storedStatus;
         }
 
-        var entries = (await redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName).ConfigureAwait(false))
-            .OrderBy(entry => entry.Id)
-            .ToArray();
+        var entries = await LoadOrderedQueueEntriesAsync(redisDatabase).ConfigureAwait(false);
         for (var index = 0; index < entries.Length; index++)
         {
-            var entry = entries[index];
-            if ((!string.IsNullOrWhiteSpace(streamEntryId) && entry.Id.ToString() == streamEntryId)
-                || MatchesCrawlerJob(entry, membershipTypeId, membershipId))
+            var entry = entries[index].Entry;
+            if (MatchesCrawlerJob(entry, membershipTypeId, membershipId))
             {
                 return storedStatus with
                 {
@@ -966,6 +961,18 @@ public static class ReportHandlers
         }
 
         return storedStatus;
+    }
+
+    private static async Task<(StreamEntry Entry, bool Priority)[]> LoadOrderedQueueEntriesAsync(IDatabase redisDatabase)
+    {
+        var priorityTask = redisDatabase.StreamRangeAsync(CrawlerQueue.PriorityStreamName);
+        var normalTask = redisDatabase.StreamRangeAsync(CrawlerQueue.StreamName);
+        await Task.WhenAll(priorityTask, normalTask).ConfigureAwait(false);
+        return priorityTask.Result
+            .OrderBy(entry => entry.Id)
+            .Select(entry => (entry, true))
+            .Concat(normalTask.Result.OrderBy(entry => entry.Id).Select(entry => (entry, false)))
+            .ToArray();
     }
 
     private static ReportQueueStatusResponse BuildQueueStatus(

@@ -1,6 +1,18 @@
 import { API_BASE_URL, ApiError, apiFetch, parseApiJson } from './http'
 import { drainSseBuffer } from './sse'
-import type { AdminMutationResponse, AdminOverview } from './types'
+import type { AdminMutationResponse, AdminOverview, ReportQueueResponse } from './types'
+
+export interface PriorityCrawlRequest {
+  membershipTypeId: number
+  membershipId: string
+  forceFullCrawl: boolean
+}
+
+export function queuePriorityCrawls(
+  requests: PriorityCrawlRequest[],
+): Promise<ReportQueueResponse[]> {
+  return apiFetch('/admin/crawler/jobs', { method: 'POST', body: requests })
+}
 
 export function flushRedisQueue(): Promise<AdminMutationResponse> {
   return apiFetch('/admin/queues/redis/flush', { method: 'POST' })

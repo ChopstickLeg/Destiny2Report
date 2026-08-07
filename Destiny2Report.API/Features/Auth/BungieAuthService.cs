@@ -212,8 +212,9 @@ public sealed class BungieAuthService(
                 IsPublic: membership.IsPublic))
             .ToArray() ?? [];
 
-        var primaryMembership = memberships.FirstOrDefault(membership => membership.MembershipId == data.PrimaryMembershipId)
-            ?? memberships.FirstOrDefault();
+        var primaryMembership = data.PrimaryMembershipId is null
+            ? null
+            : memberships.FirstOrDefault(membership => membership.MembershipId == data.PrimaryMembershipId);
 
         var bungieUser = data.BungieNetUser is null
             ? null

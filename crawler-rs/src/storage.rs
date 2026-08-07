@@ -869,6 +869,7 @@ mod tests {
             state: "running".into(),
             dispatched: true,
             stream_entry_id: "1-0".into(),
+            priority: false,
             fence: 1,
             lease_owner: "worker".into(),
             lease_expires_at: None,

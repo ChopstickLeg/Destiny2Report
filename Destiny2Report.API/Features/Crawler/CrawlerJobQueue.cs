@@ -12,6 +12,12 @@ public interface ICrawlerJobQueue
         long membershipId,
         bool forceFullCrawl,
         CancellationToken cancellationToken);
+
+    Task<ReportQueueResponse> EnqueuePriorityAsync(
+        int membershipTypeId,
+        long membershipId,
+        bool forceFullCrawl,
+        CancellationToken cancellationToken);
 }
 
 public sealed class CrawlerJobQueue(
@@ -63,6 +69,31 @@ public sealed class CrawlerJobQueue(
         int membershipTypeId,
         long membershipId,
         bool forceFullCrawl,
+        CancellationToken cancellationToken) =>
+        await EnqueueInternalAsync(
+            membershipTypeId,
+            membershipId,
+            forceFullCrawl,
+            priority: false,
+            cancellationToken).ConfigureAwait(false);
+
+    public async Task<ReportQueueResponse> EnqueuePriorityAsync(
+        int membershipTypeId,
+        long membershipId,
+        bool forceFullCrawl,
+        CancellationToken cancellationToken) =>
+        await EnqueueInternalAsync(
+            membershipTypeId,
+            membershipId,
+            forceFullCrawl,
+            priority: true,
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<ReportQueueResponse> EnqueueInternalAsync(
+        int membershipTypeId,
+        long membershipId,
+        bool forceFullCrawl,
+        bool priority,
         CancellationToken cancellationToken)
     {
         var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
@@ -88,6 +119,7 @@ public sealed class CrawlerJobQueue(
             .Set(job => job.State, CrawlJob.StateQueued)
             .Set(job => job.DispatchedToRedis, false)
             .Set(job => job.StreamEntryId, "")
+            .Set(job => job.IsPriority, priority)
             .Set(job => job.LeaseOwner, "")
             .Set(job => job.LeaseExpiresAtUtc, null)
             .Set(job => job.QueuedAtUtc, now)
@@ -132,6 +164,23 @@ public sealed class CrawlerJobQueue(
             job = await jobs.Find(item => item.PlayerKey == playerKey)
                 .FirstAsync(cancellationToken)
                 .ConfigureAwait(false);
+            if (priority && job.State == CrawlJob.StateQueued && !job.IsPriority)
+            {
+                job = await PromoteAsync(job, forceFullCrawl, cancellationToken).ConfigureAwait(false);
+            }
+            else if (priority && forceFullCrawl && job.State == CrawlJob.StateQueued && !job.ForceFullCrawl)
+            {
+                await jobs.UpdateOneAsync(
+                        item => item.PlayerKey == playerKey && item.RunId == job.RunId && item.State == CrawlJob.StateQueued,
+                        Builders<CrawlJob>.Update
+                            .Set(item => item.ForceFullCrawl, true)
+                            .Set(item => item.UpdatedAtUtc, DateTime.UtcNow),
+                        cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                job = await jobs.Find(item => item.PlayerKey == playerKey)
+                    .FirstAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
             return ToResponse(job);
         }
 
@@ -167,16 +216,8 @@ public sealed class CrawlerJobQueue(
     private async Task DispatchAsync(CrawlJob job, CancellationToken cancellationToken)
     {
         var database = redis.GetDatabase();
-        var streamId = await database.StreamAddAsync(
-                CrawlerQueue.StreamName,
-                [
-                    new NameValueEntry("protocolVersion", job.ProtocolVersion),
-                    new NameValueEntry("runId", job.RunId),
-                    new NameValueEntry("membershipTypeId", job.MembershipTypeId),
-                    new NameValueEntry("membershipId", job.MembershipId),
-                    new NameValueEntry("queuedAtUtc", new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O")),
-                    new NameValueEntry("forceFullCrawl", job.ForceFullCrawl ? "1" : "0")
-                ])
+        var streamName = CrawlerQueue.StreamNameFor(job.IsPriority);
+        var streamId = await AddStreamEntryAsync(database, streamName, job)
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -190,7 +231,7 @@ public sealed class CrawlerJobQueue(
         var result = await jobs.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
         if (result.MatchedCount == 0)
         {
-            await database.StreamDeleteAsync(CrawlerQueue.StreamName, [streamId]).WaitAsync(cancellationToken).ConfigureAwait(false);
+            await database.StreamDeleteAsync(streamName, [streamId]).WaitAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -218,6 +259,86 @@ public sealed class CrawlerJobQueue(
                 "Skipped stale queued status initialization for crawler run {RunId}; a worker has already advanced its fence.",
                 job.RunId);
         }
+    }
+
+    private async Task<CrawlJob> PromoteAsync(
+        CrawlJob job,
+        bool forceFullCrawl,
+        CancellationToken cancellationToken)
+    {
+        var database = redis.GetDatabase();
+        job.ForceFullCrawl |= forceFullCrawl;
+        var priorityStreamId = await AddStreamEntryAsync(database, CrawlerQueue.PriorityStreamName, job)
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+        var filter = Builders<CrawlJob>.Filter.Eq(item => item.PlayerKey, job.PlayerKey)
+            & Builders<CrawlJob>.Filter.Eq(item => item.RunId, job.RunId)
+            & Builders<CrawlJob>.Filter.Eq(item => item.State, CrawlJob.StateQueued)
+            & Builders<CrawlJob>.Filter.Eq(item => item.IsPriority, false);
+        var update = Builders<CrawlJob>.Update
+            .Set(item => item.IsPriority, true)
+            .Set(item => item.DispatchedToRedis, true)
+            .Set(item => item.StreamEntryId, priorityStreamId.ToString())
+            .Set(item => item.ForceFullCrawl, job.ForceFullCrawl)
+            .Set(item => item.UpdatedAtUtc, DateTime.UtcNow);
+        var promoted = await jobs.UpdateOneAsync(filter, update, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (promoted.ModifiedCount == 0)
+        {
+            await database.StreamDeleteAsync(CrawlerQueue.PriorityStreamName, [priorityStreamId])
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return await jobs.Find(item => item.PlayerKey == job.PlayerKey)
+                .FirstAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(job.StreamEntryId))
+        {
+            await database.StreamDeleteAsync(CrawlerQueue.StreamName, [job.StreamEntryId])
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        var promotedJob = await jobs.Find(item => item.PlayerKey == job.PlayerKey)
+            .FirstAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await InitializeStatusAsync(database, promotedJob, priorityStreamId).ConfigureAwait(false);
+        return promotedJob;
+    }
+
+    private static Task<RedisValue> AddStreamEntryAsync(IDatabase database, string streamName, CrawlJob job) =>
+        database.StreamAddAsync(
+            streamName,
+            [
+                new NameValueEntry("protocolVersion", job.ProtocolVersion),
+                new NameValueEntry("runId", job.RunId),
+                new NameValueEntry("membershipTypeId", job.MembershipTypeId),
+                new NameValueEntry("membershipId", job.MembershipId),
+                new NameValueEntry("queuedAtUtc", new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O")),
+                new NameValueEntry("forceFullCrawl", job.ForceFullCrawl ? "1" : "0")
+            ]);
+
+    private async Task InitializeStatusAsync(IDatabase database, CrawlJob job, RedisValue streamId)
+    {
+        var statusKey = CrawlerQueue.JobStatusKey(job.MembershipTypeId, job.MembershipId);
+        var queuedAtUtc = new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O");
+        await database.ScriptEvaluateAsync(
+                DispatchStatusScript,
+                [statusKey],
+                [
+                    job.RunId,
+                    job.Fence,
+                    job.ProtocolVersion,
+                    job.MembershipTypeId,
+                    job.MembershipId,
+                    streamId,
+                    queuedAtUtc,
+                    DateTimeOffset.UtcNow.ToString("O"),
+                    (long)CrawlerQueue.ActiveJobStatusTtl.TotalSeconds
+                ])
+            .ConfigureAwait(false);
     }
 
     private static ReportQueueResponse ToResponse(CrawlJob job) => new(

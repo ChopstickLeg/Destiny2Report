@@ -118,6 +118,15 @@ public sealed class AdminHandlersTests
             bool forceFullCrawl,
             CancellationToken cancellationToken)
         {
+            throw new InvalidOperationException("Admin jobs must use the priority queue.");
+        }
+
+        public Task<ReportQueueResponse> EnqueuePriorityAsync(
+            int membershipTypeId,
+            long membershipId,
+            bool forceFullCrawl,
+            CancellationToken cancellationToken)
+        {
             Requests.Add((membershipTypeId, membershipId, forceFullCrawl));
             return Task.FromResult(new ReportQueueResponse(
                 Guid.NewGuid().ToString("N"),
