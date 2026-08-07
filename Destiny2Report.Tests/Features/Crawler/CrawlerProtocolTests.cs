@@ -53,6 +53,36 @@ public sealed class CrawlerProtocolTests
     }
 
     [Fact]
+    public void Priority_promotion_accepts_legacy_normal_jobs_without_a_priority_field()
+    {
+        var filter = CrawlerJobQueue.BuildNormalPriorityFilter();
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+
+        var alternatives = rendered["$or"].AsBsonArray;
+        Assert.Contains(alternatives, item => item.AsBsonDocument["p"].IsBoolean
+            && item.AsBsonDocument["p"] == false);
+        Assert.Contains(alternatives, item => item.AsBsonDocument["p"].IsBsonDocument
+            && item.AsBsonDocument["p"].AsBsonDocument["$exists"] == false);
+    }
+
+    [Fact]
+    public void Normal_jobs_persist_an_explicit_priority_field()
+    {
+        var document = new CrawlJob
+        {
+            PlayerKey = CrawlJob.CreatePlayerKey(3, 42),
+            MembershipTypeId = 3,
+            MembershipId = 42,
+            IsPriority = false
+        }.ToBsonDocument();
+
+        Assert.Contains("p", document.Names);
+        Assert.False(document["p"].AsBoolean);
+    }
+
+    [Fact]
     public void Dispatch_status_backfills_identity_without_overwriting_a_worker_with_a_newer_fence()
     {
         var newerFenceBranch = CrawlerJobQueue.DispatchStatusScript[

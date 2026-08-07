@@ -746,19 +746,32 @@ fn claim_update(
 }
 
 fn malformed_dispatch_filter(entry_id: &str, priority: bool) -> Document {
-    doc! { "s": STATE_QUEUED, "d": true, "se": entry_id, "p": priority }
+    let mut filter = doc! { "s": STATE_QUEUED, "d": true, "se": entry_id };
+    filter.extend(priority_filter(priority));
+    filter
 }
 
 fn stream_claim_filter(message: &CrawlMessage, now: DateTime) -> Document {
-    doc! {
+    let mut filter = doc! {
         "_id": player_key(message.membership_type_id, message.membership_id),
         "v": PROTOCOL_VERSION,
         "r": &message.run_id,
-        "p": message.priority,
         "$or": [
             { "s": STATE_QUEUED },
             { "s": STATE_RUNNING, "le": { "$lt": now } }
         ]
+    };
+    filter.extend(priority_filter(message.priority));
+    filter
+}
+
+fn priority_filter(priority: bool) -> Document {
+    if priority {
+        doc! { "p": true }
+    } else {
+        // `p` was added with the priority stream. Jobs admitted by older API
+        // versions have no field and are ordinary jobs, just like `p: false`.
+        doc! { "$and": [{ "$or": [{ "p": false }, { "p": { "$exists": false } }] }] }
     }
 }
 
@@ -986,6 +999,48 @@ mod tests {
         assert_eq!(filter.get_i32("v").unwrap(), PROTOCOL_VERSION);
         assert_eq!(filter.get_str("r").unwrap(), "run");
         assert!(filter.get_bool("p").unwrap());
+    }
+
+    #[test]
+    fn normal_stream_claim_accepts_legacy_jobs_without_a_priority_field() {
+        let message = CrawlMessage {
+            protocol_version: PROTOCOL_VERSION,
+            run_id: "run".into(),
+            membership_type_id: 3,
+            membership_id: 42,
+            stream_entry_id: "123-0".into(),
+            priority: false,
+        };
+
+        let filter = stream_claim_filter(&message, DateTime::now());
+        let priority = filter.get_array("$and").unwrap()[0]
+            .as_document()
+            .unwrap()
+            .get_array("$or")
+            .unwrap();
+
+        assert_eq!(
+            priority[0].as_document().unwrap().get_bool("p").unwrap(),
+            false
+        );
+        assert_eq!(
+            priority[1]
+                .as_document()
+                .unwrap()
+                .get_document("p")
+                .unwrap()
+                .get_bool("$exists")
+                .unwrap(),
+            false
+        );
+    }
+
+    #[test]
+    fn malformed_normal_dispatch_can_release_a_legacy_job() {
+        let filter = malformed_dispatch_filter("123-0", false);
+
+        assert!(filter.contains_key("$and"));
+        assert!(!filter.contains_key("p"));
     }
 
     #[test]
