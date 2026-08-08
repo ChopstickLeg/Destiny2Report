@@ -8,6 +8,8 @@ public interface ILeaderboardService
     Task RemovePlayerAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken);
     Task<LeaderboardCatalogResponse> GetCatalogAsync(CancellationToken cancellationToken);
     Task<LeaderboardBoard?> GetBoardAsync(string metricKey, CancellationToken cancellationToken);
+    Task<PlayerLeaderboardStandingsResponse> GetPlayerStandingsAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken);
+    Task RefreshPercentileThresholdsAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<string>> TakeRepairsAsync(int count, CancellationToken cancellationToken);
     Task RequeueRepairsAsync(IEnumerable<string> metricKeys);
     Task MarkRepairingAsync(IEnumerable<string> metricKeys, bool isRepairing, string? error, CancellationToken cancellationToken);

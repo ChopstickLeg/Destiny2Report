@@ -8,6 +8,7 @@ import type { DestinyReport } from '@/lib/api/types'
 import { formatInteger, formatPercent, formatRatio } from '@/lib/formatting/numbers'
 import { humanizeModeName, rankByMode } from '../report-view'
 import { MISSING_ACTIVITY_MODE_EXPLANATION, isMissingActivityMode } from '@/lib/stat-explanations'
+import LeaderboardStandingBadge from '@/components/base/LeaderboardStandingBadge.vue'
 
 const props = defineProps<{ report: DestinyReport }>()
 
@@ -111,7 +112,12 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
         </dl>
         <SplitBar
           :segments="[
-            { label: 'Wins', value: crucible.wins, color: 'var(--color-mode-pvp)' },
+            {
+              label: 'Wins',
+              value: crucible.wins,
+              color: 'var(--color-mode-pvp)',
+              metricKey: 'competition.crucible.wins',
+            },
             { label: 'Losses', value: crucible.losses, color: 'var(--color-bar)' },
           ]"
           unit="matches"
@@ -139,7 +145,12 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
         </dl>
         <SplitBar
           :segments="[
-            { label: 'Wins', value: gambit.wins, color: 'var(--color-mode-gambit)' },
+            {
+              label: 'Wins',
+              value: gambit.wins,
+              color: 'var(--color-mode-gambit)',
+              metricKey: 'competition.gambit.wins',
+            },
             { label: 'Losses', value: gambit.losses, color: 'var(--color-bar)' },
           ]"
           unit="matches"
@@ -170,6 +181,9 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
             </td>
             <td class="num tnum">{{ formatInteger(playlist.matches) }}</td>
             <td class="num tnum">
+              <LeaderboardStandingBadge
+                :metric-key="`competition.crucible.playlist.${playlist.mode}`"
+              />
               {{ formatInteger(playlist.wins) }} – {{ formatInteger(playlist.losses) }}
             </td>
             <td class="num tnum">
@@ -209,9 +223,24 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
           <thead>
             <tr>
               <th scope="col">Mode</th>
-              <th scope="col" class="num">Banked</th>
-              <th scope="col" class="num">Lost</th>
-              <th scope="col" class="num">Denied</th>
+              <th scope="col" class="num">
+                <span class="ranked-heading">
+                  <LeaderboardStandingBadge metric-key="oddities.gambit-motes-banked" />
+                  Banked
+                </span>
+              </th>
+              <th scope="col" class="num">
+                <span class="ranked-heading">
+                  <LeaderboardStandingBadge metric-key="oddities.gambit-motes-lost" />
+                  Lost
+                </span>
+              </th>
+              <th scope="col" class="num">
+                <span class="ranked-heading">
+                  <LeaderboardStandingBadge metric-key="oddities.gambit-motes-denied" />
+                  Denied
+                </span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -233,6 +262,13 @@ const showMotes = computed(() => props.report.gambitMotes.matches > 0 && moteRow
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr));
   gap: var(--space-4);
+}
+
+.ranked-heading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
 }
 
 .arena {

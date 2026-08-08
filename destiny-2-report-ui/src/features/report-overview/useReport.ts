@@ -1,7 +1,16 @@
-import { computed, type ComputedRef } from 'vue'
+import { computed, type ComputedRef, type InjectionKey } from 'vue'
 import { useRoute } from 'vue-router'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { fetchReport, reportKeys, type ReportIdentity } from '@/lib/api/reports'
+import {
+  fetchPlayerStandings,
+  fetchReport,
+  reportKeys,
+  type ReportIdentity,
+} from '@/lib/api/reports'
+import type { PlayerLeaderboardStanding } from '@/lib/api/types'
+
+export const playerStandingsKey: InjectionKey<ComputedRef<PlayerLeaderboardStanding[]>> =
+  Symbol('playerStandings')
 
 /** Route params → stable report identity (IDs stay strings; see http.ts). */
 export function useReportIdentity(): ComputedRef<ReportIdentity> {
@@ -22,6 +31,14 @@ export function useReportQuery(identity: ComputedRef<ReportIdentity>) {
     queryKey: computed(() => reportKeys.report(identity.value)),
     queryFn: ({ signal }) => fetchReport(identity.value, signal),
     staleTime: 5 * 60_000,
+  })
+}
+
+export function usePlayerStandings(identity: ComputedRef<ReportIdentity>) {
+  return useQuery({
+    queryKey: computed(() => reportKeys.standings(identity.value)),
+    queryFn: ({ signal }) => fetchPlayerStandings(identity.value, signal),
+    staleTime: 30 * 60_000,
   })
 }
 

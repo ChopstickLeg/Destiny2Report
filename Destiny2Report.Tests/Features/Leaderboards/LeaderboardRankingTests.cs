@@ -41,6 +41,28 @@ public sealed class LeaderboardRankingTests
         Assert.Equal("/common/emblem.jpg", ranked[0].EmblemBackgroundUrl);
     }
 
+    [Fact]
+    public void FindPlayerStanding_returns_the_same_competition_rank_without_materializing_responses()
+    {
+        var entries = LeaderboardRanking.SortAndLimit([
+            Entry(1, 20, "A"), Entry(2, 20, "B"), Entry(3, 10, "C")
+        ]);
+
+        var tiedStanding = LeaderboardRanking.FindPlayerStanding(entries, 3, 2);
+        var lowerStanding = LeaderboardRanking.FindPlayerStanding(entries, 3, 3);
+
+        Assert.Equal((20L, 1), tiedStanding);
+        Assert.Equal((10L, 3), lowerStanding);
+    }
+
+    [Fact]
+    public void FindPlayerStanding_returns_null_when_the_player_is_not_on_the_board()
+    {
+        var standing = LeaderboardRanking.FindPlayerStanding([Entry(1, 20)], 3, 2);
+
+        Assert.Null(standing);
+    }
+
     private static LeaderboardStoredEntry Entry(int id, long score, string? name = null) => new()
     {
         MembershipTypeId = 3,
