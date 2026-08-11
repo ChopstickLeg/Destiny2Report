@@ -117,17 +117,33 @@ impl Worker {
                     }
                 };
             }
+
+            // Mongo owns scheduling and leases. Recover priority and abandoned work
+            // before Redis so BSON defaults (notably legacy jobs without `p`) cannot
+            // affect their ordering. Ordinary Redis work remains ahead of background.
+            match self.claim_pre_redis().await {
+                Ok(Some(job)) => {
+                    self.execute_instrumented(job, false, cancellation.clone())
+                        .await;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::error!(%error, "Mongo recovery scan failed; continuing with Redis");
+                }
+            }
+
             match self.read_message().await {
                 Ok(Some(message)) => self.process_message(message, cancellation.clone()).await,
                 Ok(None) => {
-                    if let Ok(Some(job)) = self.claim_fallback().await {
+                    if let Ok(Some(job)) = self.claim_background().await {
                         self.execute_instrumented(job, false, cancellation.clone())
                             .await;
                     }
                 }
                 Err(error) => {
-                    tracing::error!(%error, "Redis read failed; checking Mongo fallback");
-                    if let Ok(Some(job)) = self.claim_fallback().await {
+                    tracing::error!(%error, "Redis read failed; checking Mongo background work");
+                    if let Ok(Some(job)) = self.claim_background().await {
                         self.execute_instrumented(job, false, cancellation.clone())
                             .await;
                     }
@@ -358,19 +374,37 @@ impl Worker {
             .await?)
     }
 
-    async fn claim_fallback(&self) -> anyhow::Result<Option<CrawlJob>> {
-        let database = self.mongo.database(&self.config.mongo_database);
+    async fn claim_pre_redis(&self) -> anyhow::Result<Option<CrawlJob>> {
         let now = DateTime::now();
+        for filter in pre_redis_claim_filters(now) {
+            if let Some(job) = self.claim_matching(filter, now).await? {
+                return Ok(Some(job));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn claim_background(&self) -> anyhow::Result<Option<CrawlJob>> {
+        let now = DateTime::now();
+        self.claim_matching(background_claim_filter(), now).await
+    }
+
+    async fn claim_matching(
+        &self,
+        filter: Document,
+        now: DateTime,
+    ) -> anyhow::Result<Option<CrawlJob>> {
+        let database = self.mongo.database(&self.config.mongo_database);
         let expiry = DateTime::from_millis(
             now.timestamp_millis() + self.config.lease_duration.as_millis() as i64,
         );
         Ok(database
             .collection::<CrawlJob>("crawl_jobs")
             .find_one_and_update(
-                mongo_fallback_claim_filter(now),
+                filter,
                 claim_update(&self.config.consumer_name, expiry, now, None),
             )
-            .sort(doc! { "p": -1, "qa": 1 })
+            .sort(doc! { "qa": 1 })
             .return_document(ReturnDocument::After)
             .await?)
     }
@@ -746,28 +780,74 @@ fn claim_update(
 }
 
 fn malformed_dispatch_filter(entry_id: &str, priority: bool) -> Document {
-    doc! { "s": STATE_QUEUED, "d": true, "se": entry_id, "p": priority }
+    let mut filter = doc! { "s": STATE_QUEUED, "d": true, "se": entry_id };
+    filter.extend(priority_filter(priority));
+    filter
 }
 
 fn stream_claim_filter(message: &CrawlMessage, now: DateTime) -> Document {
-    doc! {
+    let mut filter = doc! {
         "_id": player_key(message.membership_type_id, message.membership_id),
         "v": PROTOCOL_VERSION,
         "r": &message.run_id,
-        "p": message.priority,
         "$or": [
             { "s": STATE_QUEUED },
             { "s": STATE_RUNNING, "le": { "$lt": now } }
         ]
+    };
+    filter.extend(priority_filter(message.priority));
+    filter
+}
+
+fn priority_filter(priority: bool) -> Document {
+    if priority {
+        doc! { "p": true }
+    } else {
+        // `p` was added with the priority stream. Jobs admitted by older API
+        // versions have no field and are ordinary jobs, just like `p: false`.
+        doc! { "$and": [{ "$or": [{ "p": false }, { "p": { "$exists": false } }] }] }
     }
 }
 
-fn mongo_fallback_claim_filter(now: DateTime) -> Document {
+fn pre_redis_claim_filters(now: DateTime) -> [Document; 2] {
+    [
+        priority_claim_filter(now),
+        abandoned_normal_claim_filter(now),
+    ]
+}
+
+fn priority_claim_filter(now: DateTime) -> Document {
     doc! {
         "v": PROTOCOL_VERSION,
+        "p": true,
         "$or": [
-            { "s": STATE_QUEUED, "d": false },
-            { "s": STATE_RUNNING, "le": { "$lt": now } }
+            { "s": STATE_QUEUED },
+            abandoned_running_filter(now)
+        ]
+    }
+}
+
+fn abandoned_normal_claim_filter(now: DateTime) -> Document {
+    let mut filter = doc! { "v": PROTOCOL_VERSION };
+    filter.extend(abandoned_running_filter(now));
+    filter.extend(priority_filter(false));
+    filter
+}
+
+fn background_claim_filter() -> Document {
+    let mut filter = doc! { "v": PROTOCOL_VERSION, "s": STATE_QUEUED, "d": false };
+    filter.extend(priority_filter(false));
+    filter
+}
+
+fn abandoned_running_filter(now: DateTime) -> Document {
+    doc! {
+        "s": STATE_RUNNING,
+        "$or": [
+            { "le": { "$lt": now } },
+            { "le": null },
+            { "lo": "" },
+            { "lo": { "$exists": false } }
         ]
     }
 }
@@ -961,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn mongo_fallback_does_not_invent_stream_metadata() {
+    fn mongo_claim_does_not_invent_stream_metadata() {
         let now = DateTime::now();
         let update = claim_update("worker", now, now, None);
         let set = update.get_document("$set").unwrap();
@@ -989,9 +1069,96 @@ mod tests {
     }
 
     #[test]
-    fn mongo_fallback_requires_the_supported_protocol_version() {
-        let filter = mongo_fallback_claim_filter(DateTime::now());
+    fn normal_stream_claim_accepts_legacy_jobs_without_a_priority_field() {
+        let message = CrawlMessage {
+            protocol_version: PROTOCOL_VERSION,
+            run_id: "run".into(),
+            membership_type_id: 3,
+            membership_id: 42,
+            stream_entry_id: "123-0".into(),
+            priority: false,
+        };
 
-        assert_eq!(filter.get_i32("v").unwrap(), PROTOCOL_VERSION);
+        let filter = stream_claim_filter(&message, DateTime::now());
+        let priority = filter.get_array("$and").unwrap()[0]
+            .as_document()
+            .unwrap()
+            .get_array("$or")
+            .unwrap();
+
+        assert!(!priority[0].as_document().unwrap().get_bool("p").unwrap());
+        assert!(
+            !priority[1]
+                .as_document()
+                .unwrap()
+                .get_document("p")
+                .unwrap()
+                .get_bool("$exists")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn malformed_normal_dispatch_can_release_a_legacy_job() {
+        let filter = malformed_dispatch_filter("123-0", false);
+
+        assert!(filter.contains_key("$and"));
+        assert!(!filter.contains_key("p"));
+    }
+
+    #[test]
+    fn pre_redis_claim_groups_are_priority_then_abandoned() {
+        let now = DateTime::now();
+        let [priority, abandoned] = pre_redis_claim_filters(now);
+
+        assert_eq!(priority.get_i32("v").unwrap(), PROTOCOL_VERSION);
+        assert!(priority.get_bool("p").unwrap());
+        assert_eq!(abandoned.get_str("s").unwrap(), STATE_RUNNING);
+        assert!(abandoned.contains_key("$and"));
+    }
+
+    #[test]
+    fn background_claim_only_accepts_undispatched_normal_jobs() {
+        let filter = background_claim_filter();
+
+        assert_eq!(filter.get_str("s").unwrap(), STATE_QUEUED);
+        assert!(!filter.get_bool("d").unwrap());
+        assert!(filter.contains_key("$and"));
+    }
+
+    #[test]
+    fn abandoned_running_claim_accepts_expired_missing_or_unowned_leases() {
+        let now = DateTime::now();
+        let filter = abandoned_running_filter(now);
+        let alternatives = filter.get_array("$or").unwrap();
+
+        assert_eq!(filter.get_str("s").unwrap(), STATE_RUNNING);
+        assert_eq!(
+            alternatives[0]
+                .as_document()
+                .unwrap()
+                .get_document("le")
+                .unwrap()
+                .get_datetime("$lt")
+                .unwrap(),
+            &now
+        );
+        assert!(
+            alternatives[1]
+                .as_document()
+                .unwrap()
+                .get("le")
+                .unwrap()
+                .as_null()
+                .is_some()
+        );
+        assert_eq!(
+            alternatives[2]
+                .as_document()
+                .unwrap()
+                .get_str("lo")
+                .unwrap(),
+            ""
+        );
     }
 }
