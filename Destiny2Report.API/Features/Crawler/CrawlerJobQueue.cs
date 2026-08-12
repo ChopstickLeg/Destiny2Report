@@ -180,6 +180,7 @@ public sealed class CrawlerJobQueue(
     private async Task DispatchAsync(CrawlJob job, CancellationToken cancellationToken)
     {
         var database = redis.GetDatabase();
+        cancellationToken.ThrowIfCancellationRequested();
         var streamId = await database.StreamAddAsync(
                 CrawlerQueue.StreamName,
                 [
@@ -190,45 +191,68 @@ public sealed class CrawlerJobQueue(
                     new NameValueEntry("queuedAtUtc", new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O")),
                     new NameValueEntry("forceFullCrawl", job.ForceFullCrawl ? "1" : "0")
                 ])
-            .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
-        var filter = BuildDispatchOwnershipFilter(job);
-        var update = Builders<CrawlJob>.Update
-            .Set(item => item.DispatchedToRedis, true)
-            .Set(item => item.StreamEntryId, streamId.ToString())
-            .Set(item => item.UpdatedAtUtc, DateTime.UtcNow);
-        var result = await jobs.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (result.MatchedCount == 0)
+        var ownershipEstablished = false;
+        try
         {
-            await database.StreamDeleteAsync(CrawlerQueue.StreamName, [streamId]).WaitAsync(cancellationToken).ConfigureAwait(false);
-            return;
+            var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+            var filter = BuildDispatchOwnershipFilter(job);
+            var update = Builders<CrawlJob>.Update
+                .Set(item => item.DispatchedToRedis, true)
+                .Set(item => item.StreamEntryId, streamId.ToString())
+                .Set(item => item.UpdatedAtUtc, DateTime.UtcNow);
+            var result = await jobs.UpdateOneAsync(filter, update, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+            if (result.MatchedCount == 0)
+            {
+                return;
+            }
+
+            ownershipEstablished = true;
+
+            var statusKey = CrawlerQueue.JobStatusKey(job.MembershipTypeId, job.MembershipId);
+            var queuedAtUtc = new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O");
+            var initialized = (long)await database.ScriptEvaluateAsync(
+                    DispatchStatusScript,
+                    [statusKey],
+                    [
+                        job.RunId,
+                        job.Fence,
+                        job.ProtocolVersion,
+                        job.MembershipTypeId,
+                        job.MembershipId,
+                        streamId.ToString(),
+                        queuedAtUtc,
+                        DateTimeOffset.UtcNow.ToString("O"),
+                        (long)CrawlerQueue.ActiveJobStatusTtl.TotalSeconds
+                    ])
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (initialized == 0)
+            {
+                logger.LogDebug(
+                    "Skipped stale queued status initialization for crawler run {RunId}; a worker has already advanced its fence.",
+                    job.RunId);
+            }
         }
-
-        var statusKey = CrawlerQueue.JobStatusKey(job.MembershipTypeId, job.MembershipId);
-        var queuedAtUtc = new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O");
-        var initialized = (long)await database.ScriptEvaluateAsync(
-                DispatchStatusScript,
-                [statusKey],
-                [
-                    job.RunId,
-                    job.Fence,
-                    job.ProtocolVersion,
-                    job.MembershipTypeId,
-                    job.MembershipId,
-                    streamId.ToString(),
-                    queuedAtUtc,
-                    DateTimeOffset.UtcNow.ToString("O"),
-                    (long)CrawlerQueue.ActiveJobStatusTtl.TotalSeconds
-                ])
-            .WaitAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (initialized == 0)
+        finally
         {
-            logger.LogDebug(
-                "Skipped stale queued status initialization for crawler run {RunId}; a worker has already advanced its fence.",
-                job.RunId);
+            if (!ownershipEstablished)
+            {
+                try
+                {
+                    await database.StreamDeleteAsync(CrawlerQueue.StreamName, [streamId])
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(
+                        exception,
+                        "Could not remove unowned Redis stream entry {StreamEntryId} for crawler run {RunId}.",
+                        streamId,
+                        job.RunId);
+                }
+            }
         }
     }
 
