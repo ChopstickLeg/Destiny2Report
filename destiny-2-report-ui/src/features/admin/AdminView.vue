@@ -4,6 +4,7 @@ import AppButton from '@/components/base/AppButton.vue'
 import {
   flushMongoQueue,
   flushRedisQueue,
+  queuePriorityCrawls,
   setAllFullRecrawl,
   watchAdminOverview,
 } from '@/lib/api/admin'
@@ -17,6 +18,8 @@ const busyAction = ref<string | null>(null)
 const actionMessage = ref<string | null>(null)
 const actionError = ref<string | null>(null)
 const recrawlReason = ref('')
+const priorityMemberships = ref('')
+const priorityForceFullCrawl = ref(true)
 
 let controller: AbortController | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -95,6 +98,69 @@ function submitFullRecrawl() {
       return result
     },
   )
+}
+
+function parsePriorityMemberships():
+  | { memberships: { membershipTypeId: number; membershipId: string }[]; error: null }
+  | { memberships: []; error: string } {
+  const lines = priorityMemberships.value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0) return { memberships: [], error: 'Enter at least one membership.' }
+  if (lines.length > 100) return { memberships: [], error: 'Enter no more than 100 memberships.' }
+
+  const memberships: { membershipTypeId: number; membershipId: string }[] = []
+  const seen = new Set<string>()
+  for (const [index, line] of lines.entries()) {
+    const parts = line.split(/[\s,/]+/)
+    const membershipTypeId = Number(parts[0])
+    const membershipId = parts[1] ?? ''
+    if (
+      parts.length !== 2 ||
+      !Number.isInteger(membershipTypeId) ||
+      membershipTypeId <= 0 ||
+      !/^\d+$/.test(membershipId) ||
+      membershipId === '0'
+    ) {
+      return {
+        memberships: [],
+        error: `Line ${index + 1} must contain a positive membership type and membership ID.`,
+      }
+    }
+    const key = `${membershipTypeId}:${membershipId}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      memberships.push({ membershipTypeId, membershipId })
+    }
+  }
+  return { memberships, error: null }
+}
+
+async function submitPriorityCrawls() {
+  const parsed = parsePriorityMemberships()
+  if (parsed.error) {
+    actionError.value = parsed.error
+    return
+  }
+
+  busyAction.value = 'priority'
+  actionMessage.value = null
+  actionError.value = null
+  try {
+    const responses = await queuePriorityCrawls(
+      parsed.memberships.map((membership) => ({
+        ...membership,
+        forceFullCrawl: priorityForceFullCrawl.value,
+      })),
+    )
+    actionMessage.value = `Scheduled ${responses.length} player${responses.length === 1 ? '' : 's'} for priority crawling.`
+    priorityMemberships.value = ''
+  } catch (error) {
+    actionError.value = getErrorMessage(error, 'The priority crawls could not be scheduled.')
+  } finally {
+    busyAction.value = null
+  }
 }
 
 onMounted(connect)
@@ -179,7 +245,9 @@ onBeforeUnmount(() => {
                   >
                 </td>
                 <td>
-                  <span class="source-chip">{{ crawl.queuedInRedis ? 'Redis' : 'Mongo' }}</span>
+                  <span class="source-chip" :class="{ 'source-chip--priority': crawl.isPriority }">
+                    {{ crawl.isPriority ? 'Priority' : crawl.queuedInRedis ? 'Redis' : 'Mongo' }}
+                  </span>
                 </td>
                 <td class="tnum">{{ formatTimestamp(crawl.startedAtUtc) }}</td>
                 <td class="progress-cell">
@@ -245,6 +313,37 @@ onBeforeUnmount(() => {
       </section>
 
       <aside class="control-stack" aria-label="Administrative controls">
+        <section class="panel control-panel priority-panel">
+          <p class="panel-kicker">Expedite lane</p>
+          <h2>Priority crawl</h2>
+          <p>
+            Moves affected players ahead of public API requests. Enter one membership per line as
+            <code>type / membership</code>.
+          </p>
+          <label for="priority-memberships">Memberships</label>
+          <textarea
+            id="priority-memberships"
+            v-model="priorityMemberships"
+            rows="5"
+            spellcheck="false"
+            placeholder="3 / 4611686018517092651&#10;2 / 4611686018472005626"
+          />
+          <label class="checkbox-row">
+            <input v-model="priorityForceFullCrawl" type="checkbox" />
+            <span>
+              Force a full crawl
+              <small>Recommended when investigating incorrect or incomplete report data.</small>
+            </span>
+          </label>
+          <AppButton
+            variant="primary"
+            :disabled="busyAction !== null || !priorityMemberships.trim()"
+            @click="submitPriorityCrawls"
+          >
+            {{ busyAction === 'priority' ? 'Scheduling…' : 'Schedule priority crawl' }}
+          </AppButton>
+        </section>
+
         <section class="panel control-panel">
           <p class="panel-kicker">Queue controls</p>
           <h2>Flush waiting jobs</h2>
@@ -460,6 +559,11 @@ tbody tr:last-child td {
   color: var(--color-text);
   font-size: var(--text-xs);
 }
+.source-chip--priority {
+  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
 .lease {
   white-space: nowrap;
 }
@@ -533,6 +637,34 @@ tbody tr:last-child td {
 }
 .control-panel--danger {
   border-top-color: var(--color-negative);
+}
+.priority-panel {
+  border-top-color: var(--color-accent);
+}
+.priority-panel code {
+  color: var(--color-text);
+  font-size: var(--text-xs);
+}
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 var(--space-4);
+  cursor: pointer;
+}
+.checkbox-row input {
+  margin-top: 0.2rem;
+  accent-color: var(--color-accent);
+}
+.checkbox-row span {
+  display: grid;
+  gap: 0.15rem;
+}
+.checkbox-row small {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  line-height: 1.4;
 }
 label {
   display: block;

@@ -8,7 +8,7 @@ public static class PlayerSearchHandlers
 {
     private const int CharactersComponent = 200;
     private const int MaxSearchResults = 25;
-    private const int SearchPage = 0;
+    private const int FirstSearchPage = 0;
     private const string BungieNetBaseUrl = "https://www.bungie.net";
 
     public static async Task<Results<Ok<IReadOnlyList<PlayerSearchResponse>>, NotFound, BadRequest<ProblemDetails>, ProblemHttpResult>> SearchPlayer(
@@ -27,30 +27,57 @@ public static class PlayerSearchHandlers
         }
 
         var displayNamePrefix = request.DisplayNamePrefix.Trim();
-        var searchResponse = await bungieClient
-            .User_SearchByGlobalNamePostAsync(
-                SearchPage,
-                new UserSearchPrefixRequest { DisplayNamePrefix = displayNamePrefix },
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (searchResponse.ErrorCode != 1)
+        if (request.DisplayCode is < 0 or > 9999)
         {
-            return BungieProblem("SearchByGlobalNamePost", searchResponse);
+            return TypedResults.BadRequest(new ProblemDetails
+            {
+                Title = "Invalid display code",
+                Detail = "displayCode must be between 0 and 9999.",
+                Status = StatusCodes.Status400BadRequest
+            });
         }
 
-        var searchResults = searchResponse.Response.SearchResults?
-            .Select(result => new
+        var searchPage = FirstSearchPage;
+        UserSearchResponse? searchResponseBody;
+        var matchingUsers = new List<UserSearchResponseDetail>();
+
+        do
+        {
+            var searchResponse = await bungieClient
+                .User_SearchByGlobalNamePostAsync(
+                    searchPage,
+                    new UserSearchPrefixRequest { DisplayNamePrefix = displayNamePrefix },
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (searchResponse.ErrorCode != 1)
             {
-                Result = result,
-                Membership = SelectMembership(result.DestinyMemberships)
-            })
-            .Where(result => result.Membership is not null)
-            .ToArray()
-            ?? [];
+                return BungieProblem("SearchByGlobalNamePost", searchResponse);
+            }
+
+            searchResponseBody = searchResponse.Response;
+            matchingUsers.AddRange(searchResponseBody.SearchResults?
+                .Where(result => request.DisplayCode is null
+                    || result.BungieGlobalDisplayNameCode == request.DisplayCode)
+                ?? []);
+
+            searchPage++;
+        }
+        while (request.DisplayCode is not null
+            && matchingUsers.Count == 0
+            && searchResponseBody.HasMore);
+
+        var searchResults = matchingUsers
+            .SelectMany(result => SelectMemberships(result.DestinyMemberships)
+                .Select(membership => new
+                {
+                    Result = result,
+                    Membership = membership
+                }))
+            .ToArray();
 
         var bungieResultTasks = searchResults
-            .Select(result => CreateBungieResponseAsync(result.Result, result.Membership!, bungieClient, cancellationToken))
+            .Select(result => CreateBungieResponseAsync(result.Result, result.Membership, bungieClient, cancellationToken))
             .ToArray();
 
         var bungieResults = await Task.WhenAll(bungieResultTasks).ConfigureAwait(false);
@@ -120,20 +147,21 @@ public static class PlayerSearchHandlers
         }
     }
 
-    private static UserInfoCard? SelectMembership(IEnumerable<UserInfoCard>? memberships)
+    private static IReadOnlyList<UserInfoCard> SelectMemberships(IEnumerable<UserInfoCard>? memberships)
     {
         if (memberships is null)
         {
-            return null;
+            return [];
         }
 
         var publicMemberships = memberships
             .Where(membership => membership.IsPublic && membership.MembershipId > 0 && membership.MembershipType > 0)
             .ToArray();
 
-        return publicMemberships.FirstOrDefault(membership => membership.CrossSaveOverride == membership.MembershipType)
-            ?? publicMemberships.FirstOrDefault(membership => membership.CrossSaveOverride <= 0)
-            ?? publicMemberships.FirstOrDefault();
+        var crossSavePrimary = publicMemberships
+            .FirstOrDefault(membership => membership.CrossSaveOverride == membership.MembershipType);
+
+        return crossSavePrimary is null ? publicMemberships : [crossSavePrimary];
     }
 
     private static ProblemHttpResult BungieProblem(string operation, BungieResponse response)

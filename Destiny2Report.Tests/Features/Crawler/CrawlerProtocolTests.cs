@@ -21,10 +21,13 @@ public sealed class CrawlerProtocolTests
     }
 
     [Fact]
-    public void Crawler_has_one_rust_worker_stream()
+    public void Crawler_has_normal_and_priority_streams_in_one_consumer_group()
     {
         Assert.Equal("crawler:jobs", CrawlerQueue.StreamName);
+        Assert.Equal("crawler:jobs:priority", CrawlerQueue.PriorityStreamName);
         Assert.Equal("crawler-workers", CrawlerQueue.ConsumerGroupName);
+        Assert.Equal(CrawlerQueue.PriorityStreamName, CrawlerQueue.StreamNameFor(priority: true));
+        Assert.Equal(CrawlerQueue.StreamName, CrawlerQueue.StreamNameFor(priority: false));
     }
 
     [Theory]
@@ -50,7 +53,7 @@ public sealed class CrawlerProtocolTests
     }
 
     [Fact]
-    public void Redis_dispatch_only_promotes_the_same_queued_mongo_only_run()
+    public void Redis_dispatch_only_claims_the_same_queued_mongo_only_run()
     {
         var job = new CrawlJob
         {
@@ -69,6 +72,36 @@ public sealed class CrawlerProtocolTests
         Assert.Equal("run", rendered["r"].AsString);
         Assert.Equal(CrawlJob.StateQueued, rendered["s"].AsString);
         Assert.False(rendered["d"].AsBoolean);
+    }
+
+    [Fact]
+    public void Priority_promotion_accepts_legacy_normal_jobs_without_a_priority_field()
+    {
+        var filter = CrawlerJobQueue.BuildNormalPriorityFilter();
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+
+        var alternatives = rendered["$or"].AsBsonArray;
+        Assert.Contains(alternatives, item => item.AsBsonDocument["p"].IsBoolean
+            && item.AsBsonDocument["p"] == false);
+        Assert.Contains(alternatives, item => item.AsBsonDocument["p"].IsBsonDocument
+            && item.AsBsonDocument["p"].AsBsonDocument["$exists"] == false);
+    }
+
+    [Fact]
+    public void Normal_jobs_persist_an_explicit_priority_field()
+    {
+        var document = new CrawlJob
+        {
+            PlayerKey = CrawlJob.CreatePlayerKey(3, 42),
+            MembershipTypeId = 3,
+            MembershipId = 42,
+            IsPriority = false
+        }.ToBsonDocument();
+
+        Assert.Contains("p", document.Names);
+        Assert.False(document["p"].AsBoolean);
     }
 
     [Fact]

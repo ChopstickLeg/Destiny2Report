@@ -13,6 +13,7 @@ import { exchangeOAuthCode, fetchWhoAmI, signOut as deleteSession } from '@/lib/
 import type { DestinyMembership, SignedInPlayerResponse } from '@/lib/api/types'
 
 const OAUTH_STATE_KEY = 'd2r.oauth-state'
+const ACTIVE_MEMBERSHIP_KEY = 'd2r.active-membership'
 
 const AUTHORIZE_URL =
   import.meta.env.VITE_BUNGIE_AUTHORIZE_URL ?? 'https://www.bungie.net/en/OAuth/Authorize'
@@ -29,7 +30,9 @@ export const useSessionStore = defineStore('session', {
   state: () => ({
     status: 'unknown' as SessionStatus,
     profile: null as SignedInPlayerResponse | null,
+    selectedMembershipKey: null as string | null,
     storyPromptOpen: false,
+    storyPromptPending: false,
   }),
 
   getters: {
@@ -44,7 +47,27 @@ export const useSessionStore = defineStore('session', {
 
     activeMembership(state): DestinyMembership | null {
       const memberships = state.profile?.destinyMemberships ?? []
-      return state.profile?.primaryDestinyMembership ?? memberships[0] ?? null
+      const primary = state.profile?.primaryDestinyMembership
+      if (primary) return primary
+
+      const selectable = memberships.filter(isValidMembership)
+      if (selectable.length === 1) return selectable[0] ?? null
+      return (
+        selectable.find(
+          (membership) => membershipKey(membership) === state.selectedMembershipKey,
+        ) ?? null
+      )
+    },
+
+    selectableMemberships(state): DestinyMembership[] {
+      const primary = state.profile?.primaryDestinyMembership
+      return primary
+        ? [primary]
+        : (state.profile?.destinyMemberships ?? []).filter(isValidMembership)
+    },
+
+    needsMembershipSelection(): boolean {
+      return this.selectableMemberships.length > 1 && this.activeMembership === null
     },
   },
 
@@ -56,6 +79,7 @@ export const useSessionStore = defineStore('session', {
         const profile = await fetchWhoAmI()
         if (profile.signedIn) {
           this.profile = profile
+          this.restoreMembershipSelection()
           this.status = 'signed-in'
         } else {
           this.clearSession()
@@ -100,16 +124,48 @@ export const useSessionStore = defineStore('session', {
         throw new Error('Bungie accepted the sign-in but no profile was returned.')
       }
       this.profile = profile
+      this.restoreMembershipSelection()
       this.status = 'signed-in'
       return pending.returnTo || '/me'
     },
 
     showStoryPrompt() {
+      if (this.needsMembershipSelection) {
+        this.storyPromptPending = true
+        return
+      }
       this.storyPromptOpen = true
     },
 
     dismissStoryPrompt() {
       this.storyPromptOpen = false
+      this.storyPromptPending = false
+    },
+
+    selectMembership(membership: DestinyMembership) {
+      if (
+        !this.selectableMemberships.some(
+          (candidate) => membershipKey(candidate) === membershipKey(membership),
+        )
+      ) {
+        return
+      }
+
+      this.selectedMembershipKey = membershipKey(membership)
+      localStorage.setItem(ACTIVE_MEMBERSHIP_KEY, this.selectedMembershipKey)
+      if (this.storyPromptPending) {
+        this.storyPromptPending = false
+        this.storyPromptOpen = true
+      }
+    },
+
+    restoreMembershipSelection() {
+      const stored = localStorage.getItem(ACTIVE_MEMBERSHIP_KEY)
+      this.selectedMembershipKey = this.selectableMemberships.some(
+        (membership) => membershipKey(membership) === stored,
+      )
+        ? stored
+        : null
     },
 
     async signOut() {
@@ -122,8 +178,22 @@ export const useSessionStore = defineStore('session', {
 
     clearSession() {
       this.profile = null
+      this.selectedMembershipKey = null
       this.storyPromptOpen = false
+      this.storyPromptPending = false
       this.status = 'signed-out'
     },
   },
 })
+
+function isValidMembership(membership: DestinyMembership): boolean {
+  return (
+    membership.membershipType > 0 &&
+    /^\d+$/.test(membership.membershipId) &&
+    membership.membershipId !== '0'
+  )
+}
+
+export function membershipKey(membership: DestinyMembership): string {
+  return `${membership.membershipType}:${membership.membershipId}`
+}

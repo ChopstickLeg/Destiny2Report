@@ -26,6 +26,8 @@ pub struct CrawlJob {
     pub dispatched: bool,
     #[serde(rename = "se", default)]
     pub stream_entry_id: String,
+    #[serde(rename = "p", default)]
+    pub priority: bool,
     #[serde(rename = "f", default)]
     pub fence: i64,
     #[serde(rename = "lo", default)]
@@ -49,6 +51,7 @@ pub struct CrawlMessage {
     pub membership_type_id: i32,
     pub membership_id: i64,
     pub stream_entry_id: String,
+    pub priority: bool,
 }
 
 pub fn player_key(membership_type_id: i32, membership_id: i64) -> Binary {

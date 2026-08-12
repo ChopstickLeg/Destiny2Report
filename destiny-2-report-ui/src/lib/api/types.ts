@@ -390,6 +390,7 @@ interface AdminActiveCrawl {
   leaseExpiresAtUtc: string | null
   leaseOwner: string
   queuedInRedis: boolean
+  isPriority: boolean
   progress: CrawlProgressSnapshot | null
 }
 

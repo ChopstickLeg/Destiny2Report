@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { bungieUrl } from '@/lib/api/bungie'
+import type { DestinyMembership } from '@/lib/api/types'
+import { platformLabel } from '@/lib/platform'
 
 const session = useSessionStore()
 const route = useRoute()
+const router = useRouter()
 
 const open = ref(false)
 const rootEl = ref<HTMLElement | null>(null)
@@ -62,6 +65,18 @@ function signOut() {
   close()
   session.signOut()
 }
+
+function chooseMembership(membership: DestinyMembership) {
+  session.selectMembership(membership)
+  close()
+  void router.push({
+    name: 'report-overview',
+    params: {
+      membershipTypeId: membership.membershipType,
+      membershipId: membership.membershipId,
+    },
+  })
+}
 </script>
 
 <template>
@@ -100,6 +115,30 @@ function signOut() {
       </button>
 
       <div v-if="open" class="menu" role="menu">
+        <template v-if="session.selectableMemberships.length > 1">
+          <p class="menu-label">Destiny profile</p>
+          <button
+            v-for="membership in session.selectableMemberships"
+            :key="`${membership.membershipType}:${membership.membershipId}`"
+            class="menu-item profile-item"
+            role="menuitemradio"
+            type="button"
+            :aria-checked="session.activeMembership?.membershipId === membership.membershipId"
+            @click="chooseMembership(membership)"
+          >
+            <span>
+              {{ platformLabel(membership.membershipType) }}
+              <small>{{ membership.displayName || 'Destiny profile' }}</small>
+            </span>
+            <span
+              v-if="session.activeMembership?.membershipId === membership.membershipId"
+              aria-hidden="true"
+              >✓</span
+            >
+          </button>
+          <div class="menu-rule" role="presentation" />
+        </template>
+
         <RouterLink
           v-if="reportLink"
           class="menu-item"
@@ -217,6 +256,31 @@ function signOut() {
 .menu-item:hover {
   background: var(--color-surface);
   color: var(--color-text);
+}
+
+.menu-label {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.profile-item > span:first-child {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.profile-item small {
+  max-width: 11rem;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .menu-rule {

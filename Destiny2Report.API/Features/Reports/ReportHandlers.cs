@@ -725,10 +725,18 @@ public static class ReportHandlers
         Builders<CrawlJob>.Filter.Eq(item => item.State, CrawlJob.StateQueued)
         & Builders<CrawlJob>.Filter.Eq(item => item.DispatchedToRedis, job.DispatchedToRedis);
 
-    internal static FilterDefinition<CrawlJob> BuildJobsAheadFilter(CrawlJob job) =>
-        Builders<CrawlJob>.Filter.Lt(item => item.QueuedAtUtc, job.QueuedAtUtc)
-        | (Builders<CrawlJob>.Filter.Eq(item => item.QueuedAtUtc, job.QueuedAtUtc)
-            & Builders<CrawlJob>.Filter.Lt(item => item.PlayerKey, job.PlayerKey));
+    internal static FilterDefinition<CrawlJob> BuildJobsAheadFilter(CrawlJob job)
+    {
+        var filters = Builders<CrawlJob>.Filter;
+        var priority = filters.Eq(item => item.IsPriority, true);
+        var normal = filters.Eq(item => item.IsPriority, false)
+            | filters.Exists(item => item.IsPriority, false);
+        var earlier = filters.Lt(item => item.QueuedAtUtc, job.QueuedAtUtc)
+            | (filters.Eq(item => item.QueuedAtUtc, job.QueuedAtUtc)
+                & filters.Lt(item => item.PlayerKey, job.PlayerKey));
+
+        return job.IsPriority ? priority & earlier : priority | (normal & earlier);
+    }
 
     private static ReportQueueStatusResponse BuildQueueStatus(
         int membershipTypeId,
