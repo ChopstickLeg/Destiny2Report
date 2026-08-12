@@ -132,13 +132,26 @@ public sealed class CrawlerJobQueue(
             job = await jobs.Find(item => item.PlayerKey == playerKey)
                 .FirstAsync(cancellationToken)
                 .ConfigureAwait(false);
-            return ToResponse(job);
+        }
+
+        job = await DispatchIfNeededAsync(jobs, job, cancellationToken).ConfigureAwait(false);
+        return ToResponse(job);
+    }
+
+    private async Task<CrawlJob> DispatchIfNeededAsync(
+        IMongoCollection<CrawlJob> jobs,
+        CrawlJob job,
+        CancellationToken cancellationToken)
+    {
+        if (job.State != CrawlJob.StateQueued || job.DispatchedToRedis)
+        {
+            return job;
         }
 
         try
         {
             await DispatchAsync(job, cancellationToken).ConfigureAwait(false);
-            job = await jobs.Find(item => item.PlayerKey == playerKey)
+            job = await jobs.Find(item => item.PlayerKey == job.PlayerKey)
                 .FirstAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -147,12 +160,12 @@ public sealed class CrawlerJobQueue(
             logger.LogWarning(
                 exception,
                 "Crawler run {RunId} for {MembershipType}/{MembershipId} is durable in Mongo but could not be dispatched to Redis.",
-                runId,
-                membershipTypeId,
-                membershipId);
+                job.RunId,
+                job.MembershipTypeId,
+                job.MembershipId);
         }
 
-        return ToResponse(job);
+        return job;
     }
 
     internal static bool IsDuplicateKeyCommand(int errorCode) => errorCode is 11000 or 11001;
@@ -181,8 +194,7 @@ public sealed class CrawlerJobQueue(
             .ConfigureAwait(false);
 
         var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
-        var filter = Builders<CrawlJob>.Filter.Eq(item => item.PlayerKey, job.PlayerKey)
-            & Builders<CrawlJob>.Filter.Eq(item => item.RunId, job.RunId);
+        var filter = BuildDispatchOwnershipFilter(job);
         var update = Builders<CrawlJob>.Update
             .Set(item => item.DispatchedToRedis, true)
             .Set(item => item.StreamEntryId, streamId.ToString())
@@ -219,6 +231,12 @@ public sealed class CrawlerJobQueue(
                 job.RunId);
         }
     }
+
+    internal static FilterDefinition<CrawlJob> BuildDispatchOwnershipFilter(CrawlJob job) =>
+        Builders<CrawlJob>.Filter.Eq(item => item.PlayerKey, job.PlayerKey)
+        & Builders<CrawlJob>.Filter.Eq(item => item.RunId, job.RunId)
+        & Builders<CrawlJob>.Filter.Eq(item => item.State, CrawlJob.StateQueued)
+        & Builders<CrawlJob>.Filter.Eq(item => item.DispatchedToRedis, false);
 
     private static ReportQueueResponse ToResponse(CrawlJob job) => new(
         job.RunId,

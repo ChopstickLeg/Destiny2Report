@@ -50,6 +50,28 @@ public sealed class CrawlerProtocolTests
     }
 
     [Fact]
+    public void Redis_dispatch_only_promotes_the_same_queued_mongo_only_run()
+    {
+        var job = new CrawlJob
+        {
+            PlayerKey = CrawlJob.CreatePlayerKey(1, 4611686018486531184L),
+            RunId = "run",
+            State = CrawlJob.StateQueued,
+            DispatchedToRedis = false
+        };
+
+        var filter = CrawlerJobQueue.BuildDispatchOwnershipFilter(job);
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+
+        Assert.Equal(job.PlayerKey, rendered["_id"].AsByteArray);
+        Assert.Equal("run", rendered["r"].AsString);
+        Assert.Equal(CrawlJob.StateQueued, rendered["s"].AsString);
+        Assert.False(rendered["d"].AsBoolean);
+    }
+
+    [Fact]
     public void Dispatch_status_backfills_identity_without_overwriting_a_worker_with_a_newer_fence()
     {
         var newerFenceBranch = CrawlerJobQueue.DispatchStatusScript[

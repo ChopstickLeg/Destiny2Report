@@ -2,6 +2,9 @@ using System.Reflection;
 using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Features.Reports;
 using Microsoft.AspNetCore.Mvc;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
+using MongoDB.Driver;
 using StackExchange.Redis;
 
 namespace Destiny2Report.Tests.Features.Reports;
@@ -155,6 +158,47 @@ public sealed class ReportHandlersBusinessLogicTests
         Assert.Equal(3, result.Position);
         Assert.Equal(12, result.QueueLength);
         Assert.Equal(updatedAt, result.UpdatedAtUtc);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void BuildQueueCohortFilter_separates_redis_and_mongo_queues(bool dispatchedToRedis)
+    {
+        var job = new CrawlJob
+        {
+            State = CrawlJob.StateQueued,
+            DispatchedToRedis = dispatchedToRedis
+        };
+
+        var filter = ReportHandlers.BuildQueueCohortFilter(job);
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+
+        Assert.Equal(CrawlJob.StateQueued, rendered["s"].AsString);
+        Assert.Equal(dispatchedToRedis, rendered["d"].AsBoolean);
+    }
+
+    [Fact]
+    public void BuildJobsAheadFilter_uses_enqueue_time_then_player_key_for_stable_ordering()
+    {
+        var job = new CrawlJob
+        {
+            PlayerKey = CrawlJob.CreatePlayerKey(1, 4611686018463095984L),
+            QueuedAtUtc = DateTime.Parse("2026-08-12T12:00:00Z").ToUniversalTime()
+        };
+
+        var filter = ReportHandlers.BuildJobsAheadFilter(job);
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+        var renderedJson = rendered.ToJson();
+
+        Assert.Contains("$or", renderedJson);
+        Assert.Contains("qa", renderedJson);
+        Assert.Contains("_id", renderedJson);
+        Assert.Contains("$lt", renderedJson);
     }
 
     [Theory]
