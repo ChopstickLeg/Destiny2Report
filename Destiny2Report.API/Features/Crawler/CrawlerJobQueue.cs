@@ -181,13 +181,26 @@ public sealed class CrawlerJobQueue(
                     .FirstAsync(cancellationToken)
                     .ConfigureAwait(false);
             }
-            return ToResponse(job);
+        }
+
+        job = await DispatchIfNeededAsync(jobs, job, cancellationToken).ConfigureAwait(false);
+        return ToResponse(job);
+    }
+
+    private async Task<CrawlJob> DispatchIfNeededAsync(
+        IMongoCollection<CrawlJob> jobs,
+        CrawlJob job,
+        CancellationToken cancellationToken)
+    {
+        if (job.State != CrawlJob.StateQueued || job.DispatchedToRedis)
+        {
+            return job;
         }
 
         try
         {
             await DispatchAsync(job, cancellationToken).ConfigureAwait(false);
-            job = await jobs.Find(item => item.PlayerKey == playerKey)
+            job = await jobs.Find(item => item.PlayerKey == job.PlayerKey)
                 .FirstAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -196,12 +209,12 @@ public sealed class CrawlerJobQueue(
             logger.LogWarning(
                 exception,
                 "Crawler run {RunId} for {MembershipType}/{MembershipId} is durable in Mongo but could not be dispatched to Redis.",
-                runId,
-                membershipTypeId,
-                membershipId);
+                job.RunId,
+                job.MembershipTypeId,
+                job.MembershipId);
         }
 
-        return ToResponse(job);
+        return job;
     }
 
     internal static bool IsDuplicateKeyCommand(int errorCode) => errorCode is 11000 or 11001;
@@ -221,45 +234,41 @@ public sealed class CrawlerJobQueue(
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
-        var filter = Builders<CrawlJob>.Filter.Eq(item => item.PlayerKey, job.PlayerKey)
-            & Builders<CrawlJob>.Filter.Eq(item => item.RunId, job.RunId);
-        var update = Builders<CrawlJob>.Update
-            .Set(item => item.DispatchedToRedis, true)
-            .Set(item => item.StreamEntryId, streamId.ToString())
-            .Set(item => item.UpdatedAtUtc, DateTime.UtcNow);
-        var result = await jobs.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (result.MatchedCount == 0)
+        var ownershipEstablished = false;
+        try
         {
-            await database.StreamDeleteAsync(streamName, [streamId]).WaitAsync(cancellationToken).ConfigureAwait(false);
-            return;
-        }
+            var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+            var update = Builders<CrawlJob>.Update
+                .Set(item => item.DispatchedToRedis, true)
+                .Set(item => item.StreamEntryId, streamId.ToString())
+                .Set(item => item.UpdatedAtUtc, DateTime.UtcNow);
+            var result = await jobs.UpdateOneAsync(
+                    BuildDispatchOwnershipFilter(job),
+                    update,
+                    cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+            if (result.MatchedCount == 0)
+            {
+                return;
+            }
 
-        var statusKey = CrawlerQueue.JobStatusKey(job.MembershipTypeId, job.MembershipId);
-        var queuedAtUtc = new DateTimeOffset(job.QueuedAtUtc, TimeSpan.Zero).ToString("O");
-        var initialized = (long)await database.ScriptEvaluateAsync(
-                DispatchStatusScript,
-                [statusKey],
-                [
-                    job.RunId,
-                    job.Fence,
-                    job.ProtocolVersion,
-                    job.MembershipTypeId,
-                    job.MembershipId,
-                    streamId.ToString(),
-                    queuedAtUtc,
-                    DateTimeOffset.UtcNow.ToString("O"),
-                    (long)CrawlerQueue.ActiveJobStatusTtl.TotalSeconds
-                ])
-            .WaitAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (initialized == 0)
+            ownershipEstablished = true;
+            await InitializeStatusAsync(database, job, streamId).ConfigureAwait(false);
+        }
+        finally
         {
-            logger.LogDebug(
-                "Skipped stale queued status initialization for crawler run {RunId}; a worker has already advanced its fence.",
-                job.RunId);
+            if (!ownershipEstablished)
+            {
+                await DeleteUnownedEntryAsync(database, streamName, streamId, job.RunId).ConfigureAwait(false);
+            }
         }
     }
+
+    internal static FilterDefinition<CrawlJob> BuildDispatchOwnershipFilter(CrawlJob job) =>
+        Builders<CrawlJob>.Filter.Eq(item => item.PlayerKey, job.PlayerKey)
+        & Builders<CrawlJob>.Filter.Eq(item => item.RunId, job.RunId)
+        & Builders<CrawlJob>.Filter.Eq(item => item.State, CrawlJob.StateQueued)
+        & Builders<CrawlJob>.Filter.Eq(item => item.DispatchedToRedis, false);
 
     private async Task<CrawlJob> PromoteAsync(
         CrawlJob job,
@@ -271,41 +280,54 @@ public sealed class CrawlerJobQueue(
         var priorityStreamId = await AddStreamEntryAsync(database, CrawlerQueue.PriorityStreamName, job)
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
-        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
-        var filter = Builders<CrawlJob>.Filter.Eq(item => item.PlayerKey, job.PlayerKey)
-            & Builders<CrawlJob>.Filter.Eq(item => item.RunId, job.RunId)
-            & Builders<CrawlJob>.Filter.Eq(item => item.State, CrawlJob.StateQueued)
-            & BuildNormalPriorityFilter();
-        var update = Builders<CrawlJob>.Update
-            .Set(item => item.IsPriority, true)
-            .Set(item => item.DispatchedToRedis, true)
-            .Set(item => item.StreamEntryId, priorityStreamId.ToString())
-            .Set(item => item.ForceFullCrawl, job.ForceFullCrawl)
-            .Set(item => item.UpdatedAtUtc, DateTime.UtcNow);
-        var promoted = await jobs.UpdateOneAsync(filter, update, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-        if (promoted.ModifiedCount == 0)
+        var ownershipEstablished = false;
+        try
         {
-            await database.StreamDeleteAsync(CrawlerQueue.PriorityStreamName, [priorityStreamId])
-                .WaitAsync(cancellationToken)
+            var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+            var filter = Builders<CrawlJob>.Filter.Eq(item => item.PlayerKey, job.PlayerKey)
+                & Builders<CrawlJob>.Filter.Eq(item => item.RunId, job.RunId)
+                & Builders<CrawlJob>.Filter.Eq(item => item.State, CrawlJob.StateQueued)
+                & BuildNormalPriorityFilter();
+            var update = Builders<CrawlJob>.Update
+                .Set(item => item.IsPriority, true)
+                .Set(item => item.DispatchedToRedis, true)
+                .Set(item => item.StreamEntryId, priorityStreamId.ToString())
+                .Set(item => item.ForceFullCrawl, job.ForceFullCrawl)
+                .Set(item => item.UpdatedAtUtc, DateTime.UtcNow);
+            var promoted = await jobs.UpdateOneAsync(filter, update, cancellationToken: CancellationToken.None)
                 .ConfigureAwait(false);
-            return await jobs.Find(item => item.PlayerKey == job.PlayerKey)
+            if (promoted.ModifiedCount == 0)
+            {
+                return await jobs.Find(item => item.PlayerKey == job.PlayerKey)
+                    .FirstAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            ownershipEstablished = true;
+            if (!string.IsNullOrWhiteSpace(job.StreamEntryId))
+            {
+                await database.StreamDeleteAsync(CrawlerQueue.StreamName, [job.StreamEntryId])
+                    .ConfigureAwait(false);
+            }
+
+            var promotedJob = await jobs.Find(item => item.PlayerKey == job.PlayerKey)
                 .FirstAsync(cancellationToken)
                 .ConfigureAwait(false);
+            await InitializeStatusAsync(database, promotedJob, priorityStreamId).ConfigureAwait(false);
+            return promotedJob;
         }
-
-        if (!string.IsNullOrWhiteSpace(job.StreamEntryId))
+        finally
         {
-            await database.StreamDeleteAsync(CrawlerQueue.StreamName, [job.StreamEntryId])
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
+            if (!ownershipEstablished)
+            {
+                await DeleteUnownedEntryAsync(
+                        database,
+                        CrawlerQueue.PriorityStreamName,
+                        priorityStreamId,
+                        job.RunId)
+                    .ConfigureAwait(false);
+            }
         }
-
-        var promotedJob = await jobs.Find(item => item.PlayerKey == job.PlayerKey)
-            .FirstAsync(cancellationToken)
-            .ConfigureAwait(false);
-        await InitializeStatusAsync(database, promotedJob, priorityStreamId).ConfigureAwait(false);
-        return promotedJob;
     }
 
     private static Task<RedisValue> AddStreamEntryAsync(IDatabase database, string streamName, CrawlJob job) =>
@@ -339,6 +361,26 @@ public sealed class CrawlerJobQueue(
                     (long)CrawlerQueue.ActiveJobStatusTtl.TotalSeconds
                 ])
             .ConfigureAwait(false);
+    }
+
+    private async Task DeleteUnownedEntryAsync(
+        IDatabase database,
+        string streamName,
+        RedisValue streamId,
+        string runId)
+    {
+        try
+        {
+            await database.StreamDeleteAsync(streamName, [streamId]).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not remove unowned Redis stream entry {StreamEntryId} for crawler run {RunId}.",
+                streamId,
+                runId);
+        }
     }
 
     private static ReportQueueResponse ToResponse(CrawlJob job) => new(

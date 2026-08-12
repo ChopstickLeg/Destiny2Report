@@ -313,14 +313,11 @@ impl Worker {
         match self.claim(&message).await {
             Ok(Some(job)) => self.execute_instrumented(job, true, cancellation).await,
             Ok(None) => {
-                if let Ok(Some(current)) = self
+                if let Ok(current) = self
                     .find_job(message.membership_type_id, message.membership_id)
                     .await
                 {
-                    if current.run_id != message.run_id
-                        || current.priority != message.priority
-                        || !matches!(current.state.as_str(), STATE_QUEUED | STATE_RUNNING)
-                    {
+                    if should_ack_unclaimed_message(current.as_ref(), &message) {
                         let _ = self.ack(&message.stream_entry_id, message.priority).await;
                     }
                 }
@@ -790,6 +787,8 @@ fn stream_claim_filter(message: &CrawlMessage, now: DateTime) -> Document {
         "_id": player_key(message.membership_type_id, message.membership_id),
         "v": PROTOCOL_VERSION,
         "r": &message.run_id,
+        "d": true,
+        "se": &message.stream_entry_id,
         "$or": [
             { "s": STATE_QUEUED },
             { "s": STATE_RUNNING, "le": { "$lt": now } }
@@ -797,6 +796,14 @@ fn stream_claim_filter(message: &CrawlMessage, now: DateTime) -> Document {
     };
     filter.extend(priority_filter(message.priority));
     filter
+}
+
+fn should_ack_unclaimed_message(current: Option<&CrawlJob>, message: &CrawlMessage) -> bool {
+    let Some(current) = current else { return true };
+    current.run_id != message.run_id
+        || current.priority != message.priority
+        || !matches!(current.state.as_str(), STATE_QUEUED | STATE_RUNNING)
+        || (current.dispatched && current.stream_entry_id != message.stream_entry_id)
 }
 
 fn priority_filter(priority: bool) -> Document {
@@ -1065,7 +1072,66 @@ mod tests {
 
         assert_eq!(filter.get_i32("v").unwrap(), PROTOCOL_VERSION);
         assert_eq!(filter.get_str("r").unwrap(), "run");
+        assert!(filter.get_bool("d").unwrap());
+        assert_eq!(filter.get_str("se").unwrap(), "123-0");
         assert!(filter.get_bool("p").unwrap());
+    }
+
+    #[test]
+    fn uncommitted_same_run_dispatch_is_left_pending_for_mongo_commit() {
+        let job = queued_job(false, "", true);
+        let message = crawl_message("123-0", true);
+
+        assert!(!should_ack_unclaimed_message(Some(&job), &message));
+    }
+
+    #[test]
+    fn committed_same_run_orphan_is_acknowledged() {
+        let job = queued_job(true, "456-0", true);
+        let message = crawl_message("123-0", true);
+
+        assert!(should_ack_unclaimed_message(Some(&job), &message));
+    }
+
+    #[test]
+    fn orphan_for_a_promoted_job_is_acknowledged_on_the_old_stream() {
+        let job = queued_job(true, "456-0", true);
+        let message = crawl_message("123-0", false);
+
+        assert!(should_ack_unclaimed_message(Some(&job), &message));
+    }
+
+    fn crawl_message(stream_entry_id: &str, priority: bool) -> CrawlMessage {
+        CrawlMessage {
+            protocol_version: PROTOCOL_VERSION,
+            run_id: "run".into(),
+            membership_type_id: 3,
+            membership_id: 42,
+            stream_entry_id: stream_entry_id.into(),
+            priority,
+        }
+    }
+
+    fn queued_job(dispatched: bool, stream_entry_id: &str, priority: bool) -> CrawlJob {
+        CrawlJob {
+            player_key: player_key(3, 42),
+            membership_type_id: 3,
+            membership_id: 42,
+            display_name: String::new(),
+            protocol_version: PROTOCOL_VERSION,
+            run_id: "run".into(),
+            state: STATE_QUEUED.into(),
+            dispatched,
+            stream_entry_id: stream_entry_id.into(),
+            priority,
+            fence: 0,
+            lease_owner: String::new(),
+            lease_expires_at: None,
+            queued_at: DateTime::now(),
+            started_at: None,
+            force_full_crawl: false,
+            active_generation: String::new(),
+        }
     }
 
     #[test]
