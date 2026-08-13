@@ -868,16 +868,6 @@ pub async fn crawl(
         .collect::<std::collections::BTreeMap<_, _>>();
     let encountered_bytes = encode_encounters(&encountered);
     let crucible = mode_totals.get(&5);
-    let gambit_kills = [63, 75]
-        .into_iter()
-        .filter_map(|mode| mode_totals.get(&mode))
-        .map(|value| value.kills)
-        .sum::<f64>();
-    let gambit_deaths = [63, 75]
-        .into_iter()
-        .filter_map(|mode| mode_totals.get(&mode))
-        .map(|value| value.deaths)
-        .sum::<f64>();
     let gambit_entered = [63, 75]
         .into_iter()
         .filter_map(|mode| mode_totals.get(&mode))
@@ -927,8 +917,8 @@ pub async fn crawl(
         "totalKills": total_kills,
         "crucibleKd": mode_kd(crucible),
         "crucibleKda": average_mode_kda(crucible),
-        "gambitKd": kd_with_fallback(gambit_kills, gambit_deaths, &gambit_kds),
-        "gambitKda": round3(if gambit_kdas.is_empty() { 0.0 } else { gambit_kdas.iter().sum::<f64>() / gambit_kdas.len() as f64 }),
+        "gambitKd": average_values(&gambit_kds),
+        "gambitKda": average_values(&gambit_kdas),
         "crucibleMatchesPlayed": crucible.map(|value| value.entered).unwrap_or(0),
         "gambitMatchesPlayed": gambit_entered,
         "crucibleWins": crucible.map(|value| value.wins).unwrap_or(0),
@@ -2726,24 +2716,21 @@ fn round3(value: f64) -> f64 {
 fn average_mode_kda(value: Option<&ModeTotals>) -> f64 {
     value
         .filter(|value| !value.kda_values.is_empty())
-        .map(|value| round3(value.kda_values.iter().sum::<f64>() / value.kda_values.len() as f64))
+        .map(|value| average_values(&value.kda_values))
         .unwrap_or(0.0)
 }
 
 fn mode_kd(value: Option<&ModeTotals>) -> f64 {
     value
-        .map(|value| kd_with_fallback(value.kills, value.deaths, &value.kd_values))
+        .map(|value| average_values(&value.kd_values))
         .unwrap_or(0.0)
 }
 
-fn kd_with_fallback(kills: f64, deaths: f64, fallback_values: &[f64]) -> f64 {
-    if deaths > 0.0 {
-        return ratio(kills, deaths);
-    }
-    if fallback_values.is_empty() {
+fn average_values(values: &[f64]) -> f64 {
+    if values.is_empty() {
         0.0
     } else {
-        round3(fallback_values.iter().sum::<f64>() / fallback_values.len() as f64)
+        round3(values.iter().sum::<f64>() / values.len() as f64)
     }
 }
 
@@ -3323,9 +3310,9 @@ mod tests {
     }
 
     #[test]
-    fn kd_falls_back_to_bungie_ratio_for_deathless_stats() {
-        assert_eq!(kd_with_fallback(42.0, 0.0, &[7.25, 8.75]), 8.0);
-        assert_eq!(kd_with_fallback(42.0, 2.0, &[99.0]), 21.0);
+    fn kd_averages_bungie_ratios_like_kda() {
+        assert_eq!(average_values(&[7.25, 8.75]), 8.0);
+        assert_eq!(average_values(&[1.0, 3.0]), 2.0);
     }
 
     #[test]
