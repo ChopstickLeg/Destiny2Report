@@ -18,7 +18,15 @@ public interface ICrawlerJobQueue
         long membershipId,
         bool forceFullCrawl,
         CancellationToken cancellationToken);
+
+    Task<CrawlerJobEnqueueResult> EnqueueTrackedAsync(
+        int membershipTypeId,
+        long membershipId,
+        bool forceFullCrawl,
+        CancellationToken cancellationToken);
 }
+
+public sealed record CrawlerJobEnqueueResult(ReportQueueResponse Response, bool CreatedNewJob);
 
 public sealed class CrawlerJobQueue(
     IMongoDatabase mongoDatabase,
@@ -70,14 +78,26 @@ public sealed class CrawlerJobQueue(
         long membershipId,
         bool forceFullCrawl,
         CancellationToken cancellationToken) =>
-        await EnqueueInternalAsync(
+        (await EnqueueInternalAsync(
             membershipTypeId,
             membershipId,
             forceFullCrawl,
             priority: false,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false)).Response;
 
     public async Task<ReportQueueResponse> EnqueuePriorityAsync(
+        int membershipTypeId,
+        long membershipId,
+        bool forceFullCrawl,
+        CancellationToken cancellationToken) =>
+        (await EnqueueInternalAsync(
+            membershipTypeId,
+            membershipId,
+            forceFullCrawl,
+            priority: true,
+            cancellationToken).ConfigureAwait(false)).Response;
+
+    public async Task<CrawlerJobEnqueueResult> EnqueueTrackedAsync(
         int membershipTypeId,
         long membershipId,
         bool forceFullCrawl,
@@ -86,10 +106,10 @@ public sealed class CrawlerJobQueue(
             membershipTypeId,
             membershipId,
             forceFullCrawl,
-            priority: true,
+            priority: false,
             cancellationToken).ConfigureAwait(false);
 
-    private async Task<ReportQueueResponse> EnqueueInternalAsync(
+    private async Task<CrawlerJobEnqueueResult> EnqueueInternalAsync(
         int membershipTypeId,
         long membershipId,
         bool forceFullCrawl,
@@ -159,7 +179,8 @@ public sealed class CrawlerJobQueue(
             job = null;
         }
 
-        if (job is null || job.RunId != runId)
+        var createdNewJob = WasCreatedByRun(job, runId);
+        if (!createdNewJob)
         {
             job = await jobs.Find(item => item.PlayerKey == playerKey)
                 .FirstAsync(cancellationToken)
@@ -183,9 +204,14 @@ public sealed class CrawlerJobQueue(
             }
         }
 
-        job = await DispatchIfNeededAsync(jobs, job, cancellationToken).ConfigureAwait(false);
-        return ToResponse(job);
+        // Once Mongo admission succeeds, the durable job must outlive request cancellation.
+        // Dispatch is best-effort and already degrades to the Mongo-backed scheduler on failure.
+        job = await DispatchIfNeededAsync(jobs, job!, CancellationToken.None).ConfigureAwait(false);
+        return new CrawlerJobEnqueueResult(ToResponse(job), createdNewJob);
     }
+
+    internal static bool WasCreatedByRun(CrawlJob? job, string runId) =>
+        job is not null && job.RunId == runId;
 
     private async Task<CrawlJob> DispatchIfNeededAsync(
         IMongoCollection<CrawlJob> jobs,

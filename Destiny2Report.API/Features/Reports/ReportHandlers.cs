@@ -321,6 +321,15 @@ public static class ReportHandlers
         }
 
         System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", 1);
+        if (!await turnstile.VerifyAsync(
+                request.TurnstileToken,
+                clientDiagnostics.PartitionKey,
+                cancellationToken)
+            .ConfigureAwait(false))
+        {
+            return BuildTurnstileFailureResponse();
+        }
+
         var admissionIdentity = await queueAdmission.ResolveIdentityAsync(
                 httpContext.Request,
                 httpContext.Response,
@@ -336,15 +345,6 @@ public static class ReportHandlers
             System.Diagnostics.Activity.Current?.SetTag("destiny.bungie_membership_id", bungieMembershipId);
         }
 
-        if (!await turnstile.VerifyAsync(
-                request.TurnstileToken,
-                clientDiagnostics.PartitionKey,
-                cancellationToken)
-            .ConfigureAwait(false))
-        {
-            return BuildTurnstileFailureResponse();
-        }
-
         var existingReport = await FindReportAsync(
                 mongoDatabase,
                 request.MembershipTypeId,
@@ -357,26 +357,38 @@ public static class ReportHandlers
             return BuildCrawlCooldownResponse(httpResponse, retryAfter.Value);
         }
 
-        if (existingReport?.CrawlState is not (DestinyReport.CrawlStateQueued or DestinyReport.CrawlStateRunning))
-        {
-            var admission = await queueAdmission.ReserveAsync(
-                    admissionIdentity,
-                    existingReport is null,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            if (!admission.Allowed)
-            {
-                return BuildQueueAdmissionFailureResponse(httpResponse, admission.Failure, admission.RetryAfter);
-            }
-        }
-
-        var response = await crawlerJobQueue.EnqueueAsync(
-                request.MembershipTypeId,
-                request.MembershipId,
-                forceFullCrawl: false,
+        var admission = await queueAdmission.ReserveAsync(
+                admissionIdentity,
+                existingReport is null,
                 cancellationToken)
             .ConfigureAwait(false);
-        return TypedResults.Accepted((string?)null, response);
+        if (!admission.Allowed)
+        {
+            return BuildQueueAdmissionFailureResponse(httpResponse, admission.Failure, admission.RetryAfter);
+        }
+
+        var keepCharge = false;
+        try
+        {
+            // A client disconnect after quota reservation must not leave the
+            // durable-write outcome ambiguous or burn quota without a job.
+            var enqueueResult = await crawlerJobQueue.EnqueueTrackedAsync(
+                    request.MembershipTypeId,
+                    request.MembershipId,
+                    forceFullCrawl: false,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            keepCharge = enqueueResult.CreatedNewJob;
+            return TypedResults.Accepted((string?)null, enqueueResult.Response);
+        }
+        finally
+        {
+            await queueAdmission.CompleteAsync(
+                    admission.Reservation,
+                    keepCharge,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
     }
 
     private static IResult BuildTurnstileFailureResponse() => TypedResults.Problem(

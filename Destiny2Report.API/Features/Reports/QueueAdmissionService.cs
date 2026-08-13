@@ -52,10 +52,17 @@ public sealed record QueueAdmissionIdentity(
 
 public sealed record QueueAdmissionDecision(
     QueueAdmissionFailure Failure = QueueAdmissionFailure.None,
-    TimeSpan? RetryAfter = null)
+    TimeSpan? RetryAfter = null,
+    QueueAdmissionReservation? Reservation = null)
 {
     public bool Allowed => Failure == QueueAdmissionFailure.None;
 }
+
+public sealed record QueueAdmissionReservation(
+    string Id,
+    long BungieMembershipId,
+    bool IsNewReport,
+    DateTimeOffset ReservedAtUtc);
 
 public interface IQueueAdmissionService
 {
@@ -68,6 +75,11 @@ public interface IQueueAdmissionService
         QueueAdmissionIdentity identity,
         bool isNewReport,
         CancellationToken cancellationToken);
+
+    Task CompleteAsync(
+        QueueAdmissionReservation? reservation,
+        bool keepCharge,
+        CancellationToken cancellationToken);
 }
 
 public interface IQueueAdmissionQuotaStore
@@ -75,6 +87,11 @@ public interface IQueueAdmissionQuotaStore
     Task<QueueAdmissionDecision> ReserveAsync(
         long bungieMembershipId,
         bool isNewReport,
+        CancellationToken cancellationToken);
+
+    Task CompleteAsync(
+        QueueAdmissionReservation reservation,
+        bool keepCharge,
         CancellationToken cancellationToken);
 }
 
@@ -184,6 +201,13 @@ public sealed class QueueAdmissionService(
             : Task.FromResult(new QueueAdmissionDecision(QueueAdmissionFailure.AuthenticationRequired));
     }
 
+    public Task CompleteAsync(
+        QueueAdmissionReservation? reservation,
+        bool keepCharge,
+        CancellationToken cancellationToken) => reservation is null
+        ? Task.CompletedTask
+        : quotaStore.CompleteAsync(reservation, keepCharge, cancellationToken);
+
     private static QueueAdmissionIdentity AuthenticationRequired() =>
         new(true, null, QueueAdmissionFailure.AuthenticationRequired);
 }
@@ -223,7 +247,27 @@ public sealed class RedisQueueAdmissionQuotaStore(
         if is_new == 1 then increment(KEYS[2], day_ttl) end
         increment(KEYS[3], hour_ttl)
         if is_new == 1 then increment(KEYS[4], day_ttl) end
+        redis.call('SET', KEYS[5], '1', 'EX', day_ttl)
         return 0
+        """;
+    private const string CompleteScript = """
+        if redis.call('DEL', KEYS[5]) == 0 then return 0 end
+        if tonumber(ARGV[1]) == 1 then return 1 end
+
+        local function decrement(key)
+            local value = tonumber(redis.call('GET', key) or '0')
+            if value > 1 then
+                redis.call('DECR', key)
+            elseif value == 1 then
+                redis.call('DEL', key)
+            end
+        end
+
+        decrement(KEYS[1])
+        if tonumber(ARGV[2]) == 1 then decrement(KEYS[2]) end
+        decrement(KEYS[3])
+        if tonumber(ARGV[2]) == 1 then decrement(KEYS[4]) end
+        return 1
         """;
 
     public async Task<QueueAdmissionDecision> ReserveAsync(
@@ -240,14 +284,12 @@ public sealed class RedisQueueAdmissionQuotaStore(
         var dayBucket = dayStart.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
         var hourTtl = Math.Max(60, (long)Math.Ceiling((nextHour - now).TotalSeconds) + 60);
         var dayTtl = Math.Max(60, (long)Math.Ceiling((nextDay - now).TotalSeconds) + 60);
-
-        var keys = new RedisKey[]
-        {
-            $"{KeyPrefix}account:{bungieMembershipId}:requests:{dayBucket}",
-            $"{KeyPrefix}account:{bungieMembershipId}:new:{dayBucket}",
-            $"{KeyPrefix}global:requests:{hourBucket}",
-            $"{KeyPrefix}global:new:{dayBucket}"
-        };
+        var reservation = new QueueAdmissionReservation(
+            Guid.NewGuid().ToString("N"),
+            bungieMembershipId,
+            isNewReport,
+            now);
+        var keys = BuildKeys(reservation, hourBucket, dayBucket);
         var values = new RedisValue[]
         {
             options.Value.MaxRequestsPerAccountPerDay,
@@ -269,7 +311,7 @@ public sealed class RedisQueueAdmissionQuotaStore(
             var code = (int)result;
             return code switch
             {
-                0 => new QueueAdmissionDecision(),
+                0 => new QueueAdmissionDecision(Reservation: reservation),
                 1 => new QueueAdmissionDecision(QueueAdmissionFailure.AccountDailyLimit, nextDay - now),
                 2 => new QueueAdmissionDecision(QueueAdmissionFailure.AccountNewReportDailyLimit, nextDay - now),
                 3 => new QueueAdmissionDecision(QueueAdmissionFailure.GlobalHourlyLimit, nextHour - now),
@@ -287,6 +329,61 @@ public sealed class RedisQueueAdmissionQuotaStore(
             return Unavailable();
         }
     }
+
+    public async Task CompleteAsync(
+        QueueAdmissionReservation reservation,
+        bool keepCharge,
+        CancellationToken cancellationToken)
+    {
+        var hourBucket = reservation.ReservedAtUtc.ToString(
+            "yyyyMMddHH",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var dayBucket = reservation.ReservedAtUtc.ToString(
+            "yyyyMMdd",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var keys = BuildKeys(reservation, hourBucket, dayBucket);
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await redis.GetDatabase()
+                .ScriptEvaluateAsync(
+                    CompleteScript,
+                    keys,
+                    [keepCharge ? 1 : 0, reservation.IsNewReport ? 1 : 0])
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception,
+                "Could not {QueueAdmissionCompletion} queue quota reservation {ReservationId} for Bungie account {BungieMembershipId}.",
+                keepCharge ? "commit" : "release",
+                reservation.Id,
+                reservation.BungieMembershipId);
+            if (!keepCharge)
+            {
+                throw;
+            }
+        }
+    }
+
+    private static RedisKey[] BuildKeys(
+        QueueAdmissionReservation reservation,
+        string hourBucket,
+        string dayBucket) =>
+    [
+        $"{KeyPrefix}account:{reservation.BungieMembershipId}:requests:{dayBucket}",
+        $"{KeyPrefix}account:{reservation.BungieMembershipId}:new:{dayBucket}",
+        $"{KeyPrefix}global:requests:{hourBucket}",
+        $"{KeyPrefix}global:new:{dayBucket}",
+        $"{KeyPrefix}reservation:{reservation.Id}"
+    ];
 
     private static QueueAdmissionDecision Unavailable() =>
         new(QueueAdmissionFailure.AdmissionUnavailable);

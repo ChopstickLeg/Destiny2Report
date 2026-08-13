@@ -11,6 +11,16 @@ namespace Destiny2Report.Tests.Features.Crawler;
 public sealed class CrawlerProtocolTests
 {
     [Fact]
+    public void Enqueue_tracking_only_marks_the_atomic_admission_winner_as_new()
+    {
+        var job = new CrawlJob { RunId = "winning-run" };
+
+        Assert.True(CrawlerJobQueue.WasCreatedByRun(job, "winning-run"));
+        Assert.False(CrawlerJobQueue.WasCreatedByRun(job, "losing-run"));
+        Assert.False(CrawlerJobQueue.WasCreatedByRun(null, "winning-run"));
+    }
+
+    [Fact]
     public void Player_key_is_stable_and_language_neutral()
     {
         var key = CrawlJob.CreatePlayerKey(3, 0x0102_0304_0506_0708);

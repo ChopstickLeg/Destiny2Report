@@ -148,5 +148,12 @@ public sealed class AdminHandlersTests
                 CrawlJob.StateQueued,
                 DateTimeOffset.UtcNow));
         }
+
+        public async Task<CrawlerJobEnqueueResult> EnqueueTrackedAsync(
+            int membershipTypeId,
+            long membershipId,
+            bool forceFullCrawl,
+            CancellationToken cancellationToken) =>
+            new(await EnqueueAsync(membershipTypeId, membershipId, forceFullCrawl, cancellationToken), true);
     }
 }

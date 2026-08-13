@@ -111,5 +111,10 @@ public sealed class QueueAdmissionOptionsTests
             long bungieMembershipId,
             bool isNewReport,
             CancellationToken cancellationToken) => Task.FromResult(new QueueAdmissionDecision());
+
+        public Task CompleteAsync(
+            QueueAdmissionReservation reservation,
+            bool keepCharge,
+            CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }
