@@ -74,6 +74,24 @@ public sealed class ReportHandlersBusinessLogicTests
     }
 
     [Fact]
+    public void TryValidateQueueRequests_rejects_batches_over_the_import_limit()
+    {
+        IReadOnlyList<ReportQueueRequest> requests = Enumerable
+            .Range(1, ReportHandlers.MaxQueueBatchSize + 1)
+            .Select(index => new ReportQueueRequest(1, 4611686018463095984L + index))
+            .ToArray();
+        var arguments = new object?[] { requests, null, null };
+
+        var isValid = (bool)Invoke("TryValidateQueueRequests", arguments)!;
+
+        Assert.False(isValid);
+        var problem = Assert.IsType<ProblemDetails>(arguments[2]);
+        Assert.Equal("Queue batch too large", problem.Title);
+        Assert.Equal($"At most {ReportHandlers.MaxQueueBatchSize} memberships can be queued at once.", problem.Detail);
+        Assert.Equal(400, problem.Status);
+    }
+
+    [Fact]
     public void TryReadMatchingJobEvent_reads_only_events_for_requested_membership()
     {
         var updatedAt = DateTimeOffset.Parse("2026-06-19T12:00:00Z");
