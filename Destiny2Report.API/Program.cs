@@ -36,6 +36,7 @@ builder.Services.AddHttpClient<IBungieAuthService, BungieAuthService>(httpClient
     httpClient.BaseAddress = new Uri("https://www.bungie.net/Platform/");
 });
 builder.Services.AddSingleton<ICrawlerJobQueue, CrawlerJobQueue>();
+builder.Services.AddSingleton<IQueueTicketService, QueueTicketService>();
 builder.Services.AddSingleton<ICrawlGenerationStore, CrawlGenerationStore>();
 builder.Services.AddOptions<LeaderboardsOptions>()
     .Bind(builder.Configuration.GetSection(LeaderboardsOptions.SectionName))

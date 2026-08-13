@@ -38,7 +38,8 @@ public sealed record DestinyMembershipResponse(
     string? IconPath,
     int CrossSaveOverride,
     IReadOnlyCollection<int> ApplicableMembershipTypes,
-    bool IsPublic);
+    bool IsPublic,
+    string QueueTicket = "");
 
 internal sealed record BungieApiResponse<TResponse>(
     TResponse? Response,

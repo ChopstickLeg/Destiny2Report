@@ -19,7 +19,6 @@ using System.Text.Json;
 public static class ReportHandlers
 {
     private const int AllMembershipTypes = 254;
-    internal const int MaxQueueBatchSize = 50;
     private const int StoryShareTokenBytes = 32;
     private static readonly TimeSpan ForegroundCrawlCooldown = TimeSpan.FromHours(6);
     private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromSeconds(15);
@@ -299,8 +298,9 @@ public static class ReportHandlers
     }
 
     public static async Task<IResult> QueueCrawl(
-        IReadOnlyList<ReportQueueRequest> requests,
+        ReportQueueRequest request,
         ICrawlerJobQueue crawlerJobQueue,
+        IQueueTicketService queueTickets,
         IMongoDatabase mongoDatabase,
         HttpResponse httpResponse,
         HttpContext httpContext,
@@ -310,40 +310,60 @@ public static class ReportHandlers
         System.Diagnostics.Activity.Current?.SetTag("destiny.client_ip", clientDiagnostics.PartitionKey);
         System.Diagnostics.Activity.Current?.SetTag("destiny.client_ip_source", clientDiagnostics.Source);
 
-        if (!TryValidateQueueRequests(requests, out var memberships, out var problemDetails))
+        if (!TryValidateMembership(request.MembershipTypeId, request.MembershipId, out var problemDetails))
         {
             return TypedResults.BadRequest(problemDetails);
         }
 
-        System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", memberships.Count);
-
-        foreach (var (membershipTypeId, membershipId) in memberships)
+        System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", 1);
+        if (!await queueTickets.ValidateAsync(
+                request.QueueTicket,
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false))
         {
-            var retryAfter = await GetBatchCrawlRetryAfterAsync(
-                    mongoDatabase,
-                    membershipTypeId,
-                    membershipId,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            if (retryAfter is not null)
-            {
-                return BuildCrawlCooldownResponse(httpResponse, retryAfter.Value);
-            }
+            return BuildInvalidQueueTicketResponse();
         }
 
-        var responses = new List<ReportQueueResponse>(memberships.Count);
-        foreach (var (membershipTypeId, membershipId) in memberships)
+        var retryAfter = await GetBatchCrawlRetryAfterAsync(
+                mongoDatabase,
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (retryAfter is not null)
         {
-            responses.Add(await crawlerJobQueue.EnqueueAsync(
-                    membershipTypeId,
-                    membershipId,
-                    forceFullCrawl: false,
-                    cancellationToken)
-                .ConfigureAwait(false));
+            return BuildCrawlCooldownResponse(httpResponse, retryAfter.Value);
         }
 
-        return TypedResults.Accepted<IReadOnlyList<ReportQueueResponse>>((string?)null, responses);
+        if (!await queueTickets.ConsumeAsync(
+                request.QueueTicket,
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false))
+        {
+            return BuildInvalidQueueTicketResponse();
+        }
+
+        var response = await crawlerJobQueue.EnqueueAsync(
+                request.MembershipTypeId,
+                request.MembershipId,
+                forceFullCrawl: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return TypedResults.Accepted((string?)null, response);
     }
+
+    private static IResult BuildInvalidQueueTicketResponse() => TypedResults.Problem(
+        title: "Invalid queue ticket",
+        detail: "Search for this player again or sign in before requesting a report.",
+        statusCode: StatusCodes.Status403Forbidden,
+        extensions: new Dictionary<string, object?>
+        {
+            ["code"] = "invalid_queue_ticket"
+        });
 
     private static async Task<TimeSpan?> GetBatchCrawlRetryAfterAsync(
         IMongoDatabase mongoDatabase,
@@ -814,52 +834,6 @@ public static class ReportHandlers
 
         jobEvent = new ReportJobEvent(0, 0, "", null, null, DateTimeOffset.MinValue, null);
         return false;
-    }
-
-    private static bool TryValidateQueueRequests(
-        IReadOnlyList<ReportQueueRequest> requests,
-        out IReadOnlyList<(int MembershipTypeId, long MembershipId)> memberships,
-        out ProblemDetails problemDetails)
-    {
-        if (requests is null || requests.Count == 0)
-        {
-            memberships = [];
-            problemDetails = new ProblemDetails
-            {
-                Title = "Missing memberships",
-                Detail = "At least one membership must be supplied.",
-                Status = StatusCodes.Status400BadRequest
-            };
-            return false;
-        }
-
-        if (requests.Count > MaxQueueBatchSize)
-        {
-            memberships = [];
-            problemDetails = new ProblemDetails
-            {
-                Title = "Queue batch too large",
-                Detail = $"At most {MaxQueueBatchSize} memberships can be queued at once.",
-                Status = StatusCodes.Status400BadRequest
-            };
-            return false;
-        }
-
-        var membershipsToQueue = new List<(int MembershipTypeId, long MembershipId)>(requests.Count);
-        foreach (var request in requests)
-        {
-            if (!TryValidateMembership(request.MembershipTypeId, request.MembershipId, out problemDetails))
-            {
-                memberships = [];
-                return false;
-            }
-
-            membershipsToQueue.Add((request.MembershipTypeId, request.MembershipId));
-        }
-
-        memberships = membershipsToQueue;
-        problemDetails = new ProblemDetails();
-        return true;
     }
 
     private static bool TryValidateMembership(int membershipTypeId, long membershipId, out ProblemDetails problemDetails)

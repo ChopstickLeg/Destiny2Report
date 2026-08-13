@@ -10,6 +10,7 @@ import { searchPlayers } from '@/lib/api/players'
 import type { PlayerSearchResult } from '@/lib/api/types'
 import { platformLabel } from '@/lib/platform'
 import { rememberPlayer } from '@/lib/recent-players'
+import { rememberQueueTicket } from '@/lib/queue-tickets'
 import { filterByCode, isSearchable, parseSearchQuery } from './search-utils'
 
 const route = useRoute()
@@ -57,6 +58,10 @@ const results = computed<PlayerSearchResult[]>(() =>
 )
 
 function remember(result: PlayerSearchResult) {
+  rememberQueueTicket(
+    { membershipTypeId: result.membershipTypeId, membershipId: result.membershipId },
+    result.queueTicket,
+  )
   rememberPlayer({
     membershipTypeId: result.membershipTypeId,
     membershipId: result.membershipId,
