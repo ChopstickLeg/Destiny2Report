@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppButton from '@/components/base/AppButton.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
@@ -27,6 +27,7 @@ const identityRef = computed(() => props.identity)
 const route = useRoute()
 const session = useSessionStore()
 const queuePolicy = ref<QueuePolicyResponse | null>(null)
+const initialQueueActionStarted = ref(false)
 
 const watcher = useQueueWatcher(identityRef, {
   onCompleted: () => emit('refresh'),
@@ -38,22 +39,33 @@ const serverRequiresSignIn = computed(
     (isApiError(watcher.submitError.value) &&
       watcher.submitError.value.problem?.code === 'queue_authentication_required'),
 )
-const needsSignIn = computed(() => serverRequiresSignIn.value && !session.isSignedIn)
+const sessionResolved = computed(
+  () => session.status !== 'unknown' && session.status !== 'resolving',
+)
+const queueAccessReady = computed(() => queuePolicy.value !== null && sessionResolved.value)
+const queueAccessPending = computed(() => !queueAccessReady.value)
+const needsSignIn = computed(
+  () => queueAccessReady.value && serverRequiresSignIn.value && !session.isSignedIn,
+)
 
 function signIn() {
   session.beginSignIn(route.fullPath)
 }
 
-onMounted(async () => {
-  try {
-    queuePolicy.value = await fetchQueuePolicy()
-  } catch {
-    // The queue endpoint remains authoritative if policy discovery is unavailable.
+function requestQueue() {
+  if (!queueAccessReady.value) return
+  if (needsSignIn.value) {
+    signIn()
+    return
   }
+  void watcher.submitAndWatch()
+}
 
-  // Re-submit queued reports through the durable queue. This is idempotent for
-  // an active job and promotes legacy Mongo-only queue records into Redis.
+function startInitialQueueAction() {
+  if (!queueAccessReady.value || initialQueueActionStarted.value) return
+
   if (props.initialState === 'queued') {
+    initialQueueActionStarted.value = true
     if (needsSignIn.value) {
       void watcher.watch()
     } else {
@@ -63,9 +75,29 @@ onMounted(async () => {
       })
     }
   } else if (props.initialState === 'running') {
+    initialQueueActionStarted.value = true
     void watcher.watch()
   } else if (props.initialState === 'missing' && props.autoStart && !needsSignIn.value) {
+    initialQueueActionStarted.value = true
     void watcher.submitAndWatch()
+  }
+}
+
+watch([queueAccessReady, needsSignIn], startInitialQueueAction, { immediate: true })
+
+onMounted(async () => {
+  // Watching an existing crawl is read-only and must remain available while
+  // queue access policy or session state is still resolving.
+  if (props.initialState === 'running') {
+    initialQueueActionStarted.value = true
+    void watcher.watch()
+  }
+
+  try {
+    queuePolicy.value = await fetchQueuePolicy()
+  } catch {
+    // Fail closed. Queue controls remain disabled until policy discovery succeeds.
+    if (props.initialState === 'queued') void watcher.watch()
   }
 })
 
@@ -120,15 +152,16 @@ const heading = computed(() => {
           class="generation-error"
           :error="watcher.submitError.value"
           context="Couldn't queue the report"
-          @retry="watcher.submitAndWatch()"
+          @retry="requestQueue"
         />
         <div class="generation-actions">
-          <AppButton v-if="needsSignIn" variant="primary" @click="signIn">
+          <AppButton v-if="queueAccessPending" variant="primary" disabled>
+            Checking queue access…
+          </AppButton>
+          <AppButton v-else-if="needsSignIn" variant="primary" @click="signIn">
             Sign in with Bungie
           </AppButton>
-          <AppButton v-else variant="primary" @click="watcher.submitAndWatch()">
-            Generate report
-          </AppButton>
+          <AppButton v-else variant="primary" @click="requestQueue"> Generate report </AppButton>
         </div>
       </template>
 
@@ -150,7 +183,15 @@ const heading = computed(() => {
         </p>
         <p v-if="failureDetail" class="generation-detail">{{ failureDetail }}</p>
         <div class="generation-actions">
-          <AppButton variant="primary" @click="watcher.submitAndWatch()">Try again</AppButton>
+          <AppButton variant="primary" :disabled="queueAccessPending" @click="requestQueue">
+            {{
+              queueAccessPending
+                ? 'Checking queue access…'
+                : needsSignIn
+                  ? 'Sign in to retry'
+                  : 'Try again'
+            }}
+          </AppButton>
         </div>
       </template>
 
@@ -163,8 +204,14 @@ const heading = computed(() => {
           <em>“Show my Destiny game Activity feed on Bungie.net.”</em>
         </p>
         <div class="generation-actions">
-          <AppButton variant="secondary" @click="watcher.submitAndWatch()">
-            I've updated my settings. Try again
+          <AppButton variant="secondary" :disabled="queueAccessPending" @click="requestQueue">
+            {{
+              queueAccessPending
+                ? 'Checking queue access…'
+                : needsSignIn
+                  ? 'Sign in to retry'
+                  : "I've updated my settings. Try again"
+            }}
           </AppButton>
         </div>
       </template>

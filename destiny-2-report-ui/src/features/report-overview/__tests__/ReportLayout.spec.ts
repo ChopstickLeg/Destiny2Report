@@ -10,6 +10,7 @@ const { submitAndWatch, watchQueue, fetchQueuePolicy, session } = vi.hoisted(() 
   watchQueue: vi.fn<() => Promise<void>>(),
   fetchQueuePolicy: vi.fn<() => Promise<{ authenticationRequired: boolean }>>(),
   session: {
+    status: 'signed-in',
     isSignedIn: true,
     beginSignIn: vi.fn<(returnTo: string) => void>(),
   },
@@ -51,6 +52,7 @@ describe('ReportLayout automatic refresh', () => {
     watchQueue.mockReset()
     fetchQueuePolicy.mockReset()
     fetchQueuePolicy.mockResolvedValue({ authenticationRequired: false })
+    session.status = 'signed-in'
     session.isSignedIn = true
     session.beginSignIn.mockReset()
 
@@ -88,6 +90,27 @@ describe('ReportLayout automatic refresh', () => {
 
     expect(submitAndWatch).not.toHaveBeenCalled()
     expect(wrapper.findComponent({ name: 'ReportMasthead' }).props('signInRequired')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('ignores refresh requests until queue policy discovery completes', async () => {
+    let resolvePolicy!: (policy: { authenticationRequired: boolean }) => void
+    fetchQueuePolicy.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePolicy = resolve
+      }),
+    )
+
+    const wrapper = shallowMount(ReportLayout)
+    const masthead = wrapper.findComponent({ name: 'ReportMasthead' })
+    expect(masthead.props('queueAccessPending')).toBe(true)
+    masthead.vm.$emit('refresh')
+    await flushPromises()
+    expect(submitAndWatch).not.toHaveBeenCalled()
+
+    resolvePolicy({ authenticationRequired: false })
+    await flushPromises()
+    expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({ suppressCooldownError: true })
     wrapper.unmount()
   })
 })

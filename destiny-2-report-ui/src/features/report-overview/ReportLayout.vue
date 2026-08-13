@@ -45,6 +45,17 @@ const refreshWatcher = useQueueWatcher(identity, {
 })
 
 const refreshing = computed(() => refreshWatcher.isActive.value)
+const sessionResolved = computed(
+  () => session.status !== 'unknown' && session.status !== 'resolving',
+)
+const queueAccessReady = computed(() => queuePolicy.value !== null && sessionResolved.value)
+const queueAccessPending = computed(() => !queueAccessReady.value)
+const signInRequired = computed(
+  () =>
+    queueAccessReady.value &&
+    queuePolicy.value?.authenticationRequired === true &&
+    !session.isSignedIn,
+)
 
 const refreshError = computed(() => {
   const error = refreshWatcher.submitError.value
@@ -52,7 +63,8 @@ const refreshError = computed(() => {
 })
 
 function startRefresh() {
-  if (queuePolicy.value?.authenticationRequired && !session.isSignedIn) {
+  if (!queueAccessReady.value) return
+  if (signInRequired.value) {
     session.beginSignIn(route.fullPath)
     return
   }
@@ -63,7 +75,7 @@ onMounted(async () => {
   try {
     queuePolicy.value = await fetchQueuePolicy()
   } catch {
-    queuePolicy.value = { authenticationRequired: false }
+    // Fail closed. The refresh control remains disabled until policy discovery succeeds.
   }
 })
 
@@ -77,10 +89,12 @@ watch(
     () => identity.value.membershipId,
     report,
     queuePolicy,
+    () => session.status,
     () => session.isSignedIn,
   ],
-  ([membershipTypeId, membershipId, currentReport, currentQueuePolicy, isSignedIn]) => {
+  ([membershipTypeId, membershipId, currentReport, currentQueuePolicy, , isSignedIn]) => {
     if (
+      !queueAccessReady.value ||
       currentQueuePolicy === null ||
       (currentQueuePolicy.authenticationRequired && !isSignedIn) ||
       !currentReport ||
@@ -181,7 +195,8 @@ function refetchReport() {
       <ReportMasthead
         :report="report"
         :refreshing="refreshing"
-        :sign-in-required="queuePolicy?.authenticationRequired === true && !session.isSignedIn"
+        :queue-access-pending="queueAccessPending"
+        :sign-in-required="signInRequired"
         @refresh="startRefresh"
       />
 

@@ -10,6 +10,7 @@ import { parseApiDate, formatRelative, formatDateTime } from '@/lib/formatting/d
 const props = defineProps<{
   report: DestinyReport
   refreshing: boolean
+  queueAccessPending?: boolean
   signInRequired?: boolean
 }>()
 
@@ -66,9 +67,15 @@ const storyPreviewRoute = computed(() =>
         <AppButton v-if="storyPreviewRoute" size="sm" :to="storyPreviewRoute">
           View story
         </AppButton>
-        <AppButton size="sm" :disabled="refreshing" @click="emit('refresh')">
+        <AppButton size="sm" :disabled="refreshing || queueAccessPending" @click="emit('refresh')">
           {{
-            refreshing ? 'Refreshing…' : signInRequired ? 'Sign in to refresh' : 'Refresh report'
+            refreshing
+              ? 'Refreshing…'
+              : queueAccessPending
+                ? 'Checking access…'
+                : signInRequired
+                  ? 'Sign in to refresh'
+                  : 'Refresh report'
           }}
         </AppButton>
       </div>
