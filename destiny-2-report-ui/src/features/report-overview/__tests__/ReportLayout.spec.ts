@@ -1,18 +1,29 @@
-import { shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount } from '@vue/test-utils'
 import { computed, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeReport } from '@/test/fixtures/report'
 import ReportLayout from '../ReportLayout.vue'
 import { useInvalidateReport, useReportIdentity, useReportQuery } from '../useReport'
 
-const { submitAndWatch, watchQueue } = vi.hoisted(() => ({
+const { submitAndWatch, watchQueue, fetchQueuePolicy, session } = vi.hoisted(() => ({
   submitAndWatch: vi.fn<() => Promise<void>>(),
   watchQueue: vi.fn<() => Promise<void>>(),
+  fetchQueuePolicy: vi.fn<() => Promise<{ authenticationRequired: boolean }>>(),
+  session: {
+    isSignedIn: true,
+    beginSignIn: vi.fn<(returnTo: string) => void>(),
+  },
 }))
 
 vi.mock('vue-router', () => ({
   RouterView: { template: '<div />' },
-  useRoute: () => ({ query: {} }),
+  useRoute: () => ({ query: {}, fullPath: '/report/3/4611686018467284386' }),
+}))
+
+vi.mock('@/lib/api/reports', () => ({ fetchQueuePolicy }))
+
+vi.mock('@/stores/session', () => ({
+  useSessionStore: () => session,
 }))
 
 vi.mock('@/features/report-generation/useQueueWatcher', () => ({
@@ -38,6 +49,10 @@ describe('ReportLayout automatic refresh', () => {
   beforeEach(() => {
     submitAndWatch.mockReset()
     watchQueue.mockReset()
+    fetchQueuePolicy.mockReset()
+    fetchQueuePolicy.mockResolvedValue({ authenticationRequired: false })
+    session.isSignedIn = true
+    session.beginSignIn.mockReset()
 
     const identity = computed(() => ({
       membershipTypeId: 3,
@@ -54,11 +69,25 @@ describe('ReportLayout automatic refresh', () => {
     } as never)
   })
 
-  it('submits an existing report through the normal watcher and suppresses only cooldown errors', () => {
+  it('submits an existing report through the normal watcher and suppresses only cooldown errors', async () => {
     const wrapper = shallowMount(ReportLayout)
+
+    await flushPromises()
 
     expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({ suppressCooldownError: true })
     expect(watchQueue).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not auto-refresh for a signed-out visitor when authentication is required', async () => {
+    fetchQueuePolicy.mockResolvedValue({ authenticationRequired: true })
+    session.isSignedIn = false
+
+    const wrapper = shallowMount(ReportLayout)
+    await flushPromises()
+
+    expect(submitAndWatch).not.toHaveBeenCalled()
+    expect(wrapper.findComponent({ name: 'ReportMasthead' }).props('signInRequired')).toBe(true)
     wrapper.unmount()
   })
 })

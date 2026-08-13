@@ -11,6 +11,33 @@ namespace Destiny2Report.Tests.Features.Crawler;
 public sealed class CrawlerProtocolTests
 {
     [Fact]
+    public void Enqueue_tracking_only_marks_the_atomic_admission_winner_as_new()
+    {
+        var job = new CrawlJob { RunId = "winning-run" };
+
+        Assert.True(CrawlerJobQueue.WasCreatedByRun(job, "winning-run"));
+        Assert.False(CrawlerJobQueue.WasCreatedByRun(job, "losing-run"));
+        Assert.False(CrawlerJobQueue.WasCreatedByRun(null, "winning-run"));
+    }
+
+    [Fact]
+    public void Active_job_lookup_uses_the_authoritative_crawl_job_states()
+    {
+        var playerKey = CrawlJob.CreatePlayerKey(3, 42);
+        var filter = CrawlerJobQueue.BuildActiveJobFilter(playerKey);
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+
+        Assert.Equal(playerKey, rendered["_id"].AsByteArray);
+        var states = rendered["s"]["$in"].AsBsonArray.Select(value => value.AsString).ToArray();
+        Assert.Contains(CrawlJob.StateQueued, states);
+        Assert.Contains(CrawlJob.StateRunning, states);
+        Assert.Contains(CrawlJob.StateAwaitingFinalization, states);
+        Assert.DoesNotContain(CrawlJob.StateCompleted, states);
+    }
+
+    [Fact]
     public void Player_key_is_stable_and_language_neutral()
     {
         var key = CrawlJob.CreatePlayerKey(3, 0x0102_0304_0506_0708);

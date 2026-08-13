@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import SkeletonBlock from '@/components/base/SkeletonBlock.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
@@ -7,11 +7,15 @@ import GenerationExperience from '@/features/report-generation/GenerationExperie
 import { useQueueWatcher } from '@/features/report-generation/useQueueWatcher'
 import { rememberPlayer, loadRecentPlayers } from '@/lib/recent-players'
 import { getErrorMessage } from '@/lib/api/http'
+import { fetchQueuePolicy, type QueuePolicyResponse } from '@/lib/api/reports'
+import { useSessionStore } from '@/stores/session'
 import ReportMasthead from './ReportMasthead.vue'
 import { useInvalidateReport, useReportIdentity, useReportQuery } from './useReport'
 
 const identity = useReportIdentity()
 const route = useRoute()
+const session = useSessionStore()
+const queuePolicy = ref<QueuePolicyResponse | null>(null)
 const reportQuery = useReportQuery(identity)
 const invalidate = useInvalidateReport(identity)
 
@@ -48,17 +52,37 @@ const refreshError = computed(() => {
 })
 
 function startRefresh() {
+  if (queuePolicy.value?.authenticationRequired && !session.isSignedIn) {
+    session.beginSignIn(route.fullPath)
+    return
+  }
   void refreshWatcher.submitAndWatch()
 }
+
+onMounted(async () => {
+  try {
+    queuePolicy.value = await fetchQueuePolicy()
+  } catch {
+    queuePolicy.value = { authenticationRequired: false }
+  }
+})
 
 // Request one refresh when each readable report is visited. The server owns
 // the six-hour cooldown; an automatic cooldown response should leave the
 // existing report quietly visible, while manual refresh errors remain visible.
 const lastAutoRefreshKey = ref<string | null>(null)
 watch(
-  [() => identity.value.membershipTypeId, () => identity.value.membershipId, report],
-  ([membershipTypeId, membershipId, currentReport]) => {
+  [
+    () => identity.value.membershipTypeId,
+    () => identity.value.membershipId,
+    report,
+    queuePolicy,
+    () => session.isSignedIn,
+  ],
+  ([membershipTypeId, membershipId, currentReport, currentQueuePolicy, isSignedIn]) => {
     if (
+      currentQueuePolicy === null ||
+      (currentQueuePolicy.authenticationRequired && !isSignedIn) ||
       !currentReport ||
       !hasReadableReport.value ||
       currentReport.platformId !== membershipTypeId ||
@@ -154,7 +178,12 @@ function refetchReport() {
 
     <!-- Readable report -->
     <template v-else-if="report">
-      <ReportMasthead :report="report" :refreshing="refreshing" @refresh="startRefresh" />
+      <ReportMasthead
+        :report="report"
+        :refreshing="refreshing"
+        :sign-in-required="queuePolicy?.authenticationRequired === true && !session.isSignedIn"
+        @refresh="startRefresh"
+      />
 
       <div v-if="refreshing" class="refresh-banner" role="status" aria-live="polite">
         <div class="container refresh-banner-row">
