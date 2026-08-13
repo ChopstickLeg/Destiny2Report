@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { apiFetch, withTurnstileToken } = vi.hoisted(() => ({
-  apiFetch: vi.fn(),
-  withTurnstileToken: vi.fn(),
+  apiFetch: vi.fn<(path: string, options?: unknown) => Promise<unknown>>(),
+  withTurnstileToken:
+    vi.fn<(operation: (token: string) => Promise<unknown>) => Promise<unknown>>(),
 }))
 
 vi.mock('../http', () => ({
   apiFetch,
-  isApiError: vi.fn(),
+  isApiError: vi.fn<(error: unknown) => boolean>(),
 }))
 vi.mock('../../turnstile', () => ({ withTurnstileToken }))
 
