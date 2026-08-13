@@ -9,12 +9,6 @@ public interface IQueueTicketService
 {
     Task<string> IssueAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken);
 
-    Task<bool> ValidateAsync(
-        string? ticket,
-        int membershipTypeId,
-        long membershipId,
-        CancellationToken cancellationToken);
-
     Task<bool> ConsumeAsync(
         string? ticket,
         int membershipTypeId,
@@ -27,7 +21,7 @@ public sealed class QueueTicketService(
     TimeProvider timeProvider) : IQueueTicketService
 {
     private const string SigningKeyName = "QueueTickets:SigningKey:v1";
-    private const string NonceKeyPrefix = "QueueTickets:Nonce:v1:";
+    private const string UsedNonceKeyPrefix = "QueueTickets:UsedNonce:v1:";
     private static readonly TimeSpan TicketLifetime = TimeSpan.FromMinutes(10);
     private readonly SemaphoreSlim signingKeyLock = new(1, 1);
     private byte[]? signingKey;
@@ -40,34 +34,7 @@ public sealed class QueueTicketService(
         var key = await GetSigningKeyAsync(cancellationToken).ConfigureAwait(false);
         var expiresAt = timeProvider.GetUtcNow().Add(TicketLifetime);
         var nonce = RandomNumberGenerator.GetBytes(QueueTicketCodec.NonceLength);
-        var ticket = QueueTicketCodec.Protect(key, membershipTypeId, membershipId, expiresAt, nonce);
-
-        var stored = await redis.GetDatabase()
-            .StringSetAsync(NonceKey(nonce), RedisValue.EmptyString, TicketLifetime, When.NotExists)
-            .WaitAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (!stored)
-        {
-            throw new InvalidOperationException("Could not reserve the queue ticket nonce.");
-        }
-
-        return ticket;
-    }
-
-    public async Task<bool> ValidateAsync(
-        string? ticket,
-        int membershipTypeId,
-        long membershipId,
-        CancellationToken cancellationToken)
-    {
-        var key = await GetSigningKeyAsync(cancellationToken).ConfigureAwait(false);
-        return QueueTicketCodec.TryUnprotect(
-            key,
-            ticket,
-            membershipTypeId,
-            membershipId,
-            timeProvider.GetUtcNow(),
-            out _);
+        return QueueTicketCodec.Protect(key, membershipTypeId, membershipId, expiresAt, nonce);
     }
 
     public async Task<bool> ConsumeAsync(
@@ -77,22 +44,30 @@ public sealed class QueueTicketService(
         CancellationToken cancellationToken)
     {
         var key = await GetSigningKeyAsync(cancellationToken).ConfigureAwait(false);
+        var now = timeProvider.GetUtcNow();
         if (!QueueTicketCodec.TryUnprotect(
                 key,
                 ticket,
                 membershipTypeId,
                 membershipId,
-                timeProvider.GetUtcNow(),
-                out var nonce))
+                now,
+                out var nonce,
+                out var expiresAt))
+        {
+            return false;
+        }
+
+        var remainingLifetime = expiresAt - now;
+        if (remainingLifetime <= TimeSpan.Zero)
         {
             return false;
         }
 
         var consumed = await redis.GetDatabase()
-            .StringGetDeleteAsync(NonceKey(nonce))
+            .StringSetAsync(UsedNonceKey(nonce), RedisValue.EmptyString, remainingLifetime, When.NotExists)
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
-        return !consumed.IsNull;
+        return consumed;
     }
 
     private async Task<byte[]> GetSigningKeyAsync(CancellationToken cancellationToken)
@@ -134,8 +109,8 @@ public sealed class QueueTicketService(
         }
     }
 
-    private static RedisKey NonceKey(ReadOnlySpan<byte> nonce) =>
-        $"{NonceKeyPrefix}{Convert.ToHexString(nonce)}";
+    private static RedisKey UsedNonceKey(ReadOnlySpan<byte> nonce) =>
+        $"{UsedNonceKeyPrefix}{Convert.ToHexString(nonce)}";
 }
 
 internal static class QueueTicketCodec
@@ -175,9 +150,11 @@ internal static class QueueTicketCodec
         int membershipTypeId,
         long membershipId,
         DateTimeOffset now,
-        out byte[] nonce)
+        out byte[] nonce,
+        out DateTimeOffset expiresAt)
     {
         nonce = [];
+        expiresAt = default;
         if (string.IsNullOrWhiteSpace(ticket))
         {
             return false;
@@ -202,16 +179,18 @@ internal static class QueueTicketCodec
         var signature = bytes.AsSpan(PayloadLength, SignatureLength);
         Span<byte> expectedSignature = stackalloc byte[SignatureLength];
         HMACSHA256.HashData(signingKey, payload, expectedSignature);
+        var expiresAtUnixSeconds = BinaryPrimitives.ReadInt64BigEndian(payload[13..]);
         if (!CryptographicOperations.FixedTimeEquals(signature, expectedSignature)
             || payload[0] != Version
             || BinaryPrimitives.ReadInt32BigEndian(payload[1..]) != membershipTypeId
             || BinaryPrimitives.ReadInt64BigEndian(payload[5..]) != membershipId
-            || BinaryPrimitives.ReadInt64BigEndian(payload[13..]) < now.ToUnixTimeSeconds())
+            || expiresAtUnixSeconds <= now.ToUnixTimeSeconds())
         {
             return false;
         }
 
         nonce = payload.Slice(21, NonceLength).ToArray();
+        expiresAt = DateTimeOffset.FromUnixTimeSeconds(expiresAtUnixSeconds);
         return true;
     }
 }

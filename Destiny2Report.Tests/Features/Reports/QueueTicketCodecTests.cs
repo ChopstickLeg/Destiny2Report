@@ -22,12 +22,14 @@ public sealed class QueueTicketCodecTests
             3,
             4611686018463095984L,
             Now,
-            out var nonce);
+            out var nonce,
+            out var expiresAt);
 
         Assert.True(valid);
         Assert.Equal(Nonce, nonce);
-        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, ticket, 2, 4611686018463095984L, Now, out _));
-        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, ticket, 3, 99, Now, out _));
+        Assert.Equal(Now.AddMinutes(10), expiresAt);
+        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, ticket, 2, 4611686018463095984L, Now, out _, out _));
+        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, ticket, 3, 99, Now, out _, out _));
     }
 
     [Fact]
@@ -36,8 +38,8 @@ public sealed class QueueTicketCodecTests
         var ticket = QueueTicketCodec.Protect(SigningKey, 3, 42, Now.AddMinutes(1), Nonce);
         var tampered = ticket[..^1] + (ticket[^1] == 'A' ? "B" : "A");
 
-        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, ticket, 3, 42, Now.AddMinutes(2), out _));
-        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, tampered, 3, 42, Now, out _));
-        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, "not-a-ticket", 3, 42, Now, out _));
+        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, ticket, 3, 42, Now.AddMinutes(1), out _, out _));
+        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, tampered, 3, 42, Now, out _, out _));
+        Assert.False(QueueTicketCodec.TryUnprotect(SigningKey, "not-a-ticket", 3, 42, Now, out _, out _));
     }
 }

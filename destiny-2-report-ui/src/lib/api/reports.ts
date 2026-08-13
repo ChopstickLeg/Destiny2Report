@@ -8,7 +8,7 @@ import type {
   StoryVisualAssetsReport,
   WeaponActivityModeAggregateReport,
 } from './types'
-import { forgetQueueTicket, loadQueueTicket } from '../queue-tickets'
+import { takeQueueTicket } from '../queue-tickets'
 
 export interface ReportIdentity {
   membershipTypeId: number
@@ -88,16 +88,14 @@ export function fetchPlaytime(
 }
 
 export async function queueReport(identity: ReportIdentity): Promise<ReportQueueResponse> {
-  const response = await apiFetch<ReportQueueResponse>('/reports/queue', {
+  return apiFetch<ReportQueueResponse>('/reports/queue', {
     method: 'POST',
     body: {
       membershipTypeId: identity.membershipTypeId,
       membershipId: identity.membershipId,
-      queueTicket: loadQueueTicket(identity) ?? '',
+      queueTicket: takeQueueTicket(identity) ?? '',
     },
   })
-  forgetQueueTicket(identity)
-  return response
 }
 
 /** Stable TanStack Query keys for everything report-related. */

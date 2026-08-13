@@ -316,7 +316,7 @@ public static class ReportHandlers
         }
 
         System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", 1);
-        if (!await queueTickets.ValidateAsync(
+        if (!await queueTickets.ConsumeAsync(
                 request.QueueTicket,
                 request.MembershipTypeId,
                 request.MembershipId,
@@ -335,16 +335,6 @@ public static class ReportHandlers
         if (retryAfter is not null)
         {
             return BuildCrawlCooldownResponse(httpResponse, retryAfter.Value);
-        }
-
-        if (!await queueTickets.ConsumeAsync(
-                request.QueueTicket,
-                request.MembershipTypeId,
-                request.MembershipId,
-                cancellationToken)
-            .ConfigureAwait(false))
-        {
-            return BuildInvalidQueueTicketResponse();
         }
 
         var response = await crawlerJobQueue.EnqueueAsync(

@@ -143,6 +143,7 @@ function remember(result: PlayerSearchResult) {
                   membershipId: result.membershipId,
                 },
               }"
+              @mousedown="remember(result)"
               @click="remember(result)"
             />
           </li>
