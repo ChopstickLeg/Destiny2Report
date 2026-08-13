@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
+import AppButton from '@/components/base/AppButton.vue'
 import SkeletonBlock from '@/components/base/SkeletonBlock.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
 import GenerationExperience from '@/features/report-generation/GenerationExperience.vue'
+import { useQueuePolicy } from '@/features/report-generation/useQueuePolicy'
 import { useQueueWatcher } from '@/features/report-generation/useQueueWatcher'
 import { rememberPlayer, loadRecentPlayers } from '@/lib/recent-players'
 import { getErrorMessage } from '@/lib/api/http'
-import { fetchQueuePolicy, type QueuePolicyResponse } from '@/lib/api/reports'
 import { useSessionStore } from '@/stores/session'
 import ReportMasthead from './ReportMasthead.vue'
 import { useInvalidateReport, useReportIdentity, useReportQuery } from './useReport'
@@ -15,7 +16,12 @@ import { useInvalidateReport, useReportIdentity, useReportQuery } from './useRep
 const identity = useReportIdentity()
 const route = useRoute()
 const session = useSessionStore()
-const queuePolicy = ref<QueuePolicyResponse | null>(null)
+const {
+  policy: queuePolicy,
+  isLoading: queuePolicyLoading,
+  hasError: queuePolicyFailed,
+  retry: retryQueuePolicy,
+} = useQueuePolicy()
 const reportQuery = useReportQuery(identity)
 const invalidate = useInvalidateReport(identity)
 
@@ -45,6 +51,19 @@ const refreshWatcher = useQueueWatcher(identity, {
 })
 
 const refreshing = computed(() => refreshWatcher.isActive.value)
+const sessionResolved = computed(
+  () => session.status !== 'unknown' && session.status !== 'resolving',
+)
+const queueAccessReady = computed(() => queuePolicy.value !== null && sessionResolved.value)
+const queueAccessPending = computed(
+  () => queuePolicyLoading.value || queuePolicyFailed.value || !sessionResolved.value,
+)
+const signInRequired = computed(
+  () =>
+    queueAccessReady.value &&
+    queuePolicy.value?.authenticationRequired === true &&
+    !session.isSignedIn,
+)
 
 const refreshError = computed(() => {
   const error = refreshWatcher.submitError.value
@@ -52,20 +71,13 @@ const refreshError = computed(() => {
 })
 
 function startRefresh() {
-  if (queuePolicy.value?.authenticationRequired && !session.isSignedIn) {
+  if (!queueAccessReady.value) return
+  if (signInRequired.value) {
     session.beginSignIn(route.fullPath)
     return
   }
   void refreshWatcher.submitAndWatch()
 }
-
-onMounted(async () => {
-  try {
-    queuePolicy.value = await fetchQueuePolicy()
-  } catch {
-    queuePolicy.value = { authenticationRequired: false }
-  }
-})
 
 // Request one refresh when each readable report is visited. The server owns
 // the six-hour cooldown; an automatic cooldown response should leave the
@@ -77,10 +89,12 @@ watch(
     () => identity.value.membershipId,
     report,
     queuePolicy,
+    () => session.status,
     () => session.isSignedIn,
   ],
-  ([membershipTypeId, membershipId, currentReport, currentQueuePolicy, isSignedIn]) => {
+  ([membershipTypeId, membershipId, currentReport, currentQueuePolicy, , isSignedIn]) => {
     if (
+      !queueAccessReady.value ||
       currentQueuePolicy === null ||
       (currentQueuePolicy.authenticationRequired && !isSignedIn) ||
       !currentReport ||
@@ -181,7 +195,9 @@ function refetchReport() {
       <ReportMasthead
         :report="report"
         :refreshing="refreshing"
-        :sign-in-required="queuePolicy?.authenticationRequired === true && !session.isSignedIn"
+        :queue-access-pending="queueAccessPending"
+        :queue-access-error="queuePolicyFailed"
+        :sign-in-required="signInRequired"
         @refresh="startRefresh"
       />
 
@@ -195,6 +211,13 @@ function refetchReport() {
               'Queued - waiting for available crawler'
             }}. Existing data stays visible until it finishes.
           </span>
+        </div>
+      </div>
+
+      <div v-else-if="queuePolicyFailed" class="refresh-banner refresh-banner--error" role="alert">
+        <div class="container refresh-banner-row">
+          <span>Queue access couldn't be verified. Refreshing is disabled until it succeeds.</span>
+          <AppButton size="sm" variant="secondary" @click="retryQueuePolicy">Try again</AppButton>
         </div>
       </div>
 
@@ -232,6 +255,10 @@ function refetchReport() {
   padding-block: var(--space-2);
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
+}
+
+.refresh-banner-row .btn {
+  margin-left: auto;
 }
 
 .refresh-banner--error {
