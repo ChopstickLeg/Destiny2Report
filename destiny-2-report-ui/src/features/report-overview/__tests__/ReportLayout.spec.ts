@@ -1,6 +1,6 @@
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { computed, ref } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeReport } from '@/test/fixtures/report'
 import ReportLayout from '../ReportLayout.vue'
 import { useInvalidateReport, useReportIdentity, useReportQuery } from '../useReport'
@@ -71,6 +71,10 @@ describe('ReportLayout automatic refresh', () => {
     } as never)
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('submits an existing report through the normal watcher and suppresses only cooldown errors', async () => {
     const wrapper = shallowMount(ReportLayout)
 
@@ -110,6 +114,30 @@ describe('ReportLayout automatic refresh', () => {
 
     resolvePolicy({ authenticationRequired: false })
     await flushPromises()
+    expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({ suppressCooldownError: true })
+    wrapper.unmount()
+  })
+
+  it('offers a manual retry when queue-policy discovery remains unavailable', async () => {
+    vi.useFakeTimers()
+    fetchQueuePolicy.mockRejectedValue(new Error('network unavailable'))
+
+    const wrapper = shallowMount(ReportLayout)
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(fetchQueuePolicy).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).toContain("Queue access couldn't be verified")
+    const masthead = wrapper.findComponent({ name: 'ReportMasthead' })
+    expect(masthead.props('queueAccessPending')).toBe(true)
+    expect(masthead.props('queueAccessError')).toBe(true)
+    expect(submitAndWatch).not.toHaveBeenCalled()
+
+    fetchQueuePolicy.mockResolvedValue({ authenticationRequired: false })
+    await wrapper.get('app-button-stub').trigger('click')
+    await flushPromises()
+
+    expect(fetchQueuePolicy).toHaveBeenCalledTimes(4)
     expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({ suppressCooldownError: true })
     wrapper.unmount()
   })

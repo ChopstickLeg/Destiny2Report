@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import GenerationExperience from '../GenerationExperience.vue'
 
 const { submitAndWatch, watchQueue, fetchQueuePolicy, session } = vi.hoisted(() => ({
@@ -45,6 +45,10 @@ describe('GenerationExperience', () => {
     session.status = 'signed-in'
     session.isSignedIn = true
     session.beginSignIn.mockReset()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('quietly re-submits a queued profile before watching it', async () => {
@@ -184,5 +188,37 @@ describe('GenerationExperience', () => {
     expect(button.attributes('disabled')).toBeDefined()
     expect(button.text()).toContain('Checking queue access')
     expect(submitAndWatch).not.toHaveBeenCalled()
+  })
+
+  it('offers a manual retry after bounded queue-policy retries fail', async () => {
+    vi.useFakeTimers()
+    fetchQueuePolicy.mockRejectedValue(new Error('network unavailable'))
+
+    const wrapper = mount(GenerationExperience, {
+      props: {
+        identity: { membershipTypeId: 3, membershipId: '4611686018487421905' },
+        initialState: 'missing',
+        playerName: null,
+        crawlError: '',
+        autoStart: true,
+      },
+    })
+
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(fetchQueuePolicy).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).toContain("Queue access couldn't be verified")
+    const retryButton = wrapper.get('button')
+    expect(retryButton.text()).toContain('Retry queue access check')
+    expect(retryButton.attributes('disabled')).toBeUndefined()
+    expect(submitAndWatch).not.toHaveBeenCalled()
+
+    fetchQueuePolicy.mockResolvedValue({ authenticationRequired: false })
+    await retryButton.trigger('click')
+    await flushPromises()
+
+    expect(fetchQueuePolicy).toHaveBeenCalledTimes(4)
+    expect(submitAndWatch).toHaveBeenCalledOnce()
   })
 })

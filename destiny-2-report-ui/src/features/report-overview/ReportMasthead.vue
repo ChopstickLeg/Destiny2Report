@@ -11,6 +11,7 @@ const props = defineProps<{
   report: DestinyReport
   refreshing: boolean
   queueAccessPending?: boolean
+  queueAccessError?: boolean
   signInRequired?: boolean
 }>()
 
@@ -71,11 +72,13 @@ const storyPreviewRoute = computed(() =>
           {{
             refreshing
               ? 'Refreshing…'
-              : queueAccessPending
-                ? 'Checking access…'
-                : signInRequired
-                  ? 'Sign in to refresh'
-                  : 'Refresh report'
+              : queueAccessError
+                ? 'Queue access unavailable'
+                : queueAccessPending
+                  ? 'Checking access…'
+                  : signInRequired
+                    ? 'Sign in to refresh'
+                    : 'Refresh report'
           }}
         </AppButton>
       </div>
