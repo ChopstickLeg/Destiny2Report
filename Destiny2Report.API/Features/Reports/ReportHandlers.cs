@@ -4,6 +4,7 @@ using D2Report.BungieClient;
 using Destiny2Report.API.Features.Auth;
 using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.RateLimiting;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
@@ -18,6 +19,7 @@ using System.Text.Json;
 public static class ReportHandlers
 {
     private const int AllMembershipTypes = 254;
+    internal const int MaxQueueBatchSize = 50;
     private const int StoryShareTokenBytes = 32;
     private static readonly TimeSpan ForegroundCrawlCooldown = TimeSpan.FromHours(6);
     private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromSeconds(15);
@@ -301,8 +303,13 @@ public static class ReportHandlers
         ICrawlerJobQueue crawlerJobQueue,
         IMongoDatabase mongoDatabase,
         HttpResponse httpResponse,
+        HttpContext httpContext,
         CancellationToken cancellationToken)
     {
+        var clientDiagnostics = ClientRateLimitPartition.GetDiagnostics(httpContext);
+        System.Diagnostics.Activity.Current?.SetTag("destiny.client_ip", clientDiagnostics.PartitionKey);
+        System.Diagnostics.Activity.Current?.SetTag("destiny.client_ip_source", clientDiagnostics.Source);
+
         if (!TryValidateQueueRequests(requests, out var memberships, out var problemDetails))
         {
             return TypedResults.BadRequest(problemDetails);
@@ -821,6 +828,18 @@ public static class ReportHandlers
             {
                 Title = "Missing memberships",
                 Detail = "At least one membership must be supplied.",
+                Status = StatusCodes.Status400BadRequest
+            };
+            return false;
+        }
+
+        if (requests.Count > MaxQueueBatchSize)
+        {
+            memberships = [];
+            problemDetails = new ProblemDetails
+            {
+                Title = "Queue batch too large",
+                Detail = $"At most {MaxQueueBatchSize} memberships can be queued at once.",
                 Status = StatusCodes.Status400BadRequest
             };
             return false;
