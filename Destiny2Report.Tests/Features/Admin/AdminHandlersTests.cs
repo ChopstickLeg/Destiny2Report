@@ -81,6 +81,19 @@ public sealed class AdminHandlersTests
     }
 
     [Fact]
+    public void Active_crawls_exclude_queued_jobs()
+    {
+        var filter = AdminHandlers.BuildActiveCrawlFilter();
+        var rendered = filter.Render(new RenderArgs<CrawlJob>(
+            BsonSerializer.LookupSerializer<CrawlJob>(),
+            BsonSerializer.SerializerRegistry));
+
+        var states = rendered["s"].AsBsonDocument["$in"].AsBsonArray;
+        Assert.Equal([CrawlJob.StateRunning, CrawlJob.StateAwaitingFinalization],
+            states.Select(state => state.AsString));
+    }
+
+    [Fact]
     public void Active_crawl_progress_requires_the_current_run_and_fence()
     {
         var fields = new Dictionary<string, string>

@@ -231,8 +231,7 @@ public static class AdminHandlers
     {
         var now = DateTimeOffset.UtcNow;
         var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
-        var activeFilter = Builders<CrawlJob>.Filter.In(job => job.State,
-            [CrawlJob.StateQueued, CrawlJob.StateRunning, CrawlJob.StateAwaitingFinalization]);
+        var activeFilter = BuildActiveCrawlFilter();
 
         var activeTask = jobs.Find(activeFilter)
             .Sort(BuildActiveCrawlSort())
@@ -304,6 +303,11 @@ public static class AdminHandlers
             .Ascending(job => job.QueuedAtUtc)
             .Ascending(job => job.MembershipTypeId)
             .Ascending(job => job.MembershipId);
+
+    internal static FilterDefinition<CrawlJob> BuildActiveCrawlFilter() =>
+        Builders<CrawlJob>.Filter.In(
+            job => job.State,
+            [CrawlJob.StateRunning, CrawlJob.StateAwaitingFinalization]);
 
     private static async Task<CrawlProgressSnapshot?> LoadProgressAsync(
         IDatabase redisDatabase,
