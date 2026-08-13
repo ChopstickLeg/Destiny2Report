@@ -48,4 +48,54 @@ describe('rate-limit errors', () => {
     expect(formatRetryAfter(1)).toBe('1 second')
     expect(formatRetryAfter(45)).toBe('45 seconds')
   })
+
+  it('preserves the descriptive account-quota message returned by the API', () => {
+    const error = new ApiError(
+      429,
+      {
+        code: 'queue_account_daily_limit',
+        detail:
+          'Your Bungie account has used its daily report-request allowance. You can queue another report in 5h 30m.',
+      },
+      19_800,
+    )
+
+    expect(getErrorMessage(error, 'fallback')).toBe(
+      'Your Bungie account has used its daily report-request allowance. You can queue another report in 5h 30m.',
+    )
+  })
+
+  it('preserves the descriptive site-wide capacity message returned by the API', () => {
+    const error = new ApiError(
+      429,
+      {
+        code: 'queue_global_hourly_limit',
+        detail:
+          'The shared crawler has reached its site-wide hourly capacity. Your account is not blocked; please try again in 20m.',
+      },
+      1_200,
+    )
+
+    expect(getErrorMessage(error, 'fallback')).toBe(
+      'The shared crawler has reached its site-wide hourly capacity. Your account is not blocked; please try again in 20m.',
+    )
+  })
+})
+
+describe('queue authentication errors', () => {
+  it('preserves the sign-in guidance returned by the API', () => {
+    const error = new ApiError(
+      401,
+      {
+        code: 'queue_authentication_required',
+        detail:
+          'You need to sign in with Bungie to generate a new report or refresh an existing one. You can still view existing reports without signing in.',
+      },
+      null,
+    )
+
+    expect(getErrorMessage(error, 'fallback')).toBe(
+      'You need to sign in with Bungie to generate a new report or refresh an existing one. You can still view existing reports without signing in.',
+    )
+  })
 })

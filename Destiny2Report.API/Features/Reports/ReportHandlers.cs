@@ -8,6 +8,7 @@ using Destiny2Report.API.RateLimiting;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using MongoDB.Driver;
 using StackExchange.Redis;
 using System.Net.ServerSentEvents;
@@ -22,6 +23,9 @@ public static class ReportHandlers
     private const int StoryShareTokenBytes = 32;
     private static readonly TimeSpan ForegroundCrawlCooldown = TimeSpan.FromHours(6);
     private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromSeconds(15);
+
+    public static Ok<QueuePolicyResponse> GetQueuePolicy(IOptions<QueueAdmissionOptions> options) =>
+        TypedResults.Ok(new QueuePolicyResponse(options.Value.Enabled));
 
     public static async Task<Ok<StoryVisualAssetsReport>> GetStoryVisualAssets(
         ICrawlerReadService crawlerService,
@@ -301,6 +305,7 @@ public static class ReportHandlers
         ReportQueueRequest request,
         ICrawlerJobQueue crawlerJobQueue,
         ITurnstileVerifier turnstile,
+        IQueueAdmissionService queueAdmission,
         IMongoDatabase mongoDatabase,
         HttpResponse httpResponse,
         HttpContext httpContext,
@@ -325,24 +330,89 @@ public static class ReportHandlers
             return BuildTurnstileFailureResponse();
         }
 
-        var retryAfter = await GetBatchCrawlRetryAfterAsync(
+        var admissionIdentity = await queueAdmission.ResolveIdentityAsync(
+                httpContext.Request,
+                httpContext.Response,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!admissionIdentity.Allowed)
+        {
+            return BuildQueueAdmissionFailureResponse(httpResponse, admissionIdentity.Failure, null);
+        }
+
+        if (admissionIdentity.BungieMembershipId is long bungieMembershipId)
+        {
+            System.Diagnostics.Activity.Current?.SetTag("destiny.bungie_membership_id", bungieMembershipId);
+        }
+
+        await using var targetLease = await queueAdmission.AcquireTargetLeaseAsync(
+                admissionIdentity,
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (targetLease is null)
+        {
+            return BuildQueueAdmissionFailureResponse(
+                httpResponse,
+                QueueAdmissionFailure.AdmissionUnavailable,
+                null);
+        }
+
+        var activeJob = await crawlerJobQueue.TryGetActiveAsync(
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (activeJob is not null)
+        {
+            return TypedResults.Accepted((string?)null, activeJob);
+        }
+
+        var existingReport = await FindReportAsync(
                 mongoDatabase,
                 request.MembershipTypeId,
                 request.MembershipId,
                 cancellationToken)
             .ConfigureAwait(false);
+        var retryAfter = GetBatchCrawlRetryAfter(existingReport);
         if (retryAfter is not null)
         {
             return BuildCrawlCooldownResponse(httpResponse, retryAfter.Value);
         }
 
-        var response = await crawlerJobQueue.EnqueueAsync(
-                request.MembershipTypeId,
-                request.MembershipId,
-                forceFullCrawl: false,
+        var admission = await queueAdmission.ReserveAsync(
+                admissionIdentity,
+                existingReport is null,
                 cancellationToken)
             .ConfigureAwait(false);
-        return TypedResults.Accepted((string?)null, response);
+        if (!admission.Allowed)
+        {
+            return BuildQueueAdmissionFailureResponse(httpResponse, admission.Failure, admission.RetryAfter);
+        }
+
+        var keepCharge = false;
+        try
+        {
+            // A client disconnect after quota reservation must not leave the
+            // durable-write outcome ambiguous or burn quota without a job.
+            var enqueueResult = await crawlerJobQueue.EnqueueTrackedAsync(
+                    request.MembershipTypeId,
+                    request.MembershipId,
+                    forceFullCrawl: false,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            keepCharge = enqueueResult.CreatedNewJob;
+            return TypedResults.Accepted((string?)null, enqueueResult.Response);
+        }
+        finally
+        {
+            await queueAdmission.CompleteAsync(
+                    admission.Reservation,
+                    keepCharge,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
     }
 
     private static IResult BuildTurnstileFailureResponse() => TypedResults.Problem(
@@ -354,18 +424,8 @@ public static class ReportHandlers
             ["code"] = "turnstile_verification_failed"
         });
 
-    private static async Task<TimeSpan?> GetBatchCrawlRetryAfterAsync(
-        IMongoDatabase mongoDatabase,
-        int membershipTypeId,
-        long membershipId,
-        CancellationToken cancellationToken)
+    private static TimeSpan? GetBatchCrawlRetryAfter(DestinyReport? existingReport)
     {
-        var existingReport = await FindReportAsync(
-                mongoDatabase,
-                membershipTypeId,
-                membershipId,
-                cancellationToken)
-            .ConfigureAwait(false);
         if (existingReport?.CrawlState is DestinyReport.CrawlStateQueued or DestinyReport.CrawlStateRunning)
         {
             return null;
@@ -381,6 +441,85 @@ public static class ReportHandlers
             lastCrawledAtUtc,
             existingReport?.NeedsFullRecrawl == true,
             DateTimeOffset.UtcNow);
+    }
+
+    private static IResult BuildQueueAdmissionFailureResponse(
+        HttpResponse httpResponse,
+        QueueAdmissionFailure failure,
+        TimeSpan? retryAfter)
+    {
+        if (failure == QueueAdmissionFailure.AuthenticationRequired)
+        {
+            return TypedResults.Problem(
+                title: "Sign in to queue this report",
+                detail: "You need to sign in with Bungie to generate a new report or refresh an existing one. You can still view existing reports without signing in.",
+                statusCode: StatusCodes.Status401Unauthorized,
+                extensions: new Dictionary<string, object?>
+                {
+                    ["code"] = "queue_authentication_required"
+                });
+        }
+
+        if (failure == QueueAdmissionFailure.AccountBlocked)
+        {
+            return TypedResults.Problem(
+                title: "Queue access blocked",
+                detail: "This Bungie account is not allowed to request report crawls.",
+                statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?>
+                {
+                    ["code"] = "queue_account_blocked"
+                });
+        }
+
+        if (failure is QueueAdmissionFailure.AuthenticationUnavailable or QueueAdmissionFailure.AdmissionUnavailable)
+        {
+            return TypedResults.Problem(
+                title: "Queue admission unavailable",
+                detail: "The service could not verify queue access. Try again shortly.",
+                statusCode: StatusCodes.Status503ServiceUnavailable,
+                extensions: new Dictionary<string, object?>
+                {
+                    ["code"] = "queue_admission_unavailable"
+                });
+        }
+
+        var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling((retryAfter ?? TimeSpan.FromMinutes(1)).TotalSeconds));
+        httpResponse.Headers.RetryAfter = retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var retryAfterText = FormatCooldown(TimeSpan.FromSeconds(retryAfterSeconds));
+        var (code, title, detail) = failure switch
+        {
+            QueueAdmissionFailure.AccountDailyLimit => (
+                "queue_account_daily_limit",
+                "Daily report limit reached",
+                $"Your Bungie account has used its daily report-request allowance. You can queue another report in {retryAfterText}."),
+            QueueAdmissionFailure.AccountNewReportDailyLimit => (
+                "queue_account_new_report_daily_limit",
+                "Daily new-report limit reached",
+                $"Your Bungie account has used its daily allowance for players whose reports have not been generated before. You can queue another new report in {retryAfterText}."),
+            QueueAdmissionFailure.GlobalHourlyLimit => (
+                "queue_global_hourly_limit",
+                "Report queue is temporarily full",
+                $"The shared crawler has reached its site-wide hourly capacity. Your account is not blocked; please try again in {retryAfterText}."),
+            QueueAdmissionFailure.GlobalNewReportDailyLimit => (
+                "queue_global_new_report_daily_limit",
+                "New-report queue is full for today",
+                $"The shared crawler has reached its site-wide daily capacity for players without an existing report. Your account is not blocked; please try again in {retryAfterText}."),
+            _ => (
+                "queue_admission_denied",
+                "Report cannot be queued right now",
+                $"The report queue cannot accept this request right now. Please try again in {retryAfterText}.")
+        };
+
+        return TypedResults.Problem(
+            title: title,
+            detail: detail,
+            statusCode: StatusCodes.Status429TooManyRequests,
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = code,
+                ["retryAfterSeconds"] = retryAfterSeconds
+            });
     }
 
     private static IResult BuildCrawlCooldownResponse(HttpResponse httpResponse, TimeSpan retryAfter)

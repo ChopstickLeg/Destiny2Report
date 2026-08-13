@@ -1,6 +1,6 @@
-import { shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount } from '@vue/test-utils'
 import { computed, ref } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeReport } from '@/test/fixtures/report'
 import ReportLayout from '../ReportLayout.vue'
 import {
@@ -10,14 +10,26 @@ import {
   useReportQuery,
 } from '../useReport'
 
-const { submitAndWatch, watchQueue } = vi.hoisted(() => ({
+const { submitAndWatch, watchQueue, fetchQueuePolicy, session } = vi.hoisted(() => ({
   submitAndWatch: vi.fn<() => Promise<void>>(),
   watchQueue: vi.fn<() => Promise<void>>(),
+  fetchQueuePolicy: vi.fn<() => Promise<{ authenticationRequired: boolean }>>(),
+  session: {
+    status: 'signed-in',
+    isSignedIn: true,
+    beginSignIn: vi.fn<(returnTo: string) => void>(),
+  },
 }))
 
 vi.mock('vue-router', () => ({
   RouterView: { template: '<div />' },
-  useRoute: () => ({ query: {} }),
+  useRoute: () => ({ query: {}, fullPath: '/report/3/4611686018467284386' }),
+}))
+
+vi.mock('@/lib/api/reports', () => ({ fetchQueuePolicy }))
+
+vi.mock('@/stores/session', () => ({
+  useSessionStore: () => session,
 }))
 
 vi.mock('@/features/report-generation/useQueueWatcher', () => ({
@@ -45,6 +57,11 @@ describe('ReportLayout automatic refresh', () => {
   beforeEach(() => {
     submitAndWatch.mockReset()
     watchQueue.mockReset()
+    fetchQueuePolicy.mockReset()
+    fetchQueuePolicy.mockResolvedValue({ authenticationRequired: false })
+    session.status = 'signed-in'
+    session.isSignedIn = true
+    session.beginSignIn.mockReset()
 
     const identity = computed(() => ({
       membershipTypeId: 3,
@@ -66,8 +83,14 @@ describe('ReportLayout automatic refresh', () => {
     } as never)
   })
 
-  it('submits an existing report through the normal watcher and suppresses only cooldown errors', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('submits an existing report through the normal watcher and suppresses only cooldown errors', async () => {
     const wrapper = shallowMount(ReportLayout)
+
+    await flushPromises()
 
     expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({ suppressCooldownError: true })
     expect(watchQueue).not.toHaveBeenCalled()
@@ -85,6 +108,63 @@ describe('ReportLayout automatic refresh', () => {
 
     expect(wrapper.find('.rankings-loading').exists()).toBe(true)
     expect(wrapper.findComponent({ name: 'GlobalStandings' }).exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not auto-refresh for a signed-out visitor when authentication is required', async () => {
+    fetchQueuePolicy.mockResolvedValue({ authenticationRequired: true })
+    session.isSignedIn = false
+
+    const wrapper = shallowMount(ReportLayout)
+    await flushPromises()
+
+    expect(submitAndWatch).not.toHaveBeenCalled()
+    expect(wrapper.findComponent({ name: 'ReportMasthead' }).props('signInRequired')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('ignores refresh requests until queue policy discovery completes', async () => {
+    let resolvePolicy!: (policy: { authenticationRequired: boolean }) => void
+    fetchQueuePolicy.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePolicy = resolve
+      }),
+    )
+
+    const wrapper = shallowMount(ReportLayout)
+    const masthead = wrapper.findComponent({ name: 'ReportMasthead' })
+    expect(masthead.props('queueAccessPending')).toBe(true)
+    masthead.vm.$emit('refresh')
+    await flushPromises()
+    expect(submitAndWatch).not.toHaveBeenCalled()
+
+    resolvePolicy({ authenticationRequired: false })
+    await flushPromises()
+    expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({ suppressCooldownError: true })
+    wrapper.unmount()
+  })
+
+  it('offers a manual retry when queue-policy discovery remains unavailable', async () => {
+    vi.useFakeTimers()
+    fetchQueuePolicy.mockRejectedValue(new Error('network unavailable'))
+
+    const wrapper = shallowMount(ReportLayout)
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(fetchQueuePolicy).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).toContain("Queue access couldn't be verified")
+    const masthead = wrapper.findComponent({ name: 'ReportMasthead' })
+    expect(masthead.props('queueAccessPending')).toBe(true)
+    expect(masthead.props('queueAccessError')).toBe(true)
+    expect(submitAndWatch).not.toHaveBeenCalled()
+
+    fetchQueuePolicy.mockResolvedValue({ authenticationRequired: false })
+    await wrapper.get('app-button-stub').trigger('click')
+    await flushPromises()
+
+    expect(fetchQueuePolicy).toHaveBeenCalledTimes(4)
+    expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({ suppressCooldownError: true })
     wrapper.unmount()
   })
 })

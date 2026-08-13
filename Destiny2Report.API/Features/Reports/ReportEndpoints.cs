@@ -13,6 +13,10 @@ public static class ReportEndpoints
             .WithName("GetStoryVisualAssets")
             .WithSummary("Returns official Bungie activity-mode icons used by the story experience.");
 
+        reports.MapGet("/queue-policy", ReportHandlers.GetQueuePolicy)
+            .WithName("GetReportQueuePolicy")
+            .WithSummary("Returns the public queue admission requirements used by the report UI.");
+
         reports.MapPost("/story-shares", ReportHandlers.CreateStoryShare)
             .WithName("CreateStoryShare")
             .WithSummary("Creates an unguessable story link for a membership owned by the signed-in player.")

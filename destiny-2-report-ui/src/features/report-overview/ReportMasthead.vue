@@ -10,13 +10,14 @@ import { parseApiDate, formatRelative, formatDateTime } from '@/lib/formatting/d
 const props = defineProps<{
   report: DestinyReport
   refreshing: boolean
+  queueAccessPending?: boolean
+  queueAccessError?: boolean
+  signInRequired?: boolean
 }>()
 
 const emit = defineEmits<{ refresh: [] }>()
 
-const backgroundUrl = computed(() =>
-  bungieUrl(props.report.mostUsedEmblems[0]?.backgroundUrl),
-)
+const backgroundUrl = computed(() => bungieUrl(props.report.mostUsedEmblems[0]?.backgroundUrl))
 
 const updatedAt = computed(() =>
   parseApiDate(props.report.lastCrawledAtUtc ?? props.report.crawledAt),
@@ -67,8 +68,18 @@ const storyPreviewRoute = computed(() =>
         <AppButton v-if="storyPreviewRoute" size="sm" :to="storyPreviewRoute">
           View story
         </AppButton>
-        <AppButton size="sm" :disabled="refreshing" @click="emit('refresh')">
-          {{ refreshing ? 'Refreshing…' : 'Refresh report' }}
+        <AppButton size="sm" :disabled="refreshing || queueAccessPending" @click="emit('refresh')">
+          {{
+            refreshing
+              ? 'Refreshing…'
+              : queueAccessError
+                ? 'Queue access unavailable'
+                : queueAccessPending
+                  ? 'Checking access…'
+                  : signInRequired
+                    ? 'Sign in to refresh'
+                    : 'Refresh report'
+          }}
         </AppButton>
       </div>
     </div>
