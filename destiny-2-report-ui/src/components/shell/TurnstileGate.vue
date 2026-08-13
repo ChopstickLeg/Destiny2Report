@@ -60,10 +60,17 @@ async function executeChallenge(): Promise<string> {
       appearance: 'interaction-only',
       execution: 'execute',
       theme: 'auto',
-      retry: 'auto',
+      retry: 'never',
       'refresh-expired': 'manual',
       callback: (token: string) => settleSuccess(token),
-      'error-callback': () => settleFailure('Security verification failed. Please try again.'),
+      'error-callback': () => {
+        settleFailure('Security verification failed. Please try again.')
+        return true
+      },
+      'unsupported-callback': () =>
+        settleFailure(
+          'This browser does not support security verification. Please update it or try another browser.',
+        ),
       'expired-callback': () => settleFailure('Security verification expired. Please try again.'),
       'timeout-callback': () => settleFailure('Security verification timed out. Please try again.'),
       'before-interactive-callback': () => {

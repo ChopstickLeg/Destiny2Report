@@ -29,6 +29,38 @@ public sealed class TurnstileVerifierTests
         Assert.True(valid);
         Assert.Contains("response=valid-token", requestBody);
         Assert.Contains("remoteip=203.0.113.42", requestBody);
+        Assert.Contains("idempotency_key=", requestBody);
+    }
+
+    [Fact]
+    public async Task Retries_transient_failure_with_same_idempotency_key()
+    {
+        var requestBodies = new List<string>();
+        var verifier = CreateVerifier(async request =>
+        {
+            requestBodies.Add(await request.Content!.ReadAsStringAsync());
+            if (requestBodies.Count == 1)
+            {
+                throw new HttpRequestException("Siteverify connection failed.");
+            }
+
+            return JsonResponse("""
+                {
+                  "success": true,
+                  "hostname": "destiny-2.report",
+                  "action": "queue_report",
+                  "error-codes": []
+                }
+                """);
+        });
+
+        var valid = await verifier.VerifyAsync("valid-token", null, CancellationToken.None);
+
+        Assert.True(valid);
+        Assert.Equal(2, requestBodies.Count);
+        var firstKey = GetFormValue(requestBodies[0], "idempotency_key");
+        Assert.True(Guid.TryParse(firstKey, out _));
+        Assert.Equal(firstKey, GetFormValue(requestBodies[1], "idempotency_key"));
     }
 
     [Theory]
@@ -88,6 +120,14 @@ public sealed class TurnstileVerifierTests
     {
         Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
     };
+
+    private static string GetFormValue(string body, string key)
+    {
+        var pair = body.Split('&')
+            .Select(part => part.Split('=', 2))
+            .Single(parts => Uri.UnescapeDataString(parts[0]) == key);
+        return Uri.UnescapeDataString(pair[1].Replace('+', ' '));
+    }
 
     private sealed class DelegateHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler)
         : HttpMessageHandler
