@@ -28,4 +28,23 @@ describe('ErrorState', () => {
     expect(wrapper.text()).toContain('This profile was crawled recently. Try again in 5h 30m.')
     expect(wrapper.text()).not.toContain('Too many requests')
   })
+
+  it('shows the specific queue quota message returned by the API', () => {
+    const error = new ApiError(
+      429,
+      {
+        title: 'Daily report limit reached',
+        detail:
+          'Your Bungie account has used its daily report-request allowance. You can queue another report in 5h 30m.',
+        code: 'queue_account_daily_limit',
+      },
+      19_800,
+    )
+
+    const wrapper = mount(ErrorState, { props: { error } })
+
+    expect(wrapper.text()).toContain('Your Bungie account has used its daily report-request allowance.')
+    expect(wrapper.text()).toContain('You can queue another report in 5h 30m.')
+    expect(wrapper.text()).not.toContain('Too many requests')
+  })
 })

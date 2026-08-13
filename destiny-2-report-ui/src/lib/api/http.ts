@@ -64,7 +64,13 @@ export function formatRetryAfter(seconds: number): string {
 export function getErrorMessage(error: unknown, fallback: string): string {
   if (isApiError(error)) {
     if (error.isRateLimited) {
-      if (error.problem?.code === 'crawl_cooldown') return error.message
+      const problemCode = error.problem?.code
+      if (
+        problemCode === 'crawl_cooldown' ||
+        (typeof problemCode === 'string' && problemCode.startsWith('queue_'))
+      ) {
+        return error.message
+      }
       return error.retryAfterSeconds !== null
         ? `Too many requests right now. Try again in ${formatRetryAfter(error.retryAfterSeconds)}.`
         : 'Too many requests right now. Give it a minute and try again.'

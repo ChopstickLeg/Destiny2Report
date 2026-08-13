@@ -451,8 +451,8 @@ public static class ReportHandlers
         if (failure == QueueAdmissionFailure.AuthenticationRequired)
         {
             return TypedResults.Problem(
-                title: "Bungie sign-in required",
-                detail: "Sign in with Bungie before requesting or refreshing a report.",
+                title: "Sign in to queue this report",
+                detail: "You need to sign in with Bungie to generate a new report or refresh an existing one. You can still view existing reports without signing in.",
                 statusCode: StatusCodes.Status401Unauthorized,
                 extensions: new Dictionary<string, object?>
                 {
@@ -486,26 +486,34 @@ public static class ReportHandlers
 
         var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling((retryAfter ?? TimeSpan.FromMinutes(1)).TotalSeconds));
         httpResponse.Headers.RetryAfter = retryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var (code, detail) = failure switch
+        var retryAfterText = FormatCooldown(TimeSpan.FromSeconds(retryAfterSeconds));
+        var (code, title, detail) = failure switch
         {
             QueueAdmissionFailure.AccountDailyLimit => (
                 "queue_account_daily_limit",
-                "This Bungie account has reached its report request limit for today."),
+                "Daily report limit reached",
+                $"Your Bungie account has used its daily report-request allowance. You can queue another report in {retryAfterText}."),
             QueueAdmissionFailure.AccountNewReportDailyLimit => (
                 "queue_account_new_report_daily_limit",
-                "This Bungie account has reached its new-report limit for today."),
+                "Daily new-report limit reached",
+                $"Your Bungie account has used its daily allowance for players whose reports have not been generated before. You can queue another new report in {retryAfterText}."),
             QueueAdmissionFailure.GlobalHourlyLimit => (
                 "queue_global_hourly_limit",
-                "The report service has reached its hourly queue capacity."),
+                "Report queue is temporarily full",
+                $"The shared crawler has reached its site-wide hourly capacity. Your account is not blocked; please try again in {retryAfterText}."),
             QueueAdmissionFailure.GlobalNewReportDailyLimit => (
                 "queue_global_new_report_daily_limit",
-                "The report service has reached its new-report capacity for today."),
-            _ => ("queue_admission_denied", "This report request cannot be admitted right now.")
+                "New-report queue is full for today",
+                $"The shared crawler has reached its site-wide daily capacity for players without an existing report. Your account is not blocked; please try again in {retryAfterText}."),
+            _ => (
+                "queue_admission_denied",
+                "Report cannot be queued right now",
+                $"The report queue cannot accept this request right now. Please try again in {retryAfterText}.")
         };
 
         return TypedResults.Problem(
-            title: "Queue capacity reached",
-            detail: $"{detail} Try again later.",
+            title: title,
+            detail: detail,
             statusCode: StatusCodes.Status429TooManyRequests,
             extensions: new Dictionary<string, object?>
             {
