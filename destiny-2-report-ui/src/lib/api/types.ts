@@ -19,7 +19,6 @@ export interface PlayerSearchResult {
   membershipId: string
   membershipTypeId: number
   emblemIconUrl: string
-  queueTicket: string
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +367,6 @@ export interface DestinyMembership {
   crossSaveOverride: number
   applicableMembershipTypes: number[]
   isPublic: boolean
-  queueTicket: string
 }
 
 export interface SignedInPlayerResponse {

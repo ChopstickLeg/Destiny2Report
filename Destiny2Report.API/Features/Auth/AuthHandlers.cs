@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Destiny2Report.API.Features.Admin;
-using Destiny2Report.API.Features.Reports;
 using Microsoft.Extensions.Options;
 
 namespace Destiny2Report.API.Features.Auth;
@@ -14,7 +13,6 @@ public static class AuthHandlers
         IBungieAuthService authService,
         IAuthSessionStore sessionStore,
         IOptions<AdminOptions> adminOptions,
-        IQueueTicketService queueTickets,
         CancellationToken cancellationToken)
     {
         try
@@ -27,7 +25,6 @@ public static class AuthHandlers
             }
 
             await sessionStore.CreateAsync(httpResponse, response, cancellationToken).ConfigureAwait(false);
-            profile = await AddQueueTicketsAsync(profile, queueTickets, cancellationToken).ConfigureAwait(false);
             return TypedResults.Ok(AdminAccess.WithAdminAccess(profile, adminOptions.Value));
         }
         catch (BungieAuthException ex) when (ex.Error is "invalid_oauth_request" or "bungie_oauth_exchange_failed")
@@ -47,7 +44,6 @@ public static class AuthHandlers
         IAuthSessionStore sessionStore,
         TimeProvider timeProvider,
         IOptions<AdminOptions> adminOptions,
-        IQueueTicketService queueTickets,
         CancellationToken cancellationToken)
     {
         var session = await sessionStore.GetAsync(httpRequest, cancellationToken).ConfigureAwait(false);
@@ -72,7 +68,6 @@ public static class AuthHandlers
             var profile = await authService.GetCurrentUserAsync(session.AccessToken, cancellationToken).ConfigureAwait(false);
             if (profile.SignedIn)
             {
-                profile = await AddQueueTicketsAsync(profile, queueTickets, cancellationToken).ConfigureAwait(false);
                 return TypedResults.Ok(AdminAccess.WithAdminAccess(profile, adminOptions.Value));
             }
 
@@ -89,7 +84,6 @@ public static class AuthHandlers
                 await sessionStore.DeleteAsync(httpRequest, httpResponse, cancellationToken).ConfigureAwait(false);
             }
 
-            profile = await AddQueueTicketsAsync(profile, queueTickets, cancellationToken).ConfigureAwait(false);
             return TypedResults.Ok(AdminAccess.WithAdminAccess(profile, adminOptions.Value));
         }
         catch (BungieAuthException ex) when (
@@ -127,33 +121,4 @@ public static class AuthHandlers
         };
     }
 
-    private static async Task<SignedInPlayerResponse> AddQueueTicketsAsync(
-        SignedInPlayerResponse player,
-        IQueueTicketService queueTickets,
-        CancellationToken cancellationToken)
-    {
-        if (!player.SignedIn || player.DestinyMemberships.Count == 0)
-        {
-            return player;
-        }
-
-        var memberships = await Task.WhenAll(player.DestinyMemberships.Select(async membership => membership with
-        {
-            QueueTicket = await queueTickets.IssueAsync(
-                    membership.MembershipType,
-                    membership.MembershipId,
-                    cancellationToken)
-                .ConfigureAwait(false)
-        })).ConfigureAwait(false);
-        var primary = player.PrimaryDestinyMembership is null
-            ? null
-            : memberships.FirstOrDefault(membership =>
-                membership.MembershipType == player.PrimaryDestinyMembership.MembershipType
-                && membership.MembershipId == player.PrimaryDestinyMembership.MembershipId);
-        return player with
-        {
-            DestinyMemberships = memberships,
-            PrimaryDestinyMembership = primary
-        };
-    }
 }

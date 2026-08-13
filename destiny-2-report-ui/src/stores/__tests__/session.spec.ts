@@ -14,7 +14,6 @@ function membership(type: number, id: string, displayName: string): DestinyMembe
     crossSaveOverride: 0,
     applicableMembershipTypes: [type],
     isPublic: true,
-    queueTicket: `ticket-${type}-${id}`,
   }
 }
 
@@ -90,12 +89,4 @@ describe('session membership selection', () => {
     expect(session.activeMembership).toBeNull()
   })
 
-  it('stores signed-in membership queue tickets for report submission', () => {
-    const steam = membership(3, '202', 'Current profile')
-    const session = useSessionStore()
-
-    session.rememberMembershipQueueTickets(profile([steam], steam))
-
-    expect(sessionStorage.getItem('d2r.queue-ticket:3:202')).toBe('ticket-3-202')
-  })
 })

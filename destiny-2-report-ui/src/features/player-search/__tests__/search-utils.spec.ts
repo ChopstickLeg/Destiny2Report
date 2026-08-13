@@ -9,7 +9,6 @@ function result(displayName: string, displayCode: number | null): PlayerSearchRe
     membershipId: '1',
     membershipTypeId: 3,
     emblemIconUrl: '',
-    queueTicket: 'ticket',
   }
 }
 

@@ -4,6 +4,7 @@ import { RouterView } from 'vue-router'
 import AppHeader from '@/components/shell/AppHeader.vue'
 import AppFooter from '@/components/shell/AppFooter.vue'
 import StoryPromptDialog from '@/components/shell/StoryPromptDialog.vue'
+import TurnstileGate from '@/components/shell/TurnstileGate.vue'
 import { useSessionStore } from '@/stores/session'
 
 const session = useSessionStore()
@@ -20,6 +21,7 @@ onMounted(() => {
   </main>
   <AppFooter />
   <StoryPromptDialog v-if="session.storyPromptOpen" />
+  <TurnstileGate />
 </template>
 
 <style scoped>

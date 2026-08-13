@@ -1,5 +1,4 @@
 using D2Report.BungieClient;
-using Destiny2Report.API.Features.Reports;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 
@@ -15,7 +14,6 @@ public static class PlayerSearchHandlers
     public static async Task<Results<Ok<IReadOnlyList<PlayerSearchResponse>>, NotFound, BadRequest<ProblemDetails>, ProblemHttpResult>> SearchPlayer(
         [FromBody] PlayerSearchRequest request,
         ID2ReportClient bungieClient,
-        IQueueTicketService queueTickets,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.DisplayNamePrefix))
@@ -89,19 +87,11 @@ public static class PlayerSearchHandlers
             return TypedResults.NotFound();
         }
 
-        var resultsWithoutTickets = bungieResults
+        var results = bungieResults
             .GroupBy(result => (result.MembershipId, result.MembershipTypeId))
             .Select(group => group.First())
             .Take(MaxSearchResults)
             .ToArray();
-        var results = await Task.WhenAll(resultsWithoutTickets.Select(async result => result with
-        {
-            QueueTicket = await queueTickets.IssueAsync(
-                    result.MembershipTypeId,
-                    result.MembershipId,
-                    cancellationToken)
-                .ConfigureAwait(false)
-        })).ConfigureAwait(false);
 
         return TypedResults.Ok<IReadOnlyList<PlayerSearchResponse>>(
             results);

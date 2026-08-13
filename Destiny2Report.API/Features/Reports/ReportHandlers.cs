@@ -300,7 +300,7 @@ public static class ReportHandlers
     public static async Task<IResult> QueueCrawl(
         ReportQueueRequest request,
         ICrawlerJobQueue crawlerJobQueue,
-        IQueueTicketService queueTickets,
+        ITurnstileVerifier turnstile,
         IMongoDatabase mongoDatabase,
         HttpResponse httpResponse,
         HttpContext httpContext,
@@ -316,14 +316,13 @@ public static class ReportHandlers
         }
 
         System.Diagnostics.Activity.Current?.SetTag("destiny.membership_count", 1);
-        if (!await queueTickets.ConsumeAsync(
-                request.QueueTicket,
-                request.MembershipTypeId,
-                request.MembershipId,
+        if (!await turnstile.VerifyAsync(
+                request.TurnstileToken,
+                clientDiagnostics.PartitionKey,
                 cancellationToken)
             .ConfigureAwait(false))
         {
-            return BuildInvalidQueueTicketResponse();
+            return BuildTurnstileFailureResponse();
         }
 
         var retryAfter = await GetBatchCrawlRetryAfterAsync(
@@ -346,13 +345,13 @@ public static class ReportHandlers
         return TypedResults.Accepted((string?)null, response);
     }
 
-    private static IResult BuildInvalidQueueTicketResponse() => TypedResults.Problem(
-        title: "Invalid queue ticket",
-        detail: "Search for this player again or sign in before requesting a report.",
+    private static IResult BuildTurnstileFailureResponse() => TypedResults.Problem(
+        title: "Security verification failed",
+        detail: "Complete the security check before requesting a report.",
         statusCode: StatusCodes.Status403Forbidden,
         extensions: new Dictionary<string, object?>
         {
-            ["code"] = "invalid_queue_ticket"
+            ["code"] = "turnstile_verification_failed"
         });
 
     private static async Task<TimeSpan?> GetBatchCrawlRetryAfterAsync(

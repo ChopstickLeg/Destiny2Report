@@ -13,6 +13,8 @@ services:
       Bungie__ClientSecret: ${BUNGIE_CLIENT_SECRET:?BUNGIE_CLIENT_SECRET is required}
       Admin__MembershipTypeId: ${ADMIN_MEMBERSHIP_TYPE_ID:?ADMIN_MEMBERSHIP_TYPE_ID is required}
       Admin__MembershipId: ${ADMIN_MEMBERSHIP_ID:?ADMIN_MEMBERSHIP_ID is required}
+      Turnstile__SecretKey: ${TURNSTILE_SECRET_KEY:?TURNSTILE_SECRET_KEY is required}
+      Turnstile__AllowedHostnames__0: ${TURNSTILE_ALLOWED_HOSTNAME:-destiny-2.report}
       WebPush__Subject: ${WEB_PUSH_SUBJECT:?WEB_PUSH_SUBJECT is required}
       WebPush__PublicKey: ${WEB_PUSH_PUBLIC_KEY:?WEB_PUSH_PUBLIC_KEY is required}
       WebPush__PrivateKey: ${WEB_PUSH_PRIVATE_KEY:?WEB_PUSH_PRIVATE_KEY is required}

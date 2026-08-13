@@ -11,7 +11,6 @@
 import { defineStore } from 'pinia'
 import { exchangeOAuthCode, fetchWhoAmI, signOut as deleteSession } from '@/lib/api/auth'
 import type { DestinyMembership, SignedInPlayerResponse } from '@/lib/api/types'
-import { rememberQueueTicket } from '@/lib/queue-tickets'
 
 const OAUTH_STATE_KEY = 'd2r.oauth-state'
 const ACTIVE_MEMBERSHIP_KEY = 'd2r.active-membership'
@@ -80,7 +79,6 @@ export const useSessionStore = defineStore('session', {
         const profile = await fetchWhoAmI()
         if (profile.signedIn) {
           this.profile = profile
-          this.rememberMembershipQueueTickets(profile)
           this.restoreMembershipSelection()
           this.status = 'signed-in'
         } else {
@@ -126,7 +124,6 @@ export const useSessionStore = defineStore('session', {
         throw new Error('Bungie accepted the sign-in but no profile was returned.')
       }
       this.profile = profile
-      this.rememberMembershipQueueTickets(profile)
       this.restoreMembershipSelection()
       this.status = 'signed-in'
       return pending.returnTo || '/me'
@@ -169,15 +166,6 @@ export const useSessionStore = defineStore('session', {
       )
         ? stored
         : null
-    },
-
-    rememberMembershipQueueTickets(profile: SignedInPlayerResponse) {
-      for (const membership of profile.destinyMemberships) {
-        rememberQueueTicket(
-          { membershipTypeId: membership.membershipType, membershipId: membership.membershipId },
-          membership.queueTicket,
-        )
-      }
     },
 
     async signOut() {

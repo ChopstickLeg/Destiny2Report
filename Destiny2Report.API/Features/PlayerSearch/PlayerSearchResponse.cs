@@ -5,5 +5,4 @@ public sealed record PlayerSearchResponse(
     int? DisplayCode,
     long MembershipId,
     int MembershipTypeId,
-    string EmblemIconUrl,
-    string QueueTicket = "");
+    string EmblemIconUrl);
