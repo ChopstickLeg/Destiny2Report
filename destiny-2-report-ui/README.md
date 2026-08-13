@@ -58,12 +58,20 @@ Copy `.env.example` to `.env.local` and adjust as needed:
 | `VITE_DEV_API_PROXY` | Dev-only proxy target for `/api` | `http://localhost:5063` |
 | `VITE_BUNGIE_CLIENT_ID` | Public Bungie OAuth client id; sign-in is hidden when unset | Not set |
 | `VITE_BUNGIE_AUTHORIZE_URL` | Bungie authorization endpoint override | `https://www.bungie.net/en/OAuth/Authorize` |
+| `VITE_TURNSTILE_SITE_KEY` | Public Cloudflare Turnstile sitekey used to authorize report queue requests | Cloudflare test key in development; required in production |
 | `DEV_HTTPS_PFX_PATH` | Optional localhost PFX used to serve Vite over trusted HTTPS | Not set |
 | `DEV_HTTPS_PFX_PASSWORD` | Password for `DEV_HTTPS_PFX_PATH`; kept server-side by Vite | Not set |
 
 During local development, the UI also falls back to `BUNGIE_CLIENT_ID` from the
 workspace root `.env`. This keeps the public client id aligned with the backend
 without exposing `BUNGIE_CLIENT_SECRET` to browser code.
+
+Report queue requests are protected by Cloudflare Turnstile. Configure the
+production widget for `destiny-2.report`, set `VITE_TURNSTILE_SITE_KEY` in the
+Cloudflare build environment, and set `TURNSTILE_SECRET_KEY` for the API service.
+The backend validates every token's action and hostname through Siteverify before
+reading report cooldown state or enqueueing work. `TURNSTILE_ALLOWED_HOSTNAME`
+defaults to `destiny-2.report` in `compose.production.yaml`.
 
 ### Auth model (prototype)
 

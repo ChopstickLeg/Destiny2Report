@@ -8,6 +8,7 @@ import type {
   StoryVisualAssetsReport,
   WeaponActivityModeAggregateReport,
 } from './types'
+import { withTurnstileToken } from '../turnstile'
 
 export interface ReportIdentity {
   membershipTypeId: number
@@ -86,11 +87,17 @@ export function fetchPlaytime(
   )
 }
 
-export function queueReport(identity: ReportIdentity): Promise<ReportQueueResponse[]> {
-  return apiFetch('/reports/queue', {
-    method: 'POST',
-    body: [{ membershipTypeId: identity.membershipTypeId, membershipId: identity.membershipId }],
-  })
+export async function queueReport(identity: ReportIdentity): Promise<ReportQueueResponse> {
+  return withTurnstileToken((turnstileToken) =>
+    apiFetch<ReportQueueResponse>('/reports/queue', {
+      method: 'POST',
+      body: {
+        membershipTypeId: identity.membershipTypeId,
+        membershipId: identity.membershipId,
+        turnstileToken,
+      },
+    }),
+  )
 }
 
 /** Stable TanStack Query keys for everything report-related. */
