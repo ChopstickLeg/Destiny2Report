@@ -9,6 +9,22 @@ namespace Destiny2Report.Tests.Features.Reports;
 public sealed class QueueAdmissionOptionsTests
 {
     [Fact]
+    public async Task TargetLease_ReleasesExactlyOnce()
+    {
+        var releases = 0;
+        var lease = new QueueAdmissionTargetLease(() =>
+        {
+            releases++;
+            return Task.CompletedTask;
+        });
+
+        await lease.DisposeAsync();
+        await lease.DisposeAsync();
+
+        Assert.Equal(1, releases);
+    }
+
+    [Fact]
     public void IsBlocked_MatchesConfiguredBungieMembershipId()
     {
         var options = new QueueAdmissionOptions
@@ -107,6 +123,12 @@ public sealed class QueueAdmissionOptionsTests
 
     private sealed class StubQuotaStore : IQueueAdmissionQuotaStore
     {
+        public Task<QueueAdmissionTargetLease?> AcquireTargetLeaseAsync(
+            int membershipTypeId,
+            long membershipId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<QueueAdmissionTargetLease?>(QueueAdmissionTargetLease.Noop());
+
         public Task<QueueAdmissionDecision> ReserveAsync(
             long bungieMembershipId,
             bool isNewReport,

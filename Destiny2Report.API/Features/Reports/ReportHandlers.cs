@@ -345,6 +345,30 @@ public static class ReportHandlers
             System.Diagnostics.Activity.Current?.SetTag("destiny.bungie_membership_id", bungieMembershipId);
         }
 
+        await using var targetLease = await queueAdmission.AcquireTargetLeaseAsync(
+                admissionIdentity,
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (targetLease is null)
+        {
+            return BuildQueueAdmissionFailureResponse(
+                httpResponse,
+                QueueAdmissionFailure.AdmissionUnavailable,
+                null);
+        }
+
+        var activeJob = await crawlerJobQueue.TryGetActiveAsync(
+                request.MembershipTypeId,
+                request.MembershipId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (activeJob is not null)
+        {
+            return TypedResults.Accepted((string?)null, activeJob);
+        }
+
         var existingReport = await FindReportAsync(
                 mongoDatabase,
                 request.MembershipTypeId,

@@ -24,6 +24,11 @@ public interface ICrawlerJobQueue
         long membershipId,
         bool forceFullCrawl,
         CancellationToken cancellationToken);
+
+    Task<ReportQueueResponse?> TryGetActiveAsync(
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken);
 }
 
 public sealed record CrawlerJobEnqueueResult(ReportQueueResponse Response, bool CreatedNewJob);
@@ -108,6 +113,25 @@ public sealed class CrawlerJobQueue(
             forceFullCrawl,
             priority: false,
             cancellationToken).ConfigureAwait(false);
+
+    public async Task<ReportQueueResponse?> TryGetActiveAsync(
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
+        var playerKey = CrawlJob.CreatePlayerKey(membershipTypeId, membershipId);
+        var job = await jobs.Find(BuildActiveJobFilter(playerKey))
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (job is null)
+        {
+            return null;
+        }
+
+        job = await DispatchIfNeededAsync(jobs, job, CancellationToken.None).ConfigureAwait(false);
+        return ToResponse(job);
+    }
 
     private async Task<CrawlerJobEnqueueResult> EnqueueInternalAsync(
         int membershipTypeId,
@@ -212,6 +236,10 @@ public sealed class CrawlerJobQueue(
 
     internal static bool WasCreatedByRun(CrawlJob? job, string runId) =>
         job is not null && job.RunId == runId;
+
+    internal static FilterDefinition<CrawlJob> BuildActiveJobFilter(byte[] playerKey) =>
+        Builders<CrawlJob>.Filter.Eq(job => job.PlayerKey, playerKey)
+        & Builders<CrawlJob>.Filter.In(job => job.State, ActiveStates);
 
     private async Task<CrawlJob> DispatchIfNeededAsync(
         IMongoCollection<CrawlJob> jobs,

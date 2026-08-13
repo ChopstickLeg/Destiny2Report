@@ -64,6 +64,21 @@ public sealed record QueueAdmissionReservation(
     bool IsNewReport,
     DateTimeOffset ReservedAtUtc);
 
+public sealed class QueueAdmissionTargetLease(Func<Task> releaseAsync) : IAsyncDisposable
+{
+    private int disposed;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) == 0)
+        {
+            await releaseAsync().ConfigureAwait(false);
+        }
+    }
+
+    public static QueueAdmissionTargetLease Noop() => new(() => Task.CompletedTask);
+}
+
 public interface IQueueAdmissionService
 {
     Task<QueueAdmissionIdentity> ResolveIdentityAsync(
@@ -74,6 +89,12 @@ public interface IQueueAdmissionService
     Task<QueueAdmissionDecision> ReserveAsync(
         QueueAdmissionIdentity identity,
         bool isNewReport,
+        CancellationToken cancellationToken);
+
+    Task<QueueAdmissionTargetLease?> AcquireTargetLeaseAsync(
+        QueueAdmissionIdentity identity,
+        int membershipTypeId,
+        long membershipId,
         CancellationToken cancellationToken);
 
     Task CompleteAsync(
@@ -87,6 +108,11 @@ public interface IQueueAdmissionQuotaStore
     Task<QueueAdmissionDecision> ReserveAsync(
         long bungieMembershipId,
         bool isNewReport,
+        CancellationToken cancellationToken);
+
+    Task<QueueAdmissionTargetLease?> AcquireTargetLeaseAsync(
+        int membershipTypeId,
+        long membershipId,
         CancellationToken cancellationToken);
 
     Task CompleteAsync(
@@ -201,6 +227,14 @@ public sealed class QueueAdmissionService(
             : Task.FromResult(new QueueAdmissionDecision(QueueAdmissionFailure.AuthenticationRequired));
     }
 
+    public Task<QueueAdmissionTargetLease?> AcquireTargetLeaseAsync(
+        QueueAdmissionIdentity identity,
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken) => identity.EnforcementEnabled
+        ? quotaStore.AcquireTargetLeaseAsync(membershipTypeId, membershipId, cancellationToken)
+        : Task.FromResult<QueueAdmissionTargetLease?>(QueueAdmissionTargetLease.Noop());
+
     public Task CompleteAsync(
         QueueAdmissionReservation? reservation,
         bool keepCharge,
@@ -269,6 +303,74 @@ public sealed class RedisQueueAdmissionQuotaStore(
         if tonumber(ARGV[2]) == 1 then decrement(KEYS[4]) end
         return 1
         """;
+    private const string ReleaseTargetLeaseScript = """
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        end
+        return 0
+        """;
+    private static readonly TimeSpan TargetLeaseLifetime = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan TargetLeaseWait = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan TargetLeaseRetryDelay = TimeSpan.FromMilliseconds(50);
+
+    public async Task<QueueAdmissionTargetLease?> AcquireTargetLeaseAsync(
+        int membershipTypeId,
+        long membershipId,
+        CancellationToken cancellationToken)
+    {
+        var database = redis.GetDatabase();
+        var key = (RedisKey)$"{KeyPrefix}target:{membershipTypeId}:{membershipId}";
+        var token = Guid.NewGuid().ToString("N");
+        var deadline = timeProvider.GetUtcNow().Add(TargetLeaseWait);
+
+        try
+        {
+            while (timeProvider.GetUtcNow() < deadline)
+            {
+                if (await database.StringSetAsync(key, token, TargetLeaseLifetime, When.NotExists)
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false))
+                {
+                    return new QueueAdmissionTargetLease(async () =>
+                    {
+                        try
+                        {
+                            await database.ScriptEvaluateAsync(
+                                    ReleaseTargetLeaseScript,
+                                    [key],
+                                    [token])
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception exception)
+                        {
+                            logger.LogError(
+                                exception,
+                                "Could not release queue admission lease for {MembershipTypeId}/{MembershipId}.",
+                                membershipTypeId,
+                                membershipId);
+                        }
+                    });
+                }
+
+                await Task.Delay(TargetLeaseRetryDelay, timeProvider, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception,
+                "Could not acquire queue admission lease for {MembershipTypeId}/{MembershipId}.",
+                membershipTypeId,
+                membershipId);
+        }
+
+        return null;
+    }
 
     public async Task<QueueAdmissionDecision> ReserveAsync(
         long bungieMembershipId,

@@ -13,7 +13,7 @@ Configure the API with environment variables using the standard .NET double-unde
 | `QueueAdmission__MaxNewReportsGloballyPerDay` | `250` | Maximum previously unseen reports across all accounts per UTC day. |
 | `QueueAdmission__BlockedBungieMembershipIds` | empty | Comma-separated Bungie.net membership IDs that may not queue reports. |
 
-A limit of `0` disables that individual limit. Counter checks and provisional reservations execute atomically in Redis, so concurrent requests and multiple API instances share the same limits. The atomic `crawl_jobs` admission result determines whether a reservation is committed: requests that reuse an active job, lose a concurrent admission race, or fail to enqueue release their reservation and do not consume quota.
+A limit of `0` disables that individual limit. Counter checks and provisional reservations execute atomically in Redis, so concurrent requests and multiple API instances share the same limits. Admission is serialized per report target with a short Redis lease, then active jobs are resolved from the authoritative `crawl_jobs` collection before quota admission. The atomic `crawl_jobs` admission result determines whether a reservation is committed: requests that reuse an active job or fail to enqueue release their reservation and do not consume quota.
 
 When enforcement is enabled, missing or expired sessions fail with `401`, blocked accounts fail with `403`, quota exhaustion fails with `429`, and Bungie or Redis admission failures fail closed with `503`. Turnstile validation and the existing per-report crawl cooldown remain in force.
 

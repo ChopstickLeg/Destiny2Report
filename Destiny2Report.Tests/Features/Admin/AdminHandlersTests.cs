@@ -155,5 +155,10 @@ public sealed class AdminHandlersTests
             bool forceFullCrawl,
             CancellationToken cancellationToken) =>
             new(await EnqueueAsync(membershipTypeId, membershipId, forceFullCrawl, cancellationToken), true);
+
+        public Task<ReportQueueResponse?> TryGetActiveAsync(
+            int membershipTypeId,
+            long membershipId,
+            CancellationToken cancellationToken) => Task.FromResult<ReportQueueResponse?>(null);
     }
 }
