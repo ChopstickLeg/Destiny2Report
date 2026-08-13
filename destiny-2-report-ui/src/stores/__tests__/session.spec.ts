@@ -34,6 +34,7 @@ describe('session membership selection', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
+    sessionStorage.clear()
   })
 
   it('blocks the Story prompt until a non-Cross Save membership is selected', () => {
@@ -87,4 +88,5 @@ describe('session membership selection', () => {
 
     expect(session.activeMembership).toBeNull()
   })
+
 })

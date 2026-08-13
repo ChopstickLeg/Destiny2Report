@@ -35,6 +35,15 @@ builder.Services.AddHttpClient<IBungieAuthService, BungieAuthService>(httpClient
 {
     httpClient.BaseAddress = new Uri("https://www.bungie.net/Platform/");
 });
+builder.Services.AddOptions<TurnstileOptions>()
+    .Bind(builder.Configuration.GetSection(TurnstileOptions.SectionName))
+    .Validate(options => !string.IsNullOrWhiteSpace(options.SecretKey), "Turnstile:SecretKey is required.")
+    .Validate(options => options.AllowedHostnames.Length > 0, "Turnstile:AllowedHostnames must not be empty.")
+    .ValidateOnStart();
+builder.Services.AddHttpClient<ITurnstileVerifier, TurnstileVerifier>(httpClient =>
+{
+    httpClient.Timeout = TimeSpan.FromSeconds(10);
+});
 builder.Services.AddSingleton<ICrawlerJobQueue, CrawlerJobQueue>();
 builder.Services.AddSingleton<ICrawlGenerationStore, CrawlGenerationStore>();
 builder.Services.AddOptions<LeaderboardsOptions>()

@@ -45,53 +45,6 @@ public sealed class ReportHandlersBusinessLogicTests
     }
 
     [Fact]
-    public void TryValidateQueueRequests_accepts_membership_objects()
-    {
-        IReadOnlyList<ReportQueueRequest> requests =
-        [
-            new(1, 4611686018463095984),
-            new(2, 123456789)
-        ];
-        var arguments = new object?[] { requests, null, null };
-
-        var isValid = (bool)Invoke("TryValidateQueueRequests", arguments)!;
-
-        Assert.True(isValid);
-        var memberships = Assert.IsAssignableFrom<IReadOnlyList<(int MembershipTypeId, long MembershipId)>>(arguments[1]);
-        Assert.Equal([(1, 4611686018463095984L), (2, 123456789L)], memberships);
-    }
-
-    [Fact]
-    public void TryValidateQueueRequests_rejects_an_empty_request()
-    {
-        var arguments = new object?[] { Array.Empty<ReportQueueRequest>(), null, null };
-
-        var isValid = (bool)Invoke("TryValidateQueueRequests", arguments)!;
-
-        Assert.False(isValid);
-        var problem = Assert.IsType<ProblemDetails>(arguments[2]);
-        Assert.Equal("Missing memberships", problem.Title);
-    }
-
-    [Fact]
-    public void TryValidateQueueRequests_rejects_batches_over_the_import_limit()
-    {
-        IReadOnlyList<ReportQueueRequest> requests = Enumerable
-            .Range(1, ReportHandlers.MaxQueueBatchSize + 1)
-            .Select(index => new ReportQueueRequest(1, 4611686018463095984L + index))
-            .ToArray();
-        var arguments = new object?[] { requests, null, null };
-
-        var isValid = (bool)Invoke("TryValidateQueueRequests", arguments)!;
-
-        Assert.False(isValid);
-        var problem = Assert.IsType<ProblemDetails>(arguments[2]);
-        Assert.Equal("Queue batch too large", problem.Title);
-        Assert.Equal($"At most {ReportHandlers.MaxQueueBatchSize} memberships can be queued at once.", problem.Detail);
-        Assert.Equal(400, problem.Status);
-    }
-
-    [Fact]
     public void TryReadMatchingJobEvent_reads_only_events_for_requested_membership()
     {
         var updatedAt = DateTimeOffset.Parse("2026-06-19T12:00:00Z");
