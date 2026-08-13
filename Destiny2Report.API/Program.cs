@@ -44,6 +44,16 @@ builder.Services.AddHttpClient<ITurnstileVerifier, TurnstileVerifier>(httpClient
 {
     httpClient.Timeout = TimeSpan.FromSeconds(10);
 });
+builder.Services.AddOptions<QueueAdmissionOptions>()
+    .Bind(builder.Configuration.GetSection(QueueAdmissionOptions.SectionName))
+    .Validate(options => options.MaxRequestsPerAccountPerDay >= 0, "QueueAdmission:MaxRequestsPerAccountPerDay cannot be negative.")
+    .Validate(options => options.MaxNewReportsPerAccountPerDay >= 0, "QueueAdmission:MaxNewReportsPerAccountPerDay cannot be negative.")
+    .Validate(options => options.MaxRequestsGloballyPerHour >= 0, "QueueAdmission:MaxRequestsGloballyPerHour cannot be negative.")
+    .Validate(options => options.MaxNewReportsGloballyPerDay >= 0, "QueueAdmission:MaxNewReportsGloballyPerDay cannot be negative.")
+    .Validate(options => options.HasValidBlockedBungieMembershipIds(), "QueueAdmission:BlockedBungieMembershipIds must be a comma-separated list of positive integers.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<IQueueAdmissionQuotaStore, RedisQueueAdmissionQuotaStore>();
+builder.Services.AddScoped<IQueueAdmissionService, QueueAdmissionService>();
 builder.Services.AddSingleton<ICrawlerJobQueue, CrawlerJobQueue>();
 builder.Services.AddSingleton<ICrawlGenerationStore, CrawlGenerationStore>();
 builder.Services.AddOptions<LeaderboardsOptions>()

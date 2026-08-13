@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import AppButton from '@/components/base/AppButton.vue'
 import ErrorState from '@/components/base/ErrorState.vue'
-import type { ReportIdentity } from '@/lib/api/reports'
+import { isApiError } from '@/lib/api/http'
+import { fetchQueuePolicy, type QueuePolicyResponse, type ReportIdentity } from '@/lib/api/reports'
 import type { CrawlState } from '@/lib/api/types'
+import { useSessionStore } from '@/stores/session'
 import CrawlProgressPanel from './CrawlProgressPanel.vue'
 import ReportReadyNotification from './ReportReadyNotification.vue'
 import { useQueueWatcher } from './useQueueWatcher'
@@ -21,22 +24,47 @@ const props = defineProps<{
 const emit = defineEmits<{ refresh: [] }>()
 
 const identityRef = computed(() => props.identity)
+const route = useRoute()
+const session = useSessionStore()
+const queuePolicy = ref<QueuePolicyResponse | null>(null)
 
 const watcher = useQueueWatcher(identityRef, {
   onCompleted: () => emit('refresh'),
 })
 
-onMounted(() => {
+const serverRequiresSignIn = computed(
+  () =>
+    queuePolicy.value?.authenticationRequired === true ||
+    (isApiError(watcher.submitError.value) &&
+      watcher.submitError.value.problem?.code === 'queue_authentication_required'),
+)
+const needsSignIn = computed(() => serverRequiresSignIn.value && !session.isSignedIn)
+
+function signIn() {
+  session.beginSignIn(route.fullPath)
+}
+
+onMounted(async () => {
+  try {
+    queuePolicy.value = await fetchQueuePolicy()
+  } catch {
+    // The queue endpoint remains authoritative if policy discovery is unavailable.
+  }
+
   // Re-submit queued reports through the durable queue. This is idempotent for
   // an active job and promotes legacy Mongo-only queue records into Redis.
   if (props.initialState === 'queued') {
-    void watcher.submitAndWatch({
-      suppressCooldownError: true,
-      watchOnSuppressedCooldown: true,
-    })
+    if (needsSignIn.value) {
+      void watcher.watch()
+    } else {
+      void watcher.submitAndWatch({
+        suppressCooldownError: true,
+        watchOnSuppressedCooldown: true,
+      })
+    }
   } else if (props.initialState === 'running') {
     void watcher.watch()
-  } else if (props.initialState === 'missing' && props.autoStart) {
+  } else if (props.initialState === 'missing' && props.autoStart && !needsSignIn.value) {
     void watcher.submitAndWatch()
   }
 })
@@ -84,15 +112,23 @@ const heading = computed(() => {
           {{ heading }} hasn't been crawled. Generating a report walks their entire public Destiny 2
           history, including every activity, weapon, and teammate, and stores it for anyone to view.
         </p>
+        <p v-if="serverRequiresSignIn" class="generation-auth-note">
+          You must sign in with Bungie before you can queue a player for a report crawl.
+        </p>
         <ErrorState
-          v-if="watcher.submitError.value"
+          v-if="watcher.submitError.value && !needsSignIn"
           class="generation-error"
           :error="watcher.submitError.value"
           context="Couldn't queue the report"
           @retry="watcher.submitAndWatch()"
         />
         <div class="generation-actions">
-          <AppButton variant="primary" @click="watcher.submitAndWatch()">Generate report</AppButton>
+          <AppButton v-if="needsSignIn" variant="primary" @click="signIn">
+            Sign in with Bungie
+          </AppButton>
+          <AppButton v-else variant="primary" @click="watcher.submitAndWatch()">
+            Generate report
+          </AppButton>
         </div>
       </template>
 
@@ -183,6 +219,13 @@ const heading = computed(() => {
   text-align: left;
   border-left: 2px solid var(--color-border-strong);
   overflow-wrap: anywhere;
+}
+
+.generation-auth-note {
+  max-width: 38rem;
+  margin: var(--space-4) auto 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
 }
 
 .generation-error {

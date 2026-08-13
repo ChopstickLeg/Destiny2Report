@@ -19,6 +19,10 @@ interface StoryShareResponse {
   token: string
 }
 
+export interface QueuePolicyResponse {
+  authenticationRequired: boolean
+}
+
 /**
  * `null` means no report has been generated yet. This is a legitimate state that
  * drives the "Generate report" experience, distinct from request failure.
@@ -53,6 +57,10 @@ export function fetchWeapons(
 
 export function fetchStoryVisualAssets(signal?: AbortSignal): Promise<StoryVisualAssetsReport> {
   return apiFetch('/reports/story-assets', { signal })
+}
+
+export function fetchQueuePolicy(signal?: AbortSignal): Promise<QueuePolicyResponse> {
+  return apiFetch('/reports/queue-policy', { signal })
 }
 
 export function createStoryShare(identity: ReportIdentity): Promise<StoryShareResponse> {
