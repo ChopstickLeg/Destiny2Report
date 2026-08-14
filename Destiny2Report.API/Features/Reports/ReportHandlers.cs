@@ -569,6 +569,7 @@ public static class ReportHandlers
         long membershipId,
         IConnectionMultiplexer redis,
         IMongoDatabase mongoDatabase,
+        QueueEventBroker queueEventBroker,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
@@ -601,9 +602,9 @@ public static class ReportHandlers
         }
 
         var events = StreamQueuePositionEvents(
-            redis,
             redisDatabase,
             mongoDatabase,
+            queueEventBroker,
             membershipTypeId,
             membershipId,
             initialStatus,
@@ -613,9 +614,9 @@ public static class ReportHandlers
     }
 
     private static async IAsyncEnumerable<SseItem<ReportQueueStatusResponse>> StreamQueuePositionEvents(
-        IConnectionMultiplexer redis,
         IDatabase redisDatabase,
         IMongoDatabase mongoDatabase,
+        QueueEventBroker queueEventBroker,
         int membershipTypeId,
         long membershipId,
         ReportQueueStatusResponse initialStatus,
@@ -628,10 +629,9 @@ public static class ReportHandlers
         }
 
         yield return new SseItem<ReportQueueStatusResponse>(initialStatus, "position");
-        var subscriber = redis.GetSubscriber();
-        var eventQueue = await subscriber.SubscribeAsync(RedisChannel.Literal(CrawlerQueue.EventsChannelName)).ConfigureAwait(false);
         using var subscriptionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var readEventTask = eventQueue.ReadAsync(subscriptionCancellation.Token).AsTask();
+        using var eventSubscription = queueEventBroker.Subscribe();
+        var readEventTask = eventSubscription.Reader.ReadAsync(subscriptionCancellation.Token).AsTask();
         var nextFallbackScanAt = DateTimeOffset.UtcNow.Add(QueueScanFallbackInterval);
 
         try
@@ -644,8 +644,8 @@ public static class ReportHandlers
                 if (completedTask == readEventTask)
                 {
                     var channelMessage = await readEventTask.ConfigureAwait(false);
-                    readEventTask = eventQueue.ReadAsync(subscriptionCancellation.Token).AsTask();
-                    if (TryReadMatchingJobEvent(channelMessage.Message, membershipTypeId, membershipId, out var jobEvent))
+                    readEventTask = eventSubscription.Reader.ReadAsync(subscriptionCancellation.Token).AsTask();
+                    if (TryReadMatchingJobEvent(channelMessage, membershipTypeId, membershipId, out var jobEvent))
                     {
                         var eventStatus = BuildQueueStatus(
                             membershipTypeId,
@@ -715,7 +715,6 @@ public static class ReportHandlers
         finally
         {
             await subscriptionCancellation.CancelAsync().ConfigureAwait(false);
-            await eventQueue.UnsubscribeAsync().ConfigureAwait(false);
         }
     }
 

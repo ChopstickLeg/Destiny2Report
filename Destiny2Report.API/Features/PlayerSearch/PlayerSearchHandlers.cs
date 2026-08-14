@@ -8,6 +8,7 @@ public static class PlayerSearchHandlers
 {
     private const int CharactersComponent = 200;
     private const int MaxSearchResults = 25;
+    private const int MaxConcurrentProfileLookups = 8;
     private const int FirstSearchPage = 0;
     private const string BungieNetBaseUrl = "https://www.bungie.net";
 
@@ -76,8 +77,25 @@ public static class PlayerSearchHandlers
                 }))
             .ToArray();
 
+        using var lookupLimiter = new SemaphoreSlim(MaxConcurrentProfileLookups);
         var bungieResultTasks = searchResults
-            .Select(result => CreateBungieResponseAsync(result.Result, result.Membership, bungieClient, cancellationToken))
+            .Select(async result =>
+            {
+                await lookupLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    return await CreateBungieResponseAsync(
+                            result.Result,
+                            result.Membership,
+                            bungieClient,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    lookupLimiter.Release();
+                }
+            })
             .ToArray();
 
         var bungieResults = await Task.WhenAll(bungieResultTasks).ConfigureAwait(false);

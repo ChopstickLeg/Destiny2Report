@@ -55,6 +55,17 @@ builder.Services.AddOptions<QueueAdmissionOptions>()
 builder.Services.AddSingleton<IQueueAdmissionQuotaStore, RedisQueueAdmissionQuotaStore>();
 builder.Services.AddScoped<IQueueAdmissionService, QueueAdmissionService>();
 builder.Services.AddSingleton<ICrawlerJobQueue, CrawlerJobQueue>();
+builder.Services.AddSingleton<QueueEventBroker>(_ =>
+{
+    var connectionString = builder.Configuration.GetConnectionString("Redis")
+        ?? throw new InvalidOperationException("ConnectionStrings:Redis is required.");
+
+    // Keep the long-lived pub/sub reader from sharing the command multiplexer
+    // used by queue admission, status, and crawler dispatch.
+    return new QueueEventBroker(
+        ConnectionMultiplexer.Connect(CreateRedisConfigurationOptions(connectionString)),
+        ownsRedis: true);
+});
 builder.Services.AddSingleton<ICrawlGenerationStore, CrawlGenerationStore>();
 builder.Services.AddOptions<LeaderboardsOptions>()
     .Bind(builder.Configuration.GetSection(LeaderboardsOptions.SectionName))

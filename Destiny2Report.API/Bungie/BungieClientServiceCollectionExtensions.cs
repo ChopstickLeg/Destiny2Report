@@ -13,7 +13,7 @@ public static class BungieClientServiceCollectionExtensions
         var rateLimiterOptions = new BungieClientRateLimitOptions
         {
             DefaultPermitLimit = 20,
-            QueueLimit = 1_000
+            QueueLimit = 256
         };
 
         services.AddSingleton(rateLimiterOptions);

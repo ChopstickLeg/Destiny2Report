@@ -18,7 +18,12 @@ public static class BungieClientHandlers
         return new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
-            MaxAutomaticRedirections = 10
+            MaxAutomaticRedirections = 10,
+            // Keep an outbound request burst from consuming an unbounded number
+            // of sockets when several search/report requests arrive together.
+            MaxConnectionsPerServer = 32,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
         };
     }
 }
