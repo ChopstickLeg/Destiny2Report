@@ -13,15 +13,20 @@ namespace Destiny2Report.API.Features.Reports;
 public sealed class QueueEventBroker : IAsyncDisposable
 {
     private readonly IConnectionMultiplexer _redis;
+    private readonly ILogger<QueueEventBroker> _logger;
     private readonly bool _ownsRedis;
     private readonly ConcurrentDictionary<Guid, Channel<string>> _subscribers = new();
     private readonly object _gate = new();
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _pump;
 
-    public QueueEventBroker(IConnectionMultiplexer redis, bool ownsRedis = false)
+    public QueueEventBroker(
+        IConnectionMultiplexer redis,
+        ILogger<QueueEventBroker> logger,
+        bool ownsRedis = false)
     {
         _redis = redis;
+        _logger = logger;
         _ownsRedis = ownsRedis;
     }
 
@@ -54,31 +59,48 @@ public sealed class QueueEventBroker : IAsyncDisposable
 
     private async Task PumpAsync()
     {
-        try
+        var retryDelay = TimeSpan.FromSeconds(1);
+        while (!_shutdown.IsCancellationRequested)
         {
-            var queue = await _redis
-                .GetSubscriber()
-                .SubscribeAsync(RedisChannel.Literal(CrawlerQueue.EventsChannelName))
-                .ConfigureAwait(false);
-
-            while (!_shutdown.IsCancellationRequested)
+            try
             {
-                var message = await queue.ReadAsync(_shutdown.Token).ConfigureAwait(false);
-                var payload = message.Message.ToString();
-                foreach (var subscriber in _subscribers.Values)
+                var queue = await _redis
+                    .GetSubscriber()
+                    .SubscribeAsync(RedisChannel.Literal(CrawlerQueue.EventsChannelName))
+                    .ConfigureAwait(false);
+
+                retryDelay = TimeSpan.FromSeconds(1);
+                while (!_shutdown.IsCancellationRequested)
                 {
-                    subscriber.Writer.TryWrite(payload);
+                    var message = await queue.ReadAsync(_shutdown.Token).ConfigureAwait(false);
+                    var payload = message.Message.ToString();
+                    foreach (var subscriber in _subscribers.Values)
+                    {
+                        subscriber.Writer.TryWrite(payload);
+                    }
                 }
             }
-        }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
-        {
-        }
-        catch
-        {
-            foreach (var subscriber in _subscribers.Values)
+            catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
             {
-                subscriber.Writer.TryComplete(new InvalidOperationException("Queue event subscription stopped."));
+                break;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Queue event Redis subscription failed; retrying in {RetryDelay}.",
+                    retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, _shutdown.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(30, retryDelay.TotalSeconds * 2));
             }
         }
     }

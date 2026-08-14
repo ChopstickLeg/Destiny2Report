@@ -64,6 +64,7 @@ builder.Services.AddSingleton<QueueEventBroker>(_ =>
     // used by queue admission, status, and crawler dispatch.
     return new QueueEventBroker(
         ConnectionMultiplexer.Connect(CreateRedisConfigurationOptions(connectionString)),
+        _.GetRequiredService<ILogger<QueueEventBroker>>(),
         ownsRedis: true);
 });
 builder.Services.AddSingleton<ICrawlGenerationStore, CrawlGenerationStore>();
