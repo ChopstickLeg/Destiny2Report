@@ -172,6 +172,26 @@ public sealed class ReportHandlersBusinessLogicTests
         Assert.Contains("$lt", renderedJson);
     }
 
+    [Fact]
+    public void Queue_position_snapshot_shares_ordering_without_mongo_count_queries()
+    {
+        var queuedAt = DateTime.Parse("2026-08-12T12:00:00Z").ToUniversalTime();
+        var first = new QueueJobPosition(CrawlJob.CreatePlayerKey(1, 1), queuedAt, true, false);
+        var second = new QueueJobPosition(CrawlJob.CreatePlayerKey(1, 2), queuedAt, true, false);
+        var priority = new QueueJobPosition(CrawlJob.CreatePlayerKey(1, 3), queuedAt.AddMinutes(1), true, true);
+        var mongoQueue = new QueueJobPosition(CrawlJob.CreatePlayerKey(1, 4), queuedAt, false, false);
+
+        var normalPosition = QueuePositionSnapshotService.CalculatePosition(
+            [first, second, priority, mongoQueue],
+            second);
+        var priorityPosition = QueuePositionSnapshotService.CalculatePosition(
+            [first, second, priority, mongoQueue],
+            priority);
+
+        Assert.Equal(new QueuePositionSnapshot(3, 3), normalPosition);
+        Assert.Equal(new QueuePositionSnapshot(1, 3), priorityPosition);
+    }
+
     [Theory]
     [InlineData(DestinyReport.CrawlStateCompleted, true)]
     [InlineData(DestinyReport.CrawlStateFailed, true)]
