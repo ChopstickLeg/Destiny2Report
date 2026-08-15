@@ -23,7 +23,9 @@ public static class ReportHandlers
     private const int AllMembershipTypes = 254;
     private const int StoryShareTokenBytes = 32;
     private static readonly TimeSpan ForegroundCrawlCooldown = TimeSpan.FromHours(6);
-    private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromSeconds(15);
+    // Redis pub/sub carries ordinary updates. This is only a low-frequency safety net
+    // for a missed event or a browser/proxy that did not observe the final event.
+    private static readonly TimeSpan QueueScanFallbackInterval = TimeSpan.FromMinutes(2);
 
     public static Ok<QueuePolicyResponse> GetQueuePolicy(IOptions<QueueAdmissionOptions> options) =>
         TypedResults.Ok(new QueuePolicyResponse(options.Value.Enabled));
@@ -572,6 +574,7 @@ public static class ReportHandlers
         IMongoDatabase mongoDatabase,
         QueueEventBroker queueEventBroker,
         QueueStreamMetrics queueStreamMetrics,
+        IQueuePositionSnapshotService queuePositions,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
@@ -584,23 +587,40 @@ public static class ReportHandlers
             .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        var job = await FindCrawlJobAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
-            .ConfigureAwait(false);
-        var initialStatus = ReconcileQueueStatus(job, redisStatus);
-        initialStatus = await AddQueuePositionAsync(mongoDatabase, job, initialStatus, cancellationToken)
-            .ConfigureAwait(false);
+        // The Redis status is updated alongside the published queue event. Avoid a
+        // MongoDB read for every new SSE connection while that status is present.
+        var initialStatus = redisStatus;
 
         if (initialStatus is null)
         {
-            var report = await FindReportAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
+            var job = await FindCrawlJobAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
                 .ConfigureAwait(false);
+            initialStatus = ReconcileQueueStatus(job, redisStatus);
 
-            if (report is null)
+            if (initialStatus is null)
             {
-                return TypedResults.NotFound();
-            }
+                var report = await FindReportAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
+                    .ConfigureAwait(false);
 
-            initialStatus = BuildQueueStatusFromReport(report);
+                if (report is null)
+                {
+                    return TypedResults.NotFound();
+                }
+
+                initialStatus = BuildQueueStatusFromReport(report);
+            }
+        }
+
+        initialStatus = await AddQueuePositionAsync(
+                queuePositions,
+                membershipTypeId,
+                membershipId,
+                initialStatus,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (initialStatus is null)
+        {
+            return TypedResults.NotFound();
         }
 
         var events = StreamQueuePositionEvents(
@@ -608,6 +628,7 @@ public static class ReportHandlers
             mongoDatabase,
             queueEventBroker,
             queueStreamMetrics,
+            queuePositions,
             membershipTypeId,
             membershipId,
             initialStatus,
@@ -621,6 +642,7 @@ public static class ReportHandlers
         IMongoDatabase mongoDatabase,
         QueueEventBroker queueEventBroker,
         QueueStreamMetrics queueStreamMetrics,
+        IQueuePositionSnapshotService queuePositions,
         int membershipTypeId,
         long membershipId,
         ReportQueueStatusResponse initialStatus,
@@ -637,13 +659,12 @@ public static class ReportHandlers
         using var subscriptionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var eventSubscription = queueEventBroker.Subscribe();
         var readEventTask = eventSubscription.ReadAsync(subscriptionCancellation.Token).AsTask();
-        var nextFallbackScanAt = DateTimeOffset.UtcNow.Add(QueueScanFallbackInterval);
+        var fallbackDelayTask = Task.Delay(QueueScanFallbackInterval, cancellationToken);
 
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var fallbackDelayTask = Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
                 var completedTask = await Task.WhenAny(readEventTask, fallbackDelayTask).ConfigureAwait(false);
 
                 if (completedTask == readEventTask)
@@ -663,6 +684,18 @@ public static class ReportHandlers
                             jobEvent.UpdatedAtUtc,
                             jobEvent.Progress);
 
+                        eventStatus = await AddQueuePositionAsync(
+                                queuePositions,
+                                membershipTypeId,
+                                membershipId,
+                                eventStatus,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        if (eventStatus is null)
+                        {
+                            continue;
+                        }
+
                         yield return new SseItem<ReportQueueStatusResponse>(eventStatus, jobEvent.Status);
 
                         if (IsTerminalCrawlState(jobEvent.Status))
@@ -672,21 +705,49 @@ public static class ReportHandlers
                     }
                 }
 
-                if (DateTimeOffset.UtcNow < nextFallbackScanAt)
+                if (completedTask != fallbackDelayTask)
                 {
                     continue;
                 }
 
-                nextFallbackScanAt = DateTimeOffset.UtcNow.Add(QueueScanFallbackInterval);
+                fallbackDelayTask = Task.Delay(QueueScanFallbackInterval, cancellationToken);
 
                 var redisStatus = await GetStoredQueueStatusAsync(redisDatabase, membershipTypeId, membershipId)
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
 
+                var status = redisStatus;
+                if (status is not null)
+                {
+                    status = await AddQueuePositionAsync(
+                            queuePositions,
+                            membershipTypeId,
+                            membershipId,
+                            status,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                if (status is not null)
+                {
+                    yield return new SseItem<ReportQueueStatusResponse>(status, status.Status);
+                    if (IsTerminalCrawlState(status.Status))
+                    {
+                        yield break;
+                    }
+                    continue;
+                }
+
+                // Redis status is normally present for all active work. Only consult
+                // MongoDB when it has expired or the queue event state was lost.
                 var crawlJob = await FindCrawlJobAsync(mongoDatabase, membershipTypeId, membershipId, cancellationToken)
                     .ConfigureAwait(false);
-                var status = ReconcileQueueStatus(crawlJob, redisStatus);
-                status = await AddQueuePositionAsync(mongoDatabase, crawlJob, status, cancellationToken)
+                status = ReconcileQueueStatus(crawlJob, null);
+                status = await AddQueuePositionAsync(
+                        queuePositions,
+                        membershipTypeId,
+                        membershipId,
+                        status,
+                        cancellationToken)
                     .ConfigureAwait(false);
                 if (status is not null)
                 {
@@ -857,27 +918,23 @@ public static class ReportHandlers
     }
 
     private static async Task<ReportQueueStatusResponse?> AddQueuePositionAsync(
-        IMongoDatabase mongoDatabase,
-        CrawlJob? job,
+        IQueuePositionSnapshotService queuePositions,
+        int membershipTypeId,
+        long membershipId,
         ReportQueueStatusResponse? status,
         CancellationToken cancellationToken)
     {
-        if (job is null || status?.Status != DestinyReport.CrawlStateQueued || job.State != CrawlJob.StateQueued)
+        if (status?.Status != DestinyReport.CrawlStateQueued)
         {
             return status;
         }
 
-        var jobs = mongoDatabase.GetCollection<CrawlJob>("crawl_jobs");
-        var cohortFilter = BuildQueueCohortFilter(job);
-        var jobsAheadFilter = cohortFilter & BuildJobsAheadFilter(job);
-
-        var queueLengthTask = jobs.CountDocumentsAsync(cohortFilter, cancellationToken: cancellationToken);
-        var jobsAheadTask = jobs.CountDocumentsAsync(jobsAheadFilter, cancellationToken: cancellationToken);
-        await Task.WhenAll(queueLengthTask, jobsAheadTask).ConfigureAwait(false);
-
-        var queueLength = Math.Max(1, await queueLengthTask.ConfigureAwait(false));
-        var position = Math.Min(queueLength, 1 + await jobsAheadTask.ConfigureAwait(false));
-        return status with { Position = position, QueueLength = queueLength };
+        var position = await queuePositions
+            .GetPositionAsync(membershipTypeId, membershipId, cancellationToken)
+            .ConfigureAwait(false);
+        return position is null
+            ? status
+            : status with { Position = position.Position, QueueLength = position.QueueLength };
     }
 
     internal static FilterDefinition<CrawlJob> BuildQueueCohortFilter(CrawlJob job) =>

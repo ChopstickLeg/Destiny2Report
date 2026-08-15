@@ -57,6 +57,7 @@ builder.Services.AddOptions<QueueAdmissionOptions>()
 builder.Services.AddSingleton<IQueueAdmissionQuotaStore, RedisQueueAdmissionQuotaStore>();
 builder.Services.AddScoped<IQueueAdmissionService, QueueAdmissionService>();
 builder.Services.AddSingleton<ICrawlerJobQueue, CrawlerJobQueue>();
+builder.Services.AddSingleton<IQueuePositionSnapshotService, QueuePositionSnapshotService>();
 builder.Services.AddSingleton<QueueEventBroker>(_ =>
 {
     var connectionString = builder.Configuration.GetConnectionString("Redis")
