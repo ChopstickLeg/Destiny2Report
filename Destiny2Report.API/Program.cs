@@ -28,6 +28,8 @@ if (args.Contains("--generate-vapid-keys", StringComparer.Ordinal))
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddAppOpenTelemetry();
+builder.Services.AddSingleton<QueueStreamMetrics>();
+builder.Services.AddSingleton<MongoCommandMetrics>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddBungieClient(builder.Configuration);
@@ -65,6 +67,7 @@ builder.Services.AddSingleton<QueueEventBroker>(_ =>
     return new QueueEventBroker(
         ConnectionMultiplexer.Connect(CreateRedisConfigurationOptions(connectionString)),
         _.GetRequiredService<ILogger<QueueEventBroker>>(),
+        _.GetRequiredService<QueueStreamMetrics>(),
         ownsRedis: true);
 });
 builder.Services.AddSingleton<ICrawlGenerationStore, CrawlGenerationStore>();

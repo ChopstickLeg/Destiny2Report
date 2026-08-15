@@ -18,10 +18,23 @@ public sealed record AdminActiveCrawlResponse(
 
 public sealed record AdminQueueStatusCountResponse(string Status, long Count);
 
+public sealed record AdminQueueStreamMetricsResponse(
+    long ActiveStreams,
+    int BrokerSubscribers,
+    long DroppedBrokerMessages);
+
+public sealed record AdminMongoCommandMetricsResponse(
+    long CompletedCommands,
+    long FailedCommands,
+    int RecentSampleCount,
+    double? RecentAverageDurationMilliseconds);
+
 public sealed record AdminOverviewResponse(
     DateTimeOffset UpdatedAtUtc,
     IReadOnlyList<AdminActiveCrawlResponse> ActiveCrawls,
-    IReadOnlyList<AdminQueueStatusCountResponse> StatusCounts);
+    IReadOnlyList<AdminQueueStatusCountResponse> StatusCounts,
+    AdminQueueStreamMetricsResponse QueueStreams,
+    AdminMongoCommandMetricsResponse MongoCommands);
 
 public sealed record AdminFullRecrawlRequest(string Reason);
 
