@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Destiny2Report.API.Features.Crawler;
+using Destiny2Report.API.Observability;
 using StackExchange.Redis;
 
 namespace Destiny2Report.API.Features.Reports;
@@ -14,8 +15,9 @@ public sealed class QueueEventBroker : IAsyncDisposable
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<QueueEventBroker> _logger;
+    private readonly QueueStreamMetrics _metrics;
     private readonly bool _ownsRedis;
-    private readonly ConcurrentDictionary<Guid, Channel<string>> _subscribers = new();
+    private readonly ConcurrentDictionary<Guid, SubscriberChannel> _subscribers = new();
     private readonly object _gate = new();
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _pump;
@@ -23,21 +25,18 @@ public sealed class QueueEventBroker : IAsyncDisposable
     public QueueEventBroker(
         IConnectionMultiplexer redis,
         ILogger<QueueEventBroker> logger,
+        QueueStreamMetrics metrics,
         bool ownsRedis = false)
     {
         _redis = redis;
         _logger = logger;
+        _metrics = metrics;
         _ownsRedis = ownsRedis;
     }
 
     public QueueEventSubscription Subscribe()
     {
-        var channel = Channel.CreateBounded<string>(new BoundedChannelOptions(256)
-        {
-            SingleWriter = false,
-            SingleReader = true,
-            FullMode = BoundedChannelFullMode.DropOldest
-        });
+        var channel = new SubscriberChannel(_metrics);
         var id = Guid.NewGuid();
         _subscribers[id] = channel;
 
@@ -46,14 +45,16 @@ public sealed class QueueEventBroker : IAsyncDisposable
             _pump ??= PumpAsync();
         }
 
-        return new QueueEventSubscription(channel.Reader, () => Remove(id, channel));
+        return new QueueEventSubscription(channel, () => Remove(id, channel));
     }
 
-    private void Remove(Guid id, Channel<string> channel)
+    public int SubscriberCount => _subscribers.Count;
+
+    private void Remove(Guid id, SubscriberChannel channel)
     {
-        if (_subscribers.TryRemove(new KeyValuePair<Guid, Channel<string>>(id, channel)))
+        if (_subscribers.TryRemove(new KeyValuePair<Guid, SubscriberChannel>(id, channel)))
         {
-            channel.Writer.TryComplete();
+            channel.Complete();
         }
     }
 
@@ -76,7 +77,7 @@ public sealed class QueueEventBroker : IAsyncDisposable
                     var payload = message.Message.ToString();
                     foreach (var subscriber in _subscribers.Values)
                     {
-                        subscriber.Writer.TryWrite(payload);
+                        subscriber.Write(payload);
                     }
                 }
             }
@@ -110,7 +111,7 @@ public sealed class QueueEventBroker : IAsyncDisposable
         _shutdown.Cancel();
         foreach (var subscriber in _subscribers.Values)
         {
-            subscriber.Writer.TryComplete();
+            subscriber.Complete();
         }
 
         var pump = _pump;
@@ -139,13 +140,15 @@ public sealed class QueueEventSubscription : IDisposable
     private readonly Action _dispose;
     private int _disposed;
 
-    internal QueueEventSubscription(ChannelReader<string> reader, Action dispose)
+    private readonly SubscriberChannel _channel;
+
+    internal QueueEventSubscription(SubscriberChannel channel, Action dispose)
     {
-        Reader = reader;
+        _channel = channel;
         _dispose = dispose;
     }
 
-    public ChannelReader<string> Reader { get; }
+    public ValueTask<string> ReadAsync(CancellationToken cancellationToken) => _channel.ReadAsync(cancellationToken);
 
     public void Dispose()
     {
@@ -154,4 +157,42 @@ public sealed class QueueEventSubscription : IDisposable
             _dispose();
         }
     }
+}
+
+internal sealed class SubscriberChannel
+{
+    private const int Capacity = 256;
+    private readonly Channel<string> _channel = Channel.CreateBounded<string>(new BoundedChannelOptions(Capacity)
+    {
+        SingleWriter = true,
+        SingleReader = true,
+        FullMode = BoundedChannelFullMode.Wait
+    });
+    private readonly QueueStreamMetrics _metrics;
+
+    public SubscriberChannel(QueueStreamMetrics metrics) => _metrics = metrics;
+
+    public void Write(string payload)
+    {
+        if (_channel.Writer.TryWrite(payload))
+        {
+            return;
+        }
+
+        // Retain fresh status over stale progress and expose the overload to telemetry.
+        if (_channel.Reader.TryRead(out _))
+        {
+            _metrics.RecordDroppedBrokerMessage();
+        }
+
+        if (!_channel.Writer.TryWrite(payload))
+        {
+            _metrics.RecordDroppedBrokerMessage();
+        }
+    }
+
+    public ValueTask<string> ReadAsync(CancellationToken cancellationToken) =>
+        _channel.Reader.ReadAsync(cancellationToken);
+
+    public void Complete() => _channel.Writer.TryComplete();
 }

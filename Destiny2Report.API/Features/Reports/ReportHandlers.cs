@@ -4,6 +4,7 @@ using D2Report.BungieClient;
 using Destiny2Report.API.Features.Auth;
 using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Observability;
 using Destiny2Report.API.RateLimiting;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -570,6 +571,7 @@ public static class ReportHandlers
         IConnectionMultiplexer redis,
         IMongoDatabase mongoDatabase,
         QueueEventBroker queueEventBroker,
+        QueueStreamMetrics queueStreamMetrics,
         CancellationToken cancellationToken)
     {
         if (!TryValidateMembership(membershipTypeId, membershipId, out var problemDetails))
@@ -605,6 +607,7 @@ public static class ReportHandlers
             redisDatabase,
             mongoDatabase,
             queueEventBroker,
+            queueStreamMetrics,
             membershipTypeId,
             membershipId,
             initialStatus,
@@ -617,11 +620,13 @@ public static class ReportHandlers
         IDatabase redisDatabase,
         IMongoDatabase mongoDatabase,
         QueueEventBroker queueEventBroker,
+        QueueStreamMetrics queueStreamMetrics,
         int membershipTypeId,
         long membershipId,
         ReportQueueStatusResponse initialStatus,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        using var streamLease = queueStreamMetrics.TrackStream();
         if (IsTerminalCrawlState(initialStatus.Status))
         {
             yield return new SseItem<ReportQueueStatusResponse>(initialStatus, initialStatus.Status);
@@ -631,7 +636,7 @@ public static class ReportHandlers
         yield return new SseItem<ReportQueueStatusResponse>(initialStatus, "position");
         using var subscriptionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var eventSubscription = queueEventBroker.Subscribe();
-        var readEventTask = eventSubscription.Reader.ReadAsync(subscriptionCancellation.Token).AsTask();
+        var readEventTask = eventSubscription.ReadAsync(subscriptionCancellation.Token).AsTask();
         var nextFallbackScanAt = DateTimeOffset.UtcNow.Add(QueueScanFallbackInterval);
 
         try
@@ -644,7 +649,7 @@ public static class ReportHandlers
                 if (completedTask == readEventTask)
                 {
                     var channelMessage = await readEventTask.ConfigureAwait(false);
-                    readEventTask = eventSubscription.Reader.ReadAsync(subscriptionCancellation.Token).AsTask();
+                    readEventTask = eventSubscription.ReadAsync(subscriptionCancellation.Token).AsTask();
                     if (TryReadMatchingJobEvent(channelMessage, membershipTypeId, membershipId, out var jobEvent))
                     {
                         var eventStatus = BuildQueueStatus(
