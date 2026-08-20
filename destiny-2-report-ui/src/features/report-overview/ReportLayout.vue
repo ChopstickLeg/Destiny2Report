@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, provide, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import AppButton from '@/components/base/AppButton.vue'
 import SkeletonBlock from '@/components/base/SkeletonBlock.vue'
@@ -11,7 +11,14 @@ import { rememberPlayer, loadRecentPlayers } from '@/lib/recent-players'
 import { getErrorMessage } from '@/lib/api/http'
 import { useSessionStore } from '@/stores/session'
 import ReportMasthead from './ReportMasthead.vue'
-import { useInvalidateReport, useReportIdentity, useReportQuery } from './useReport'
+import GlobalStandings from './GlobalStandings.vue'
+import {
+  playerStandingsKey,
+  useInvalidateReport,
+  usePlayerStandings,
+  useReportIdentity,
+  useReportQuery,
+} from './useReport'
 
 const identity = useReportIdentity()
 const route = useRoute()
@@ -23,9 +30,17 @@ const {
   retry: retryQueuePolicy,
 } = useQueuePolicy()
 const reportQuery = useReportQuery(identity)
+const standingsQuery = usePlayerStandings(identity)
+provide(
+  playerStandingsKey,
+  computed(() => standingsQuery.data.value?.standings ?? []),
+)
 const invalidate = useInvalidateReport(identity)
 
 const report = computed(() => reportQuery.data.value ?? null)
+const rankingsLoading = computed(
+  () => standingsQuery.isPending.value && !standingsQuery.isError.value,
+)
 
 /**
  * A crawl document can describe a queued/failed/private *re*-crawl while a
@@ -201,31 +216,63 @@ function refetchReport() {
         @refresh="startRefresh"
       />
 
-      <div v-if="refreshing" class="refresh-banner" role="status" aria-live="polite">
-        <div class="container refresh-banner-row">
-          <span class="refresh-dot" aria-hidden="true" />
-          <span>
-            Refreshing this report:
-            {{
-              refreshWatcher.latest.value?.progress?.label ??
-              'Queued - waiting for available crawler'
-            }}. Existing data stays visible until it finishes.
-          </span>
+      <div v-if="rankingsLoading" class="rankings-loading" role="status" aria-live="polite">
+        <span class="visually-hidden">Loading report rankings</span>
+        <div class="rankings-loading-rail">
+          <div class="container rankings-loading-rail-inner">
+            <div class="rankings-loading-title">
+              <SkeletonBlock width="7rem" height="0.55rem" />
+              <SkeletonBlock width="4.5rem" height="1.35rem" />
+            </div>
+            <div v-for="n in 5" :key="n" class="rankings-loading-entry">
+              <SkeletonBlock width="3.5rem" height="0.5rem" />
+              <SkeletonBlock width="7rem" height="0.85rem" />
+              <SkeletonBlock width="3rem" height="0.65rem" />
+              <SkeletonBlock width="3.75rem" height="1.1rem" radius="var(--radius-full)" />
+            </div>
+          </div>
+        </div>
+        <div class="container rankings-loading-body">
+          <div class="rankings-loading-heading">
+            <SkeletonBlock width="13rem" height="1.35rem" />
+            <SkeletonBlock width="min(24rem, 80%)" height="0.75rem" />
+          </div>
+          <div class="rankings-loading-grid">
+            <SkeletonBlock height="10rem" radius="var(--radius-md)" />
+            <SkeletonBlock height="10rem" radius="var(--radius-md)" />
+          </div>
         </div>
       </div>
 
-      <div v-else-if="queuePolicyFailed" class="refresh-banner refresh-banner--error" role="alert">
-        <div class="container refresh-banner-row">
-          <span>Queue access couldn't be verified. Refreshing is disabled until it succeeds.</span>
-          <AppButton size="sm" variant="secondary" @click="retryQueuePolicy">Try again</AppButton>
+      <template v-else>
+        <GlobalStandings :standings="standingsQuery.data.value?.standings ?? []" />
+
+        <div v-if="refreshing" class="refresh-banner" role="status" aria-live="polite">
+          <div class="container refresh-banner-row">
+            <span class="refresh-dot" aria-hidden="true" />
+            <span>
+              Refreshing this report:
+              {{
+                refreshWatcher.latest.value?.progress?.label ??
+                'Queued - waiting for available crawler'
+              }}. Existing data stays visible until it finishes.
+            </span>
+          </div>
         </div>
-      </div>
 
-      <div v-else-if="refreshError" class="refresh-banner refresh-banner--error" role="alert">
-        <div class="container refresh-banner-row">{{ refreshError }}</div>
-      </div>
+        <div v-else-if="queuePolicyFailed" class="refresh-banner refresh-banner--error" role="alert">
+          <div class="container refresh-banner-row">
+            <span>Queue access couldn't be verified. Refreshing is disabled until it succeeds.</span>
+            <AppButton size="sm" variant="secondary" @click="retryQueuePolicy">Try again</AppButton>
+          </div>
+        </div>
 
-      <RouterView />
+        <div v-else-if="refreshError" class="refresh-banner refresh-banner--error" role="alert">
+          <div class="container refresh-banner-row">{{ refreshError }}</div>
+        </div>
+
+        <RouterView />
+      </template>
     </template>
   </div>
 </template>
@@ -241,6 +288,71 @@ function refetchReport() {
 .report-error {
   padding-top: var(--space-7);
   max-width: 40rem;
+}
+
+.rankings-loading-rail {
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.rankings-loading-rail-inner {
+  display: grid;
+  grid-template-columns: 8.5rem repeat(5, minmax(8rem, 1fr));
+  min-height: 6.5rem;
+  padding-block: var(--space-3);
+}
+
+.rankings-loading-title,
+.rankings-loading-entry {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-2);
+  padding-inline: var(--space-3);
+}
+
+.rankings-loading-title {
+  padding-left: 0;
+}
+
+.rankings-loading-entry {
+  border-left: 1px solid var(--color-border);
+}
+
+.rankings-loading-body {
+  padding-top: var(--space-7);
+}
+
+.rankings-loading-heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.rankings-loading-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 64rem) {
+  .rankings-loading-rail-inner {
+    grid-template-columns: repeat(5, minmax(10rem, 1fr));
+    overflow: hidden;
+  }
+
+  .rankings-loading-title {
+    display: none;
+  }
+}
+
+@media (max-width: 40rem) {
+  .rankings-loading-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .refresh-banner {

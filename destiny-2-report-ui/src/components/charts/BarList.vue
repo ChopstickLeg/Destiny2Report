@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import ExplainedLabel from '@/components/base/ExplainedLabel.vue'
+import LeaderboardStandingBadge from '@/components/base/LeaderboardStandingBadge.vue'
 
 interface BarListItem {
   key: string
@@ -15,6 +16,8 @@ interface BarListItem {
   muted?: boolean
   /** Explanation shown when the label is hovered or focused. */
   tooltip?: string
+  /** Associated leaderboard metric; only the report's five best render a badge. */
+  metricKey?: string
 }
 
 const props = defineProps<{
@@ -47,7 +50,10 @@ function widthFor(item: BarListItem): string {
           <template v-else>{{ item.label }}</template>
           <span v-if="item.tag" class="bar-tag">{{ item.tag }}</span>
         </span>
-        <span class="bar-value tnum">{{ item.display }}</span>
+        <span class="bar-value-group">
+          <LeaderboardStandingBadge v-if="item.metricKey" :metric-key="item.metricKey" />
+          <span class="bar-value tnum">{{ item.display }}</span>
+        </span>
       </div>
       <div class="bar-track" aria-hidden="true">
         <div
@@ -103,6 +109,14 @@ function widthFor(item: BarListItem): string {
 .bar-value {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
+  flex: none;
+}
+
+.bar-value-group {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
   flex: none;
 }
 

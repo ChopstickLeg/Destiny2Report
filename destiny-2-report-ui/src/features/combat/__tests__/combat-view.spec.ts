@@ -17,6 +17,7 @@ const report: WeaponActivityModeAggregateReport = {
       className: 'Titan',
       modes: [
         {
+          specificActivityModeId: 73,
           specificActivityMode: 'Control',
           categories: [
             {
@@ -59,6 +60,7 @@ const report: WeaponActivityModeAggregateReport = {
       className: 'Hunter',
       modes: [
         {
+          specificActivityModeId: 19,
           specificActivityMode: 'IronBanner',
           categories: [
             {

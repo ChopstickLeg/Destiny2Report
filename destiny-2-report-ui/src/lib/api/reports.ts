@@ -4,6 +4,7 @@ import type {
   ActivityPlaytimeAggregateReport,
   DeathActivityModeAggregateReport,
   DestinyReport,
+  PlayerLeaderboardStandingsResponse,
   ReportQueueResponse,
   StoryVisualAssetsReport,
   WeaponActivityModeAggregateReport,
@@ -40,6 +41,15 @@ export async function fetchReport(
     if (isApiError(error) && error.isNotFound) return null
     throw error
   }
+}
+
+export function fetchPlayerStandings(
+  identity: ReportIdentity,
+  signal?: AbortSignal,
+): Promise<PlayerLeaderboardStandingsResponse> {
+  return apiFetch(`/leaderboards/players/${identity.membershipTypeId}/${identity.membershipId}`, {
+    signal,
+  })
 }
 
 export function fetchWeapons(
@@ -112,6 +122,8 @@ export async function queueReport(identity: ReportIdentity): Promise<ReportQueue
 export const reportKeys = {
   report: (identity: ReportIdentity) =>
     ['report', identity.membershipTypeId, identity.membershipId] as const,
+  standings: (identity: ReportIdentity) =>
+    ['report', identity.membershipTypeId, identity.membershipId, 'standings'] as const,
   weapons: (identity: ReportIdentity, mode: ActivityModeParam) =>
     ['report', identity.membershipTypeId, identity.membershipId, 'weapons', mode] as const,
   deaths: (identity: ReportIdentity, mode: ActivityModeParam) =>

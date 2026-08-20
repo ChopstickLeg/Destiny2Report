@@ -77,6 +77,7 @@ public partial class CrawlerReadService
                         .OrderByDescending(group => group.Sum(item => item.Weapon.Kills))
                         .Select(modeGroup => new WeaponModeAggregateReport
                         {
+                            SpecificActivityModeId = modeGroup.Key,
                             SpecificActivityMode = GetSpecificActivityModeName(modeGroup.Key),
                             Categories = modeGroup
                                 .GroupBy(item => (item.CategoryKey, item.CategoryName))
