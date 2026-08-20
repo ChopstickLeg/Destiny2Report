@@ -2,6 +2,7 @@ using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Features.Reports;
 using Destiny2Report.API.Features.PushNotifications;
 using Destiny2Report.API.Features.Leaderboards;
+using Destiny2Report.API.Observability;
 using MongoDB.Driver;
 
 namespace Destiny2Report.API.Mongo;
@@ -10,12 +11,14 @@ public static class MongoExtensions
 {
     public static IServiceCollection AddMongo(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddSingleton<IMongoClient>(_ =>
+        services.AddSingleton<IMongoClient>(provider =>
         {
             var connectionString = configuration.GetConnectionString("MongoDb")
                 ?? throw new InvalidOperationException("ConnectionStrings:MongoDb is required.");
 
-            return new MongoClient(connectionString);
+            var settings = MongoClientSettings.FromConnectionString(connectionString);
+            provider.GetRequiredService<MongoCommandMetrics>().Configure(settings);
+            return new MongoClient(settings);
         });
 
         services.AddSingleton(provider =>

@@ -28,6 +28,8 @@ if (args.Contains("--generate-vapid-keys", StringComparer.Ordinal))
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddAppOpenTelemetry();
+builder.Services.AddSingleton<QueueStreamMetrics>();
+builder.Services.AddSingleton<MongoCommandMetrics>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddBungieClient(builder.Configuration);
@@ -55,6 +57,20 @@ builder.Services.AddOptions<QueueAdmissionOptions>()
 builder.Services.AddSingleton<IQueueAdmissionQuotaStore, RedisQueueAdmissionQuotaStore>();
 builder.Services.AddScoped<IQueueAdmissionService, QueueAdmissionService>();
 builder.Services.AddSingleton<ICrawlerJobQueue, CrawlerJobQueue>();
+builder.Services.AddSingleton<IQueuePositionSnapshotService, QueuePositionSnapshotService>();
+builder.Services.AddSingleton<QueueEventBroker>(_ =>
+{
+    var connectionString = builder.Configuration.GetConnectionString("Redis")
+        ?? throw new InvalidOperationException("ConnectionStrings:Redis is required.");
+
+    // Keep the long-lived pub/sub reader from sharing the command multiplexer
+    // used by queue admission, status, and crawler dispatch.
+    return new QueueEventBroker(
+        ConnectionMultiplexer.Connect(CreateRedisConfigurationOptions(connectionString)),
+        _.GetRequiredService<ILogger<QueueEventBroker>>(),
+        _.GetRequiredService<QueueStreamMetrics>(),
+        ownsRedis: true);
+});
 builder.Services.AddSingleton<ICrawlGenerationStore, CrawlGenerationStore>();
 builder.Services.AddOptions<LeaderboardsOptions>()
     .Bind(builder.Configuration.GetSection(LeaderboardsOptions.SectionName))

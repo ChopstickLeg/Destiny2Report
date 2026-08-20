@@ -417,10 +417,25 @@ interface AdminQueueStatusCount {
   count: number
 }
 
+interface AdminQueueStreamMetrics {
+  activeStreams: number
+  brokerSubscribers: number
+  droppedBrokerMessages: number
+}
+
+interface AdminMongoCommandMetrics {
+  completedCommands: number
+  failedCommands: number
+  recentSampleCount: number
+  recentAverageDurationMilliseconds: number | null
+}
+
 export interface AdminOverview {
   updatedAtUtc: string
   activeCrawls: AdminActiveCrawl[]
   statusCounts: AdminQueueStatusCount[]
+  queueStreams?: AdminQueueStreamMetrics
+  mongoCommands?: AdminMongoCommandMetrics
 }
 
 export interface AdminMutationResponse {

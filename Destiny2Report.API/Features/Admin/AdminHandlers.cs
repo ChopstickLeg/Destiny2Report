@@ -1,5 +1,7 @@
 using Destiny2Report.API.Features.Crawler;
 using Destiny2Report.API.Features.Crawler.Models;
+using Destiny2Report.API.Features.Reports;
+using Destiny2Report.API.Observability;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
@@ -26,9 +28,18 @@ public static class AdminHandlers
     public static IResult StreamOverview(
         IMongoDatabase mongoDatabase,
         IConnectionMultiplexer redis,
+        QueueEventBroker queueEventBroker,
+        QueueStreamMetrics queueStreamMetrics,
+        MongoCommandMetrics mongoCommandMetrics,
         CancellationToken cancellationToken)
     {
-        return TypedResults.ServerSentEvents(StreamOverviewEvents(mongoDatabase, redis, cancellationToken));
+        return TypedResults.ServerSentEvents(StreamOverviewEvents(
+            mongoDatabase,
+            redis,
+            queueEventBroker,
+            queueStreamMetrics,
+            mongoCommandMetrics,
+            cancellationToken));
     }
 
     public static async Task<IResult> QueueCrawls(
@@ -214,11 +225,21 @@ public static class AdminHandlers
     private static async IAsyncEnumerable<SseItem<AdminOverviewResponse>> StreamOverviewEvents(
         IMongoDatabase mongoDatabase,
         IConnectionMultiplexer redis,
+        QueueEventBroker queueEventBroker,
+        QueueStreamMetrics queueStreamMetrics,
+        MongoCommandMetrics mongoCommandMetrics,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var overview = await BuildOverviewAsync(mongoDatabase, redis, cancellationToken).ConfigureAwait(false);
+            var overview = await BuildOverviewAsync(
+                    mongoDatabase,
+                    redis,
+                    queueEventBroker,
+                    queueStreamMetrics,
+                    mongoCommandMetrics,
+                    cancellationToken)
+                .ConfigureAwait(false);
             yield return new SseItem<AdminOverviewResponse>(overview, "overview");
             await Task.Delay(OverviewInterval, cancellationToken).ConfigureAwait(false);
         }
@@ -227,6 +248,9 @@ public static class AdminHandlers
     private static async Task<AdminOverviewResponse> BuildOverviewAsync(
         IMongoDatabase mongoDatabase,
         IConnectionMultiplexer redis,
+        QueueEventBroker queueEventBroker,
+        QueueStreamMetrics queueStreamMetrics,
+        MongoCommandMetrics mongoCommandMetrics,
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
@@ -295,7 +319,21 @@ public static class AdminHandlers
                 countsByStatus.GetValueOrDefault(status)))
             .ToArray();
 
-        return new AdminOverviewResponse(now, activeCrawls, statusCounts);
+        var queueStreams = queueStreamMetrics.GetSnapshot(queueEventBroker.SubscriberCount);
+        var mongoCommands = mongoCommandMetrics.GetSnapshot();
+        return new AdminOverviewResponse(
+            now,
+            activeCrawls,
+            statusCounts,
+            new AdminQueueStreamMetricsResponse(
+                queueStreams.ActiveStreams,
+                queueStreams.BrokerSubscribers,
+                queueStreams.DroppedBrokerMessages),
+            new AdminMongoCommandMetricsResponse(
+                mongoCommands.CompletedCommands,
+                mongoCommands.FailedCommands,
+                mongoCommands.RecentSampleCount,
+                mongoCommands.RecentAverageDurationMilliseconds));
     }
 
     internal static SortDefinition<CrawlJob> BuildActiveCrawlSort() =>

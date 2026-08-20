@@ -6,7 +6,7 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
 {
     private const int DestinyThrottledByGameServerErrorCode = 1672;
     private const int BungieTimeoutErrorCode = 1688;
-    private const int MaxRetryAttempts = 5;
+    private const int MaxRetryAttempts = 3;
     private const int MaxGetProfileNotFoundRetryAttempts = 2;
     private const long MaxInspectableErrorPayloadBytes = 64 * 1024;
 
@@ -114,7 +114,9 @@ public sealed class BungieClientRetryHandler : DelegatingHandler
     private static TimeSpan GetRetryDelay(int attempt)
     {
         var delayMilliseconds = InitialRetryDelay.TotalMilliseconds * Math.Pow(2, attempt);
-        return TimeSpan.FromMilliseconds(Math.Min(delayMilliseconds, MaxRetryDelay.TotalMilliseconds));
+        var cappedDelay = Math.Min(delayMilliseconds, MaxRetryDelay.TotalMilliseconds);
+        var jitter = Random.Shared.NextDouble() * Math.Min(500, cappedDelay * 0.25);
+        return TimeSpan.FromMilliseconds(cappedDelay + jitter);
     }
 
     private static bool IsRetryableBungieErrorCode(int? errorCode)

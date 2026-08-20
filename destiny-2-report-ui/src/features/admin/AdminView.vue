@@ -26,6 +26,8 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 const statusCounts = computed(() => overview.value?.statusCounts ?? [])
 const activeCrawls = computed(() => overview.value?.activeCrawls ?? [])
+const queueStreams = computed(() => overview.value?.queueStreams ?? null)
+const mongoCommands = computed(() => overview.value?.mongoCommands ?? null)
 
 function connect() {
   controller?.abort()
@@ -48,6 +50,10 @@ function formatTimestamp(value: string | null): string {
     minute: '2-digit',
     second: '2-digit',
   }).format(new Date(value))
+}
+
+function formatMilliseconds(value: number | null): string {
+  return value === null ? '—' : `${value.toFixed(value >= 100 ? 0 : 1)} ms`
 }
 
 function playerLabel(displayName: string | null, membershipId: string): string {
@@ -199,6 +205,41 @@ onBeforeUnmount(() => {
       <article v-if="statusCounts.length === 0" class="status-cell status-cell--loading">
         Loading queue totals…
       </article>
+    </section>
+
+    <section class="runtime-panel panel" aria-labelledby="runtime-heading">
+      <div class="panel-heading">
+        <div>
+          <p class="panel-kicker">API pressure</p>
+          <h2 id="runtime-heading">Live queue and MongoDB metrics</h2>
+        </div>
+        <span class="runtime-note">Mongo average: last minute</span>
+      </div>
+      <dl v-if="queueStreams && mongoCommands" class="runtime-metrics">
+        <div>
+          <dt>Queue SSE streams</dt>
+          <dd class="tnum">{{ formatInteger(queueStreams.activeStreams) }}</dd>
+        </div>
+        <div>
+          <dt>Broker subscribers</dt>
+          <dd class="tnum">{{ formatInteger(queueStreams.brokerSubscribers) }}</dd>
+        </div>
+        <div>
+          <dt>Dropped broker messages</dt>
+          <dd class="tnum">{{ formatInteger(queueStreams.droppedBrokerMessages) }}</dd>
+        </div>
+        <div>
+          <dt>Mongo command latency</dt>
+          <dd class="tnum">{{ formatMilliseconds(mongoCommands.recentAverageDurationMilliseconds) }}</dd>
+        </div>
+        <div>
+          <dt>Mongo commands / failures</dt>
+          <dd class="tnum">
+            {{ formatInteger(mongoCommands.completedCommands) }} / {{ formatInteger(mongoCommands.failedCommands) }}
+          </dd>
+        </div>
+      </dl>
+      <p v-else class="runtime-loading">Waiting for runtime metrics…</p>
     </section>
 
     <div class="operations-grid">
@@ -491,6 +532,39 @@ h1 {
   grid-column: 1 / -1;
   color: var(--color-text-muted);
 }
+.runtime-panel {
+  margin-bottom: var(--space-6);
+}
+.runtime-note {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+.runtime-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.runtime-metrics > div {
+  padding: var(--space-4) var(--space-5);
+  border-right: 1px solid var(--color-border);
+}
+.runtime-metrics > div:last-child {
+  border-right: 0;
+}
+.runtime-metrics dt,
+.runtime-loading {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.runtime-metrics dd {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text);
+  font-size: var(--text-lg);
+}
+.runtime-loading {
+  padding: var(--space-5);
+}
 .operations-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 20rem;
@@ -726,6 +800,12 @@ textarea {
     grid-template-columns: repeat(2, 1fr);
   }
   .status-cell {
+    border-bottom: 1px solid var(--color-border);
+  }
+  .runtime-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .runtime-metrics > div {
     border-bottom: 1px solid var(--color-border);
   }
   .control-stack {
