@@ -14,7 +14,7 @@ import AbilityKillIcon from './AbilityKillIcon.vue'
 import { fetchDeaths, fetchWeapons, reportKeys } from '@/lib/api/reports'
 import type { ActivityModeParam } from '@/lib/api/types'
 import { formatInteger } from '@/lib/formatting/numbers'
-import { useReportIdentity } from '@/features/report-overview/useReport'
+import { useReportIdentity, useReportQuery } from '@/features/report-overview/useReport'
 import { humanizeModeName } from '@/features/report-overview/report-view'
 import {
   MISSING_ACTIVITY_MODE_EXPLANATION,
@@ -31,8 +31,10 @@ import {
   flattenWeapons,
 } from './combat-view'
 import { abilityKillIconKind } from './ability-kills'
+import LeaderboardStandingBadge from '@/components/base/LeaderboardStandingBadge.vue'
 
 const identity = useReportIdentity()
+const reportQuery = useReportQuery(identity)
 const route = useRoute()
 const router = useRouter()
 
@@ -106,6 +108,16 @@ const flattened = computed(() => {
   const report = weaponsQuery.data.value
   if (!report) return null
   return flattenWeapons(report, { className: classFilter.value, specificMode: modeFilter.value })
+})
+
+const selectedModeMetricKey = computed(() => {
+  if (modeFilter.value === ALL || classFilter.value !== ALL) return null
+  const report = weaponsQuery.data.value
+  if (!report) return null
+  const mode = report.classes
+    .flatMap((characterClass) => characterClass.modes)
+    .find((candidate) => candidate.specificActivityMode === modeFilter.value)
+  return mode ? `combat.kills.mode.${mode.specificActivityModeId}` : null
 })
 
 const categoryBars = computed(() => {
@@ -212,6 +224,18 @@ const deathBars = computed(() =>
           : undefined
       "
     >
+      <template #actions>
+        <div v-if="selectedModeMetricKey && flattened" class="career-kills">
+          <span class="career-kills-label">{{ humanizeModeName(modeFilter) }} kills</span>
+          <LeaderboardStandingBadge :metric-key="selectedModeMetricKey" />
+          <strong class="tnum">{{ formatInteger(flattened.totalKills) }}</strong>
+        </div>
+        <div v-else-if="reportQuery.data.value" class="career-kills">
+          <span class="career-kills-label">Career kills</span>
+          <LeaderboardStandingBadge metric-key="combat.kills.total" />
+          <strong class="tnum">{{ formatInteger(reportQuery.data.value.totalKills) }}</strong>
+        </div>
+      </template>
       <div v-if="weaponsQuery.isPending.value" class="loading-stack">
         <SkeletonBlock v-for="n in 5" :key="n" height="2rem" />
       </div>
@@ -531,6 +555,19 @@ const deathBars = computed(() =>
 
 .share {
   color: var(--color-text-secondary);
+}
+
+.career-kills {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.career-kills-label {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
 }
 
 @media (max-width: 40rem) {

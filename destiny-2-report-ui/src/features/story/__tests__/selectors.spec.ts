@@ -312,6 +312,7 @@ describe('mostUsedActualWeapons', () => {
           className: 'Warlock',
           modes: [
             {
+              specificActivityModeId: 4,
               specificActivityMode: 'Raid',
               categories: [
                 {
@@ -368,6 +369,7 @@ describe('mostUsedActualWeapons', () => {
           className: 'Titan',
           modes: [
             {
+              specificActivityModeId: 4,
               specificActivityMode: 'Raid',
               categories: [
                 {

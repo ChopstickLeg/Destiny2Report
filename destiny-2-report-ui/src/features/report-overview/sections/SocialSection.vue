@@ -6,6 +6,7 @@ import PlayerIdentityRow from '@/components/base/PlayerIdentityRow.vue'
 import type { DestinyReport } from '@/lib/api/types'
 import { formatInteger } from '@/lib/formatting/numbers'
 import { platformLabel } from '@/lib/platform'
+import LeaderboardStandingBadge from '@/components/base/LeaderboardStandingBadge.vue'
 
 const props = defineProps<{ report: DestinyReport }>()
 
@@ -41,6 +42,9 @@ const sherpaTotal = computed(() =>
         : undefined
     "
   >
+    <template #actions>
+      <LeaderboardStandingBadge metric-key="oddities.unique-players" />
+    </template>
     <div class="social-grid">
       <div v-if="teammates.length > 0" class="social-block">
         <h3 class="block-title">Most played with</h3>

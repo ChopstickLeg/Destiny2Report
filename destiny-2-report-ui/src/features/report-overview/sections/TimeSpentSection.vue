@@ -7,6 +7,8 @@ import type { DestinyReport } from '@/lib/api/types'
 import { formatHours, parseTimeSpan } from '@/lib/formatting/duration'
 import { formatDate } from '@/lib/formatting/dates'
 import { rankCharacterPlaytime, rankPatrolTime, summarizeStreak } from '../report-view'
+import { destinySlug } from '@/lib/destiny-display'
+import LeaderboardStandingBadge from '@/components/base/LeaderboardStandingBadge.vue'
 
 const props = defineProps<{ report: DestinyReport }>()
 
@@ -68,6 +70,7 @@ const patrolBars = computed(() =>
     value: entry.seconds,
     display: formatHours(entry.seconds),
     color: 'var(--color-bar-emphasis)',
+    metricKey: `time.patrol.${destinySlug(entry.label)}`,
   })),
 )
 
@@ -108,6 +111,7 @@ const currentStreak = computed(() => summarizeStreak(props.report.currentPlaytim
       <div v-if="longestStreak" class="time-stat">
         <h3 class="stat-label">Longest play streak</h3>
         <p class="stat-value tnum">{{ longestStreak.days }} days in a row</p>
+        <LeaderboardStandingBadge metric-key="oddities.longest-streak" />
         <p class="stat-detail">
           {{ formatDate(longestStreak.start) }} – {{ formatDate(longestStreak.end) }}
         </p>

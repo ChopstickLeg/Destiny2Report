@@ -25,4 +25,23 @@ public static class LeaderboardRanking
         }
         return result;
     }
+
+    public static (long Score, int Rank)? FindPlayerStanding(
+        IReadOnlyList<LeaderboardStoredEntry> entries,
+        int membershipTypeId,
+        long membershipId)
+    {
+        var player = entries.FirstOrDefault(entry =>
+            entry.MembershipTypeId == membershipTypeId && entry.MembershipId == membershipId);
+        if (player is null) return null;
+
+        var rank = 1;
+        foreach (var entry in entries)
+        {
+            if (entry.Score <= player.Score) break;
+            rank++;
+        }
+
+        return (player.Score, rank);
+    }
 }

@@ -16,12 +16,18 @@ import { useReportIdentity } from '@/features/report-overview/useReport'
 import { humanizeModeName } from '@/features/report-overview/report-view'
 import { MODE_COLOR } from '@/features/combat/combat-view'
 import { MISSING_ACTIVITY_MODE_EXPLANATION, isMissingActivityMode } from '@/lib/stat-explanations'
+import LeaderboardStandingBadge from '@/components/base/LeaderboardStandingBadge.vue'
 
 const identity = useReportIdentity()
 const route = useRoute()
 const router = useRouter()
 
 const BUCKETS: ActivityModeParam[] = ['PvE', 'PvP', 'Gambit']
+const BUCKET_METRICS: Record<ActivityModeParam, string> = {
+  PvE: 'time.mode.pve',
+  PvP: 'time.mode.crucible',
+  Gambit: 'time.mode.gambit',
+}
 
 const selected = computed<ActivityModeParam>(() => {
   const q = route.query.mode
@@ -64,8 +70,8 @@ const comparisonSegments = computed(() =>
 
 const comparisonReady = computed(() => buckets.value.every((bucket) => !bucket.query.isPending))
 
-const selectedBucket = computed(
-  () => buckets.value.find((bucket) => bucket.mode === selected.value)!,
+const selectedBucket = computed(() =>
+  buckets.value.find((bucket) => bucket.mode === selected.value)!,
 )
 
 const modeBars = computed(() =>
@@ -82,6 +88,7 @@ const modeBars = computed(() =>
         display: formatHours(mode.seconds),
         color: MODE_COLOR[selected.value],
         tooltip: isMissingActivityMode(label) ? MISSING_ACTIVITY_MODE_EXPLANATION : undefined,
+        metricKey: `time.mode.${mode.mode}`,
       }
     }),
 )
@@ -118,6 +125,7 @@ const modeBars = computed(() =>
               <template v-if="bucket.query.isError">N/A</template>
               <template v-else>{{ formatHours(bucket.totalSeconds ?? 0) }}</template>
             </dd>
+            <LeaderboardStandingBadge :metric-key="BUCKET_METRICS[bucket.mode]" />
           </div>
         </dl>
       </template>

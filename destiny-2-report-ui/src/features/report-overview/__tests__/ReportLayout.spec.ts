@@ -3,7 +3,12 @@ import { computed, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeReport } from '@/test/fixtures/report'
 import ReportLayout from '../ReportLayout.vue'
-import { useInvalidateReport, useReportIdentity, useReportQuery } from '../useReport'
+import {
+  useInvalidateReport,
+  usePlayerStandings,
+  useReportIdentity,
+  useReportQuery,
+} from '../useReport'
 
 const { submitAndWatch, watchQueue, fetchQueuePolicy, session } = vi.hoisted(() => ({
   submitAndWatch: vi.fn<() => Promise<void>>(),
@@ -41,8 +46,10 @@ vi.mock('@/features/report-generation/useQueueWatcher', () => ({
 }))
 
 vi.mock('../useReport', () => ({
+  playerStandingsKey: Symbol('playerStandings'),
   useReportIdentity: vi.fn<() => unknown>(),
   useReportQuery: vi.fn<() => unknown>(),
+  usePlayerStandings: vi.fn<() => unknown>(),
   useInvalidateReport: vi.fn<() => unknown>(),
 }))
 
@@ -69,6 +76,11 @@ describe('ReportLayout automatic refresh', () => {
       error: ref(null),
       refetch: vi.fn<() => Promise<unknown>>(),
     } as never)
+    vi.mocked(usePlayerStandings).mockReturnValue({
+      data: ref(null),
+      isPending: ref(false),
+      isError: ref(false),
+    } as never)
   })
 
   afterEach(() => {
@@ -82,6 +94,20 @@ describe('ReportLayout automatic refresh', () => {
 
     expect(submitAndWatch).toHaveBeenCalledExactlyOnceWith({ suppressCooldownError: true })
     expect(watchQueue).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('holds the report body in a stable skeleton while rankings load', () => {
+    vi.mocked(usePlayerStandings).mockReturnValue({
+      data: ref(null),
+      isPending: ref(true),
+      isError: ref(false),
+    } as never)
+
+    const wrapper = shallowMount(ReportLayout)
+
+    expect(wrapper.find('.rankings-loading').exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'GlobalStandings' }).exists()).toBe(false)
     wrapper.unmount()
   })
 

@@ -4,6 +4,17 @@ namespace Destiny2Report.API.Features.Leaderboards;
 
 public static class LeaderboardHandlers
 {
+    public static async Task<IResult> GetPlayerStandings(
+        int membershipTypeId,
+        long membershipId,
+        ILeaderboardService service,
+        CancellationToken cancellationToken)
+    {
+        if (membershipTypeId <= 0 || membershipId <= 0)
+            return TypedResults.BadRequest(new ProblemDetails { Title = "Invalid player identity", Status = 400 });
+        return TypedResults.Ok(await service.GetPlayerStandingsAsync(membershipTypeId, membershipId, cancellationToken).ConfigureAwait(false));
+    }
+
     public static async Task<IResult> GetCatalog(ILeaderboardService service, CancellationToken cancellationToken)
         => TypedResults.Ok(await service.GetCatalogAsync(cancellationToken).ConfigureAwait(false));
 

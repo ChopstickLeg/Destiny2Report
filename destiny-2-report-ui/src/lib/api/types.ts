@@ -220,6 +220,23 @@ export interface LeaderboardPageResponse {
   entries: LeaderboardEntry[]
 }
 
+export type LeaderboardStandingTier = 'top-1000' | 'top-0.1' | 'top-1' | 'top-5'
+
+export interface PlayerLeaderboardStanding {
+  metricKey: string
+  category: string
+  title: string
+  unit: 'count' | 'seconds' | 'days'
+  score: number
+  tier: LeaderboardStandingTier
+  rank: number | null
+}
+
+export interface PlayerLeaderboardStandingsResponse {
+  thresholdsUpdatedAtUtc: string | null
+  standings: PlayerLeaderboardStanding[]
+}
+
 export interface StoryVisualAssetsReport {
   raidIconUrl: string
   dungeonIconUrl: string
@@ -270,6 +287,7 @@ export interface WeaponCategoryAggregate {
 }
 
 interface WeaponModeAggregate {
+  specificActivityModeId: number
   specificActivityMode: string
   categories: WeaponCategoryAggregate[]
 }

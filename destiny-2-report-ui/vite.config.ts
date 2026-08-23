@@ -15,7 +15,7 @@ export default defineConfig(({ command, mode }) => {
   // In development the UI proxies /api to the ASP.NET Core backend so the
   // browser sees a single origin (matching the intended production shape).
   // Override with VITE_DEV_API_PROXY if the API runs elsewhere.
-  const apiProxyTarget = env.VITE_DEV_API_PROXY ?? 'http://localhost:8080'
+  const apiProxyTarget = env.VITE_DEV_API_PROXY ?? 'http://localhost:5063'
   const clientId = env.VITE_BUNGIE_CLIENT_ID || workspaceEnv.BUNGIE_CLIENT_ID
   const httpsPfxPath = env.DEV_HTTPS_PFX_PATH
   const httpsPfxPassword = env.DEV_HTTPS_PFX_PASSWORD

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { formatInteger, formatShare } from '@/lib/formatting/numbers'
+import LeaderboardStandingBadge from '@/components/base/LeaderboardStandingBadge.vue'
 
 interface SplitSegment {
   label: string
   value: number
   color: string
+  metricKey?: string
 }
 
 const props = defineProps<{
@@ -37,6 +39,7 @@ const total = computed(() => props.segments.reduce((sum, s) => sum + s.value, 0)
           {{ segment.label }}
         </dt>
         <dd class="split-value tnum">
+          <LeaderboardStandingBadge v-if="segment.metricKey" :metric-key="segment.metricKey" />
           {{ formatInteger(segment.value) }}
           <span class="split-share">({{ formatShare(segment.value, total, 0) }})</span>
         </dd>
@@ -85,6 +88,9 @@ const total = computed(() => props.segments.reduce((sum, s) => sum + s.value, 0)
 }
 
 .split-value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   font-size: var(--text-sm);
 }
 

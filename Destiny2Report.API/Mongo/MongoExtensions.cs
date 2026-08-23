@@ -132,6 +132,15 @@ public static class MongoExtensions
             [new CreateIndexModel<LeaderboardBoard>(leaderboardPlayerIndexKeys, new CreateIndexOptions { Name = "ix_leaderboard_boards_player" })],
             cancellationToken);
 
+        var leaderboardPlayerScores = mongoDatabase.GetCollection<PlayerLeaderboardSnapshot>("leaderboard_player_scores");
+        await leaderboardPlayerScores.EnsureIndexesAsync(
+            [new CreateIndexModel<PlayerLeaderboardSnapshot>(
+                Builders<PlayerLeaderboardSnapshot>.IndexKeys
+                    .Ascending(item => item.MembershipTypeId)
+                    .Ascending(item => item.MembershipId),
+                new CreateIndexOptions { Name = "ux_leaderboard_player_scores_identity", Unique = true })],
+            cancellationToken);
+
         var storyShares = mongoDatabase.GetCollection<StoryShare>("story_shares");
         var storyShareTokenIndexKeys = Builders<StoryShare>.IndexKeys
             .Ascending(share => share.TokenHash);
