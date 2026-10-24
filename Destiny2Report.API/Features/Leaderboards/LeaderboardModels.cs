@@ -45,7 +45,17 @@ public sealed record PlayerLeaderboardSnapshot
     public DateTime UpdatedAtUtc { get; init; }
     public DateTime? SourceCrawledAtUtc { get; init; }
     public int MetricVersion { get; init; }
+    public bool IsRemoved { get; init; }
     public List<PlayerLeaderboardScore> Scores { get; init; } = [];
+
+    internal static PlayerLeaderboardSnapshot Removed(int membershipTypeId, long membershipId) => new()
+    {
+        PlayerKey = $"{membershipTypeId}:{membershipId}",
+        MembershipTypeId = membershipTypeId,
+        MembershipId = membershipId,
+        UpdatedAtUtc = DateTime.UtcNow,
+        IsRemoved = true
+    };
 }
 
 public sealed record PlayerLeaderboardScore(string MetricKey, long Score);

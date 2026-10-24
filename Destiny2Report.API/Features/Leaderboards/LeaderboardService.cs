@@ -62,7 +62,11 @@ public sealed class LeaderboardService(
 
     public async Task RemovePlayerAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken)
     {
-        var affected = await boards.Find(board => board.Entries.Any(entry => entry.MembershipTypeId == membershipTypeId && entry.MembershipId == membershipId))
+        // Retain a tombstone so a repair that already read the public report cannot reinsert scores.
+        var removed = PlayerLeaderboardSnapshot.Removed(membershipTypeId, membershipId);
+        await snapshots.ReplaceOneAsync(item => item.PlayerKey == removed.PlayerKey, removed,
+            new ReplaceOptions { IsUpsert = true }, cancellationToken).ConfigureAwait(false);
+        var affected = await boards.Find(board => board.IsRepairing || board.Entries.Any(entry => entry.MembershipTypeId == membershipTypeId && entry.MembershipId == membershipId))
             .Project(board => board.MetricKey)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -73,11 +77,14 @@ public sealed class LeaderboardService(
             var board = await boards.Find(item => item.MetricKey == key).FirstOrDefaultAsync(ct).ConfigureAwait(false);
             if (board is null) return;
             var entries = board.Entries.Where(entry => entry.MembershipTypeId != membershipTypeId || entry.MembershipId != membershipId).ToList();
-            if (entries.Count == board.Entries.Count) return;
+            if (entries.Count == board.Entries.Count)
+            {
+                if (board.IsRepairing) await redisDatabase.SetAddAsync(RepairSetKey, key).ConfigureAwait(false);
+                return;
+            }
             await ReplaceBoardAsync(board with { Entries = entries, UpdatedAtUtc = DateTime.UtcNow }, ct).ConfigureAwait(false);
             await redisDatabase.SetAddAsync(RepairSetKey, key).ConfigureAwait(false);
         }).ConfigureAwait(false);
-        await snapshots.DeleteOneAsync(item => item.PlayerKey == PlayerKey(membershipTypeId, membershipId), cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<PlayerLeaderboardStandingsResponse> GetPlayerStandingsAsync(int membershipTypeId, long membershipId, CancellationToken cancellationToken)
@@ -155,7 +162,7 @@ public sealed class LeaderboardService(
     public async Task RefreshPercentileThresholdsAsync(CancellationToken cancellationToken)
     {
         var scores = new Dictionary<string, List<long>>(StringComparer.Ordinal);
-        using var cursor = await snapshots.Find(FilterDefinition<PlayerLeaderboardSnapshot>.Empty)
+        using var cursor = await snapshots.Find(Builders<PlayerLeaderboardSnapshot>.Filter.Ne(item => item.IsRemoved, true))
             .Project(item => item.Scores).ToCursorAsync(cancellationToken).ConfigureAwait(false);
         while (await cursor.MoveNextAsync(cancellationToken).ConfigureAwait(false))
             foreach (var playerScores in cursor.Current)

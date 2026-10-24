@@ -25,6 +25,11 @@ internal sealed class LeaderboardRepairScores(IMongoDatabase database)
         foreach (var player in players)
         {
             existing.TryGetValue(player.PlayerKey, out var snapshot);
+            if (snapshot?.IsRemoved == true)
+            {
+                result[player.PlayerKey] = [];
+                continue;
+            }
             if (snapshot is not null && CanReuse(snapshot, player.SourceCrawledAtUtc))
             {
                 result[player.PlayerKey] = snapshot.Scores;
@@ -48,16 +53,29 @@ internal sealed class LeaderboardRepairScores(IMongoDatabase database)
             if (snapshot is not null)
             {
                 // A concurrent publication owns newer scores. Its repair follow-up remains queued.
-                await snapshots.ReplaceOneAsync(item => item.PlayerKey == player.PlayerKey && item.UpdatedAtUtc == snapshot.UpdatedAtUtc,
+                var filter = Builders<PlayerLeaderboardSnapshot>.Filter.Eq(item => item.PlayerKey, player.PlayerKey)
+                    & Builders<PlayerLeaderboardSnapshot>.Filter.Ne(item => item.IsRemoved, true)
+                    & Builders<PlayerLeaderboardSnapshot>.Filter.Eq(item => item.UpdatedAtUtc, snapshot.UpdatedAtUtc);
+                var write = await snapshots.ReplaceOneAsync(filter,
                     replacement, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (write.MatchedCount == 0) result[player.PlayerKey] = await ReadWinningScoresAsync(player.PlayerKey, cancellationToken).ConfigureAwait(false);
             }
             else
             {
                 try { await snapshots.InsertOneAsync(replacement, cancellationToken: cancellationToken).ConfigureAwait(false); }
-                catch (MongoWriteException exception) when (exception.WriteError.Category == ServerErrorCategory.DuplicateKey) { }
+                catch (MongoWriteException exception) when (exception.WriteError.Category == ServerErrorCategory.DuplicateKey)
+                {
+                    result[player.PlayerKey] = await ReadWinningScoresAsync(player.PlayerKey, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         return result;
+    }
+
+    private async Task<IReadOnlyList<PlayerLeaderboardScore>> ReadWinningScoresAsync(string key, CancellationToken cancellationToken)
+    {
+        var current = await snapshots.Find(item => item.PlayerKey == key).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        return current is null || current.IsRemoved ? [] : current.Scores;
     }
 
     internal static bool CanReuse(PlayerLeaderboardSnapshot? snapshot, DateTime sourceCrawledAtUtc) =>

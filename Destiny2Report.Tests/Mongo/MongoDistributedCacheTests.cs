@@ -33,6 +33,33 @@ public sealed class MongoDistributedCacheTests : IAsyncLifetime
     }
 
     [MongoCacheFact]
+    public async Task ConcurrentRemovalPreventsRepairFromRecreatingPositiveScores()
+    {
+        var source = DateTime.UtcNow.Date.AddDays(-1);
+        var snapshots = Database.GetCollection<PlayerLeaderboardSnapshot>("leaderboard_player_scores");
+        var players = new[] { new RepairPlayer(1, 1, "missing", 0, [], source), new RepairPlayer(1, 2, "stale", 0, [], source) };
+        await snapshots.InsertOneAsync(new PlayerLeaderboardSnapshot
+        {
+            PlayerKey = "1:2",
+            MembershipTypeId = 1,
+            MembershipId = 2,
+            UpdatedAtUtc = source.AddDays(-1),
+            Scores = [new("combat.kills.total", 1)]
+        });
+        async Task<IReadOnlyCollection<LeaderboardMetric>> Calculate(int type, long id, CancellationToken token)
+        {
+            // Removal completes after repair selected public data but before it persists its calculation.
+            var removed = PlayerLeaderboardSnapshot.Removed(type, id);
+            await snapshots.ReplaceOneAsync(item => item.PlayerKey == removed.PlayerKey, removed, new ReplaceOptions { IsUpsert = true }, token);
+            return [new("combat.kills.total", "Combat", "Kills", "", "count", 0, 100)];
+        }
+        var result = await new LeaderboardRepairScores(Database).GetBatchAsync(players, Calculate, CancellationToken.None);
+        Assert.All(result.Values, scores => Assert.Empty(scores));
+        var persisted = await snapshots.Find(FilterDefinition<PlayerLeaderboardSnapshot>.Empty).ToListAsync();
+        Assert.All(persisted, item => { Assert.True(item.IsRemoved); Assert.Empty(item.Scores); });
+    }
+
+    [MongoCacheFact]
     public async Task AuthSessionsRemainPersistentForThirtyDaysAcrossInstances()
     {
         var first = new MongoAuthSessionPersistence(Database, clock);

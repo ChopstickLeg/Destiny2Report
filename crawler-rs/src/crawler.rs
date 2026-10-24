@@ -674,8 +674,14 @@ pub async fn crawl(
             );
         }
         for owner in owners {
-            let reported_class = pgcr_character_class(owner, manifest).await;
             let character_id = owner.get("characterId").and_then(id_i64).unwrap_or(0);
+            let reported_class = match character_class_by_id
+                .get(&character_id)
+                .filter(|class| class.as_str() != "Unknown")
+            {
+                Some(class) => class.clone(),
+                None => pgcr_character_class(owner, manifest).await,
+            };
             if character_id > 0 && reported_class != "Unknown" {
                 match character_class_by_id.entry(character_id) {
                     std::collections::btree_map::Entry::Occupied(mut entry)
@@ -693,14 +699,22 @@ pub async fn crawl(
                 && !profile_characters
                     .is_some_and(|characters| characters.contains_key(&character_id.to_string()))
             {
-                let race = match owner.pointer("/player/raceHash").and_then(id_u32) {
-                    Some(hash) => manifest_display_name(manifest, "DestinyRaceDefinition", hash)
-                        .await
-                        .ok()
-                        .flatten(),
-                    None => None,
-                }
-                .unwrap_or_else(|| "Unknown".into());
+                let race = match deleted_character_identity
+                    .get(&character_id)
+                    .filter(|(_, race)| race != "Unknown")
+                {
+                    Some((_, race)) => race.clone(),
+                    None => match owner.pointer("/player/raceHash").and_then(id_u32) {
+                        Some(hash) => {
+                            manifest_display_name(manifest, "DestinyRaceDefinition", hash)
+                                .await
+                                .ok()
+                                .flatten()
+                        }
+                        None => None,
+                    }
+                    .unwrap_or_else(|| "Unknown".into()),
+                };
                 merge_character_identity(
                     &mut deleted_character_identity,
                     character_id,

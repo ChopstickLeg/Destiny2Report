@@ -36,7 +36,7 @@ Disabling local caches means each cache hit uses MongoDB and deserializes its va
 
 Repairs read saved player scores in batches of 100. Scores are reused when their source crawl and metric version match the published report. Legacy version-0 snapshots use their publication timestamp as the freshness check. Missing or stale scores are recalculated and saved for subsequent repairs. Conditional writes preserve newer concurrent publications. Increment `PlayerLeaderboardSnapshot.CurrentMetricVersion` whenever metric formulas change; stored documents default to legacy version 0.
 
-Fallback calculations project only required report fields and accumulator playtime. Repair failures back off exponentially from 30 seconds to five minutes. Requests arriving during a repair still schedule a follow-up pass so publication remains correct. Production CPU reduction must be measured after deployment.
+Fallback calculations project only required report fields and accumulator playtime. Removed players retain empty score tombstones so concurrent repairs cannot resurrect their scores; percentile thresholds exclude them. Repair failures back off exponentially from 30 seconds to five minutes. Requests arriving during a repair still schedule a follow-up pass so publication remains correct. Production CPU reduction must be measured after deployment.
 
 ## Verify against MongoDB
 
