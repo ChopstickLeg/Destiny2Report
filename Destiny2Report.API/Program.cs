@@ -126,6 +126,8 @@ builder.Services.AddOptions<AuthSessionOptions>()
     .Validate(options => options.Lifetime > TimeSpan.Zero, "AuthSession:Lifetime must be positive.")
     .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<MongoAuthSessionPersistence>();
+builder.Services.AddSingleton<IAuthSessionPersistence>(provider => provider.GetRequiredService<MongoAuthSessionPersistence>());
 builder.Services.AddSingleton<IAuthSessionStore, AuthSessionStore>();
 builder.Services.AddOptions<AdminOptions>()
     .Bind(builder.Configuration.GetSection(AdminOptions.SectionName));
@@ -209,6 +211,7 @@ if (!app.Environment.IsProduction())
 
 await app.EnsureMongoIndexesAsync();
 await app.Services.GetRequiredService<MongoDistributedCache>().EnsureIndexesAsync(CancellationToken.None);
+await app.Services.GetRequiredService<MongoAuthSessionPersistence>().EnsureIndexesAsync(CancellationToken.None);
 using (var scope = app.Services.CreateScope())
 {
     var crawlerService = scope.ServiceProvider.GetRequiredService<ICrawlerReadService>();

@@ -14,27 +14,34 @@ public sealed class LeaderboardRepairBackgroundService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(PollInterval);
+        var consecutiveFailures = 0;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 var keys = await leaderboardService.TakeRepairsAsync(20, stoppingToken).ConfigureAwait(false);
-                if (keys.Count > 0) await RepairAsync(keys, stoppingToken).ConfigureAwait(false);
+                if (keys.Count > 0)
+                    consecutiveFailures = await RepairAsync(keys, stoppingToken).ConfigureAwait(false) ? 0 : consecutiveFailures + 1;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception ex) { logger.LogError(ex, "Leaderboard repair polling failed; retrying."); }
+            catch (Exception ex)
+            {
+                consecutiveFailures++;
+                logger.LogError(ex, "Leaderboard repair polling failed; retrying.");
+            }
 
-            try { await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false); }
+            try { await Task.Delay(RetryDelay(consecutiveFailures), stoppingToken).ConfigureAwait(false); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
         }
     }
 
-    private async Task RepairAsync(IReadOnlyList<string> keys, CancellationToken cancellationToken)
+    internal static TimeSpan RetryDelay(int failures) => failures == 0 ? PollInterval : TimeSpan.FromSeconds(Math.Min(300, 15 * Math.Pow(2, Math.Min(failures, 5))));
+
+    private async Task<bool> RepairAsync(IReadOnlyList<string> keys, CancellationToken cancellationToken)
     {
-        await leaderboardService.MarkRepairingAsync(keys, true, null, cancellationToken).ConfigureAwait(false);
         try
         {
+            await leaderboardService.MarkRepairingAsync(keys, true, null, cancellationToken).ConfigureAwait(false);
             var definitions = new Dictionary<string, LeaderboardMetric>(StringComparer.Ordinal);
             var candidates = keys.ToDictionary(key => key, _ => new SortedSet<LeaderboardStoredEntry>(BestEntryComparer.Instance), StringComparer.Ordinal);
             foreach (var key in keys)
@@ -46,22 +53,25 @@ public sealed class LeaderboardRepairBackgroundService(
 
             using var scope = serviceProvider.CreateScope();
             var crawler = scope.ServiceProvider.GetRequiredService<ICrawlerReadService>();
+            var repairScores = new LeaderboardRepairScores(mongoDatabase);
             var reports = mongoDatabase.GetCollection<DestinyReport>("destiny_reports");
             var filter = Builders<DestinyReport>.Filter.Eq(report => report.HasCompletedCrawl, true)
                 & Builders<DestinyReport>.Filter.Ne(report => report.CrawlState, DestinyReport.CrawlStatePrivate);
-            using var cursor = await reports.Find(filter)
+            using var cursor = await reports.Find(filter, new FindOptions { BatchSize = 100 })
                 .Project(report => new RepairPlayer(report.PlatformId, report.PlayerMembershipId, report.DisplayName, report.DisplayCode, report.MostUsedEmblems, report.LastCrawledAtUtc ?? report.CrawledAt))
                 .ToCursorAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             while (await cursor.MoveNextAsync(cancellationToken).ConfigureAwait(false))
             {
-                foreach (var player in cursor.Current)
+                var players = cursor.Current.ToArray();
+                var scores = await repairScores.GetBatchAsync(players, crawler.GetLeaderboardMetricsAsync, cancellationToken).ConfigureAwait(false);
+                foreach (var player in players)
                 {
-                    var metrics = await crawler.GetLeaderboardMetricsAsync(player.MembershipTypeId, player.MembershipId, cancellationToken).ConfigureAwait(false);
+                    var metrics = scores[player.PlayerKey];
                     foreach (var metric in metrics)
                     {
-                        if (!candidates.TryGetValue(metric.Key, out var set) || metric.Score <= 0) continue;
+                        if (!candidates.TryGetValue(metric.MetricKey, out var set) || metric.Score <= 0) continue;
                         set.Add(new LeaderboardStoredEntry
                         {
                             MembershipTypeId = player.MembershipTypeId,
@@ -83,17 +93,17 @@ public sealed class LeaderboardRepairBackgroundService(
                 StringComparer.Ordinal);
             await leaderboardService.ReplaceRepairedBoardsAsync(repaired, cancellationToken).ConfigureAwait(false);
             logger.LogInformation("Repaired {LeaderboardCount} leaderboard(s).", keys.Count);
+            return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             logger.LogError(ex, "Could not repair leaderboards {MetricKeys}.", string.Join(", ", keys));
-            await leaderboardService.MarkRepairingAsync(keys, false, ex.Message, cancellationToken).ConfigureAwait(false);
-            await leaderboardService.RequeueRepairsAsync(keys).ConfigureAwait(false);
+            try { await leaderboardService.MarkRepairingAsync(keys, false, ex.Message, cancellationToken).ConfigureAwait(false); }
+            finally { await leaderboardService.RequeueRepairsAsync(keys).ConfigureAwait(false); }
+            return false;
         }
     }
-
-    private sealed record RepairPlayer(int MembershipTypeId, long MembershipId, string DisplayName, int DisplayCode, IReadOnlyList<EmblemReport> MostUsedEmblems, DateTime SourceCrawledAtUtc);
 
     private sealed class BestEntryComparer : IComparer<LeaderboardStoredEntry>
     {

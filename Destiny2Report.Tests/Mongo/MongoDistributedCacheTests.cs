@@ -1,4 +1,6 @@
 using Destiny2Report.API.Mongo;
+using Destiny2Report.API.Features.Auth;
+using Destiny2Report.API.Features.Leaderboards;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,6 +30,56 @@ public sealed class MongoDistributedCacheTests : IAsyncLifetime
         if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MONGODB_CACHE_TEST_URI")))
             await client.DropDatabaseAsync(databaseName);
         client.Dispose();
+    }
+
+    [MongoCacheFact]
+    public async Task AuthSessionsRemainPersistentForThirtyDaysAcrossInstances()
+    {
+        var first = new MongoAuthSessionPersistence(Database, clock);
+        var second = new MongoAuthSessionPersistence(Database, clock);
+        await first.EnsureIndexesAsync(CancellationToken.None);
+        var now = clock.GetUtcNow();
+        var session = new AuthSession("access", "refresh", now.AddHours(1), now.AddDays(30));
+        await first.SaveAsync("session", session, CancellationToken.None);
+        clock.Advance(TimeSpan.FromDays(2));
+        Assert.Equal(session, await second.GetAsync("session", CancellationToken.None));
+        clock.Advance(TimeSpan.FromDays(28));
+        Assert.Null(await first.GetAsync("session", CancellationToken.None));
+    }
+
+    [MongoCacheFact]
+    public async Task LeaderboardRepairsReuseScoresAndPersistOnlyMissingOrStaleCalculations()
+    {
+        var source = DateTime.UtcNow.AddDays(-1);
+        var players = new[]
+        {
+            new RepairPlayer(1, 1, "one", 0, [], source),
+            new RepairPlayer(1, 2, "two", 0, [], source),
+            new RepairPlayer(1, 3, "three", 0, [], source)
+        };
+        var scores = Database.GetCollection<PlayerLeaderboardSnapshot>("leaderboard_player_scores");
+        await scores.InsertManyAsync([
+            new PlayerLeaderboardSnapshot { PlayerKey = "1:1", MembershipTypeId = 1, MembershipId = 1,
+                UpdatedAtUtc = source.AddHours(1), Scores = [new("combat.kills.total", 100)] },
+            new PlayerLeaderboardSnapshot { PlayerKey = "1:2", MembershipTypeId = 1, MembershipId = 2,
+                UpdatedAtUtc = source.AddDays(-1), Scores = [new("combat.kills.total", 1)] }
+        ]);
+        var calls = new List<long>();
+        Task<IReadOnlyCollection<LeaderboardMetric>> Calculate(int type, long id, CancellationToken token)
+        {
+            calls.Add(id);
+            return Task.FromResult<IReadOnlyCollection<LeaderboardMetric>>([new("combat.kills.total", "Combat", "Kills", "", "count", 0, id * 100)]);
+        }
+        var repair = new LeaderboardRepairScores(Database);
+        var initial = await repair.GetBatchAsync(players, Calculate, CancellationToken.None);
+        Assert.Equal(new long[] { 2, 3 }, calls);
+        Assert.Equal(100, initial["1:1"][0].Score);
+        Assert.Equal(200, initial["1:2"][0].Score);
+        calls.Clear();
+        await repair.GetBatchAsync(players, Calculate, CancellationToken.None);
+        Assert.Empty(calls);
+        Assert.Equal(TimeSpan.FromSeconds(15), LeaderboardRepairBackgroundService.RetryDelay(0));
+        Assert.Equal(TimeSpan.FromMinutes(5), LeaderboardRepairBackgroundService.RetryDelay(20));
     }
 
     [MongoCacheFact]

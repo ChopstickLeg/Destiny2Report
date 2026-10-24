@@ -21,6 +21,13 @@ jobs:
     name: Rust lint, test, and build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      mongo:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+    env:
+      MONGODB_CACHE_TEST_URI: mongodb://localhost:27017
 
     steps:
       - name: Check out repository

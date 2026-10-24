@@ -49,6 +49,8 @@ public sealed class LeaderboardService(
             MembershipTypeId = report.PlatformId,
             MembershipId = report.PlayerMembershipId,
             UpdatedAtUtc = DateTime.UtcNow,
+            SourceCrawledAtUtc = report.LastCrawledAtUtc ?? report.CrawledAt,
+            MetricVersion = PlayerLeaderboardSnapshot.CurrentMetricVersion,
             Scores = positiveMetrics.Values
                 .Select(metric => new PlayerLeaderboardScore(metric.Key, metric.Score))
                 .OrderBy(score => score.MetricKey, StringComparer.Ordinal)

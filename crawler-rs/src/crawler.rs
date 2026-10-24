@@ -193,19 +193,23 @@ pub async fn crawl(
     }).collect::<Vec<_>>();
 
     let activity_definitions = manifest
-        .table("DestinyActivityDefinition")?
+        .table("DestinyActivityDefinition")
+        .await?
         .into_iter()
         .collect::<BTreeMap<_, _>>();
     let destination_definitions = manifest
-        .table("DestinyDestinationDefinition")?
+        .table("DestinyDestinationDefinition")
+        .await?
         .into_iter()
         .collect::<BTreeMap<_, _>>();
     let metric_definitions = manifest
-        .table("DestinyMetricDefinition")?
+        .table("DestinyMetricDefinition")
+        .await?
         .into_iter()
         .collect::<BTreeMap<_, _>>();
     let activity_mode_names = manifest
-        .table("DestinyActivityModeDefinition")?
+        .table("DestinyActivityModeDefinition")
+        .await?
         .into_iter()
         .filter_map(|(_, definition)| {
             let mode = definition.get("modeType")?.as_i64()? as i32;
@@ -218,7 +222,7 @@ pub async fn crawl(
         .collect::<BTreeMap<_, _>>();
     let good_boy_protocol = metric_progress(&profile, &metric_definitions, "Good Boy Protocol");
     let fish_caught = metric_progress(&profile, &metric_definitions, "Total Fish Caught");
-    let triumph_seals = completed_seals(&profile, manifest)?;
+    let triumph_seals = completed_seals(&profile, manifest).await?;
     let misadventures = sum_account_stat(&account, "suicides") as i32;
 
     let character_ids = account
@@ -328,7 +332,8 @@ pub async fn crawl(
                             *character_id,
                             &mut character_class_by_id,
                             &mut deleted_character_identity,
-                        );
+                        )
+                        .await;
                     }
                     Err(BungieError::Cancelled) => return Err(BungieError::Cancelled.into()),
                     Err(error) => {
@@ -669,7 +674,7 @@ pub async fn crawl(
             );
         }
         for owner in owners {
-            let reported_class = pgcr_character_class(owner, manifest);
+            let reported_class = pgcr_character_class(owner, manifest).await;
             let character_id = owner.get("characterId").and_then(id_i64).unwrap_or(0);
             if character_id > 0 && reported_class != "Unknown" {
                 match character_class_by_id.entry(character_id) {
@@ -688,15 +693,14 @@ pub async fn crawl(
                 && !profile_characters
                     .is_some_and(|characters| characters.contains_key(&character_id.to_string()))
             {
-                let race = owner
-                    .pointer("/player/raceHash")
-                    .and_then(id_u32)
-                    .and_then(|hash| {
-                        manifest_display_name(manifest, "DestinyRaceDefinition", hash)
-                            .ok()
-                            .flatten()
-                    })
-                    .unwrap_or_else(|| "Unknown".into());
+                let race = match owner.pointer("/player/raceHash").and_then(id_u32) {
+                    Some(hash) => manifest_display_name(manifest, "DestinyRaceDefinition", hash)
+                        .await
+                        .ok()
+                        .flatten(),
+                    None => None,
+                }
+                .unwrap_or_else(|| "Unknown".into());
                 merge_character_identity(
                     &mut deleted_character_identity,
                     character_id,
@@ -795,7 +799,7 @@ pub async fn crawl(
         .collect::<Vec<_>>();
     let most_played_with =
         resolve_most_played_with(client, &encounter_counts, cancellation).await?;
-    let most_used_emblems = resolve_most_used_emblems(manifest, &emblem_seconds);
+    let most_used_emblems = resolve_most_used_emblems(manifest, &emblem_seconds).await;
     let pvp_playlist_reports = build_pvp_playlist_reports(&pvp_playlists, &activity_mode_names);
     let crucible_kills_total = crucible_kills_by_mode.values().sum::<i64>();
     let mut crucible_kill_modes = BTreeMap::<String, i64>::new();
@@ -1079,7 +1083,7 @@ fn metric_progress(profile: &Value, definitions: &BTreeMap<u32, Value>, metric_n
         .unwrap_or(0)
 }
 
-fn completed_seals(profile: &Value, manifest: &ManifestStore) -> anyhow::Result<Vec<Value>> {
+async fn completed_seals(profile: &Value, manifest: &ManifestStore) -> anyhow::Result<Vec<Value>> {
     let records = profile
         .pointer("/profileRecords/data/records")
         .and_then(Value::as_object);
@@ -1089,7 +1093,9 @@ fn completed_seals(profile: &Value, manifest: &ManifestStore) -> anyhow::Result<
     let mut seals = Vec::new();
     let mut seen = BTreeSet::new();
     for root_hash in [616_318_467_u32, 1_881_970_629_u32] {
-        let Some(root) = manifest.definition("DestinyPresentationNodeDefinition", root_hash)?
+        let Some(root) = manifest
+            .definition("DestinyPresentationNodeDefinition", root_hash)
+            .await?
         else {
             continue;
         };
@@ -1109,7 +1115,9 @@ fn completed_seals(profile: &Value, manifest: &ManifestStore) -> anyhow::Result<
             let Some(node_hash) = child.get("presentationNodeHash").and_then(id_u32) else {
                 continue;
             };
-            let Some(node) = manifest.definition("DestinyPresentationNodeDefinition", node_hash)?
+            let Some(node) = manifest
+                .definition("DestinyPresentationNodeDefinition", node_hash)
+                .await?
             else {
                 continue;
             };
@@ -1136,7 +1144,9 @@ fn completed_seals(profile: &Value, manifest: &ManifestStore) -> anyhow::Result<
             if !completed {
                 continue;
             }
-            let definition = manifest.definition("DestinyRecordDefinition", record_hash)?;
+            let definition = manifest
+                .definition("DestinyRecordDefinition", record_hash)
+                .await?;
             let preferred_name = definition
                 .as_ref()
                 .and_then(|value| value.pointer("/displayProperties/name"))
@@ -1891,7 +1901,7 @@ fn append_deleted_character_playtime(
     }
 }
 
-fn recover_deleted_character_identity(
+async fn recover_deleted_character_identity(
     pgcr: &Value,
     manifest: &ManifestStore,
     job: &CrawlJob,
@@ -1911,20 +1921,19 @@ fn recover_deleted_character_identity(
     else {
         return;
     };
-    let class = pgcr_character_class(entry, manifest);
+    let class = pgcr_character_class(entry, manifest).await;
     if class != "Unknown" {
         historical_classes.insert(character_id, class.clone());
     }
-    let race = entry
-        .pointer("/player/raceHash")
-        .and_then(id_u32)
-        .and_then(|hash| {
-            manifest_display_name(manifest, "DestinyRaceDefinition", hash)
-                .ok()
-                .flatten()
-        })
-        .map(|value| normalize_race_name(&value))
-        .unwrap_or("Unknown");
+    let race = match entry.pointer("/player/raceHash").and_then(id_u32) {
+        Some(hash) => manifest_display_name(manifest, "DestinyRaceDefinition", hash)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    }
+    .map(|value| normalize_race_name(&value))
+    .unwrap_or("Unknown");
     merge_character_identity(identities, character_id, &class, race);
 }
 
@@ -2290,40 +2299,44 @@ async fn resolve_most_played_with(
     Ok(resolved.into_iter().map(|(_, value)| value).collect())
 }
 
-fn resolve_most_used_emblems(manifest: &ManifestStore, seconds: &BTreeMap<u32, i64>) -> Vec<Value> {
+async fn resolve_most_used_emblems(
+    manifest: &ManifestStore,
+    seconds: &BTreeMap<u32, i64>,
+) -> Vec<Value> {
     let mut top = seconds.iter().collect::<Vec<_>>();
     top.sort_by_key(|(_, seconds)| std::cmp::Reverse(**seconds));
     top.truncate(10);
-    top.into_iter()
-        .map(|(hash, seconds)| {
-            let definition = manifest
-                .definition("DestinyInventoryItemDefinition", *hash)
-                .ok()
-                .flatten();
-            json!({
-                "name": definition.as_ref()
-                    .and_then(|value| value.pointer("/displayProperties/name"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| hash.to_string()),
-                "iconUrl": bungie_url(definition.as_ref()
-                    .and_then(|value| value.pointer("/displayProperties/icon"))
-                    .and_then(Value::as_str)),
-                "backgroundUrl": bungie_url(definition.as_ref()
-                    .and_then(|value| value.get("secondaryIcon"))
-                    .and_then(Value::as_str)),
-                "totalPlaytime": timespan(*seconds)
-            })
-        })
-        .collect()
+    let mut result = Vec::new();
+    for (hash, seconds) in top {
+        let definition = manifest
+            .definition("DestinyInventoryItemDefinition", *hash)
+            .await
+            .ok()
+            .flatten();
+        result.push(json!({
+            "name": definition.as_ref()
+                .and_then(|value| value.pointer("/displayProperties/name"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| hash.to_string()),
+            "iconUrl": bungie_url(definition.as_ref()
+                .and_then(|value| value.pointer("/displayProperties/icon"))
+                .and_then(Value::as_str)),
+            "backgroundUrl": bungie_url(definition.as_ref()
+                .and_then(|value| value.get("secondaryIcon"))
+                .and_then(Value::as_str)),
+            "totalPlaytime": timespan(*seconds)
+        }));
+    }
+    result
 }
 
-fn manifest_display_name(
+async fn manifest_display_name(
     manifest: &ManifestStore,
     table: &str,
     hash: u32,
 ) -> anyhow::Result<Option<String>> {
-    Ok(manifest.definition(table, hash)?.and_then(|value| {
+    Ok(manifest.definition(table, hash).await?.and_then(|value| {
         value
             .pointer("/displayProperties/name")
             .and_then(Value::as_str)
@@ -2454,7 +2467,7 @@ fn historical_character_classes(account: &Value) -> BTreeMap<i64, String> {
         .collect()
 }
 
-fn pgcr_character_class(entry: &Value, manifest: &ManifestStore) -> String {
+async fn pgcr_character_class(entry: &Value, manifest: &ManifestStore) -> String {
     let reported = entry
         .pointer("/player/characterClass")
         .and_then(Value::as_str)
@@ -2463,17 +2476,16 @@ fn pgcr_character_class(entry: &Value, manifest: &ManifestStore) -> String {
     if reported != "Unknown" {
         return reported.to_owned();
     }
-    entry
-        .pointer("/player/classHash")
-        .and_then(id_u32)
-        .and_then(|hash| {
-            manifest_display_name(manifest, "DestinyClassDefinition", hash)
-                .ok()
-                .flatten()
-        })
-        .map(|name| normalize_class_name(&name).to_owned())
-        .filter(|name| name != "Unknown")
-        .unwrap_or_else(|| "Unknown".to_owned())
+    match entry.pointer("/player/classHash").and_then(id_u32) {
+        Some(hash) => manifest_display_name(manifest, "DestinyClassDefinition", hash)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    }
+    .map(|name| normalize_class_name(&name).to_owned())
+    .filter(|name| name != "Unknown")
+    .unwrap_or_else(|| "Unknown".to_owned())
 }
 
 fn normalize_class_name(value: &str) -> &'static str {
@@ -3033,32 +3045,59 @@ mod tests {
         assert_eq!(classes.get(&20).map(String::as_str), Some("Warlock"));
     }
 
-    #[test]
-    fn pgcr_character_class_falls_back_to_the_class_manifest() {
-        let path = std::env::temp_dir().join(format!(
-            "destiny2report-class-manifest-{}.sqlite",
+    #[tokio::test]
+    async fn pgcr_character_class_falls_back_to_the_shared_manifest() {
+        let Ok(uri) = std::env::var("MONGODB_CACHE_TEST_URI") else {
+            return;
+        };
+        use mongodb::bson::{DateTime, doc};
+        let client = mongodb::Client::with_uri_str(uri).await.unwrap();
+        let database = client.database(&format!(
+            "d2r_manifest_test_{}",
             uuid::Uuid::new_v4().simple()
         ));
-        let connection = rusqlite::Connection::open(&path).unwrap();
-        connection
-            .execute(
-                "CREATE TABLE DestinyClassDefinition (id INTEGER PRIMARY KEY, json TEXT NOT NULL)",
-                [],
-            )
+        let expires = DateTime::from_millis(DateTime::now().timestamp_millis() + 60 * 60 * 1000);
+        database
+            .collection::<mongodb::bson::Document>("manifest_entries")
+            .insert_one(doc! {
+                "_id": "test:123", "generation": "test", "hash": 123_i64,
+                "json": r#"{"displayProperties":{"name":"Warlock"}}"#, "expires_at": expires
+            })
+            .await
             .unwrap();
-        connection
-            .execute(
-                "INSERT INTO DestinyClassDefinition (id, json) VALUES (?1, ?2)",
-                rusqlite::params![123_i32, r#"{"displayProperties":{"name":"Warlock"}}"#],
-            )
+        database
+            .collection::<mongodb::bson::Document>("manifest_tables")
+            .insert_one(doc! {
+                "_id": "DestinyClassDefinition", "generation": "test", "expires_at": expires
+            })
+            .await
             .unwrap();
-        drop(connection);
-        let manifest = ManifestStore::new(&path);
+        let manifest = ManifestStore::new(database.clone());
         let entry = json!({ "player": { "characterClass": "", "classHash": 123 } });
-
-        assert_eq!(pgcr_character_class(&entry, &manifest), "Warlock");
-
-        std::fs::remove_file(path).unwrap();
+        assert_eq!(pgcr_character_class(&entry, &manifest).await, "Warlock");
+        assert_eq!(
+            manifest
+                .table("DestinyClassDefinition")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        database
+            .collection::<mongodb::bson::Document>("manifest_tables")
+            .update_one(
+                doc! { "_id": "DestinyClassDefinition" },
+                doc! { "$set": { "expires_at": DateTime::from_millis(0) } },
+            )
+            .await
+            .unwrap();
+        assert!(
+            manifest
+                .definition("DestinyClassDefinition", 123)
+                .await
+                .is_err()
+        );
+        database.drop().await.unwrap();
     }
 
     #[test]

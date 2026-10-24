@@ -1,8 +1,6 @@
-using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 
 namespace Destiny2Report.API.Features.Auth;
 
@@ -12,7 +10,7 @@ public sealed class AuthSessionOptions
 
     public string CookieName { get; set; } = "d2r.session";
 
-    public TimeSpan Lifetime { get; set; } = TimeSpan.FromDays(1);
+    public TimeSpan Lifetime { get; set; } = TimeSpan.FromDays(30);
 }
 
 public interface IAuthSessionStore
@@ -27,12 +25,11 @@ public interface IAuthSessionStore
 }
 
 public sealed class AuthSessionStore(
-    IDistributedCache cache,
+    IAuthSessionPersistence persistence,
     IOptions<AuthSessionOptions> options,
     TimeProvider timeProvider,
     IWebHostEnvironment environment) : IAuthSessionStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string CacheKeyPrefix = "AuthSession:";
 
     public async Task<AuthSession?> GetAsync(HttpRequest request, CancellationToken cancellationToken)
@@ -43,13 +40,7 @@ public sealed class AuthSessionStore(
             return null;
         }
 
-        var json = await cache.GetStringAsync(CacheKey(sessionId), cancellationToken).ConfigureAwait(false);
-        if (json is null)
-        {
-            return null;
-        }
-
-        var session = JsonSerializer.Deserialize<AuthSession>(json, JsonOptions);
+        var session = await persistence.GetAsync(CacheKey(sessionId), cancellationToken).ConfigureAwait(false);
         return session is not null && session.ExpiresAt > timeProvider.GetUtcNow() ? session : null;
     }
 
@@ -59,7 +50,7 @@ public sealed class AuthSessionStore(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var expiresAt = now.Add(options.Value.Lifetime < TimeSpan.FromDays(1) ? options.Value.Lifetime : TimeSpan.FromDays(1));
+        var expiresAt = now.Add(options.Value.Lifetime);
         if (tokens.RefreshExpiresIn is > 0)
         {
             expiresAt = Min(expiresAt, now.AddSeconds(tokens.RefreshExpiresIn.Value));
@@ -95,7 +86,7 @@ public sealed class AuthSessionStore(
         if (request.Cookies.TryGetValue(options.Value.CookieName, out var sessionId)
             && !string.IsNullOrWhiteSpace(sessionId))
         {
-            await cache.RemoveAsync(CacheKey(sessionId), cancellationToken).ConfigureAwait(false);
+            await persistence.DeleteAsync(CacheKey(sessionId), cancellationToken).ConfigureAwait(false);
         }
 
         response.Cookies.Delete(options.Value.CookieName, CookieOptions(timeProvider.GetUtcNow()));
@@ -106,14 +97,10 @@ public sealed class AuthSessionStore(
         var remainingLifetime = session.ExpiresAt - timeProvider.GetUtcNow();
         if (remainingLifetime <= TimeSpan.Zero)
         {
-            return cache.RemoveAsync(CacheKey(sessionId), cancellationToken);
+            return persistence.DeleteAsync(CacheKey(sessionId), cancellationToken);
         }
 
-        return cache.SetStringAsync(
-            CacheKey(sessionId),
-            JsonSerializer.Serialize(session, JsonOptions),
-            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = remainingLifetime },
-            cancellationToken);
+        return persistence.SaveAsync(CacheKey(sessionId), session, cancellationToken);
     }
 
     private CookieOptions CookieOptions(DateTimeOffset expiresAt) => new()
