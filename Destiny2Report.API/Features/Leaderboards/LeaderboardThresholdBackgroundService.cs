@@ -4,7 +4,7 @@ public sealed class LeaderboardThresholdBackgroundService(
     ILeaderboardService leaderboards,
     ILogger<LeaderboardThresholdBackgroundService> logger) : BackgroundService
 {
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromDays(1);
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(12);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -17,7 +17,7 @@ public sealed class LeaderboardThresholdBackgroundService(
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Could not refresh leaderboard percentile thresholds; the previous Redis snapshot will remain active.");
+                logger.LogError(ex, "Could not refresh leaderboard percentile thresholds; the previous MongoDB cache snapshot will remain active until it expires.");
             }
 
             try { await Task.Delay(RefreshInterval, stoppingToken).ConfigureAwait(false); }

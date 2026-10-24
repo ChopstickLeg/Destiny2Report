@@ -1,8 +1,8 @@
-using System.Collections.Concurrent;
 using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Features.Crawler.Models.Bungie;
 using Newtonsoft.Json;
 using MongoDB.Driver;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Destiny2Report.API.Features.Crawler;
 
@@ -16,7 +16,6 @@ public partial class CrawlerReadService
     private const string AbilityCategoryKey = "ABILITIES";
     private const string UnknownWeaponCategoryName = "Unknown";
     private const int WeaponItemType = 3;
-    private static readonly ConcurrentDictionary<string, Lazy<Task<IReadOnlyDictionary<long, WeaponDefinitionSummary>>>> WeaponDefinitionCaches = new();
 
     public async Task WarmReportReadModelsAsync(CancellationToken cancellationToken)
     {
@@ -133,21 +132,11 @@ public partial class CrawlerReadService
         D2Report.BungieClient.DestinyManifest manifest,
         CancellationToken cancellationToken)
     {
-        var cacheKey = $"{manifest.Version}:{InventoryItemDefinitionType}";
-        var lazyCache = WeaponDefinitionCaches.GetOrAdd(
-            cacheKey,
-            _ => new Lazy<Task<IReadOnlyDictionary<long, WeaponDefinitionSummary>>>(
-                async () => ParseWeaponDefinitions(await GetManifestTableJsonAsync(manifest, InventoryItemDefinitionType, CancellationToken.None).ConfigureAwait(false)),
-                LazyThreadSafetyMode.ExecutionAndPublication));
-        try
-        {
-            return await lazyCache.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            WeaponDefinitionCaches.TryRemove(KeyValuePair.Create(cacheKey, lazyCache));
-            throw;
-        }
+        return await cache.GetOrCreateAsync<IReadOnlyDictionary<long, WeaponDefinitionSummary>>(
+            $"bungie:destiny2:weapons:v1:{manifest.Version}",
+            async ct => ParseWeaponDefinitions(await GetManifestTableJsonAsync(manifest, InventoryItemDefinitionType, ct).ConfigureAwait(false)),
+            new HybridCacheEntryOptions { Expiration = ManifestTableCacheDuration },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static IReadOnlyDictionary<long, WeaponDefinitionSummary> ParseWeaponDefinitions(string json)

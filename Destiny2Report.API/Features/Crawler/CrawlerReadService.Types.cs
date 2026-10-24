@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using D2Report.BungieClient;
 using Destiny2Report.API.Features.Crawler.Models.Bungie;
 
@@ -27,8 +26,6 @@ public partial class CrawlerReadService
 
     private sealed class ManifestContext(DestinyManifest manifest, CrawlerReadService service)
     {
-        private readonly ConcurrentDictionary<string, Lazy<Task<object>>> tables = new(StringComparer.Ordinal);
-
         public DestinyManifest Manifest => manifest;
 
         public Task<IReadOnlyDictionary<string, ManifestActivityModeDefinition>> GetActivityModeDefinitionsAsync(CancellationToken cancellationToken) =>
@@ -39,14 +36,7 @@ public partial class CrawlerReadService
 
         public async Task<IReadOnlyDictionary<string, TDefinition>> GetTableAsync<TDefinition>(string tableName, CancellationToken cancellationToken)
         {
-            var table = await tables.GetOrAdd(
-                    tableName,
-                    name => new Lazy<Task<object>>(
-                        async () => await service.GetManifestTableAsync<TDefinition>(manifest, name, CancellationToken.None).ConfigureAwait(false)))
-                .Value
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false);
-            return (IReadOnlyDictionary<string, TDefinition>)table;
+            return await service.GetManifestTableAsync<TDefinition>(manifest, tableName, cancellationToken).ConfigureAwait(false);
         }
     }
 }

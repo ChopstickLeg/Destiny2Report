@@ -37,11 +37,25 @@ public sealed record LeaderboardPageResponse(string Key, string Category, string
 
 public sealed record PlayerLeaderboardSnapshot
 {
+    // Legacy snapshots were produced by the current metric formulas, version 0.
+    public const int CurrentMetricVersion = 0;
     [BsonId] public string PlayerKey { get; init; } = "";
     public int MembershipTypeId { get; init; }
     public long MembershipId { get; init; }
     public DateTime UpdatedAtUtc { get; init; }
+    public DateTime? SourceCrawledAtUtc { get; init; }
+    public int MetricVersion { get; init; }
+    public bool IsRemoved { get; init; }
     public List<PlayerLeaderboardScore> Scores { get; init; } = [];
+
+    internal static PlayerLeaderboardSnapshot Removed(int membershipTypeId, long membershipId) => new()
+    {
+        PlayerKey = $"{membershipTypeId}:{membershipId}",
+        MembershipTypeId = membershipTypeId,
+        MembershipId = membershipId,
+        UpdatedAtUtc = DateTime.UtcNow,
+        IsRemoved = true
+    };
 }
 
 public sealed record PlayerLeaderboardScore(string MetricKey, long Score);

@@ -1,5 +1,6 @@
 using Destiny2Report.API.Features.Crawler.Models;
 using MongoDB.Driver;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Destiny2Report.API.Features.Reports;
 
@@ -12,15 +13,12 @@ public interface IQueuePositionSnapshotService
 }
 
 /// <summary>
-/// Shares one short-lived queue snapshot between every SSE client. Queue position is
+/// Shares one distributed queue snapshot between every SSE client. Queue position is
 /// approximate by nature, so it must not require MongoDB count queries per client.
 /// </summary>
-public sealed class QueuePositionSnapshotService(IMongoDatabase mongoDatabase) : IQueuePositionSnapshotService
+public sealed class QueuePositionSnapshotService(IMongoDatabase mongoDatabase, HybridCache cache) : IQueuePositionSnapshotService
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(30);
-    private readonly SemaphoreSlim _refreshLock = new(1, 1);
-    private QueueJobPosition[] _jobs = [];
-    private DateTimeOffset _expiresAtUtc = DateTimeOffset.MinValue;
 
     public async Task<QueuePositionSnapshot?> GetPositionAsync(
         int membershipTypeId,
@@ -44,19 +42,8 @@ public sealed class QueuePositionSnapshotService(IMongoDatabase mongoDatabase) :
 
     private async Task<QueueJobPosition[]> GetJobsAsync(CancellationToken cancellationToken)
     {
-        if (DateTimeOffset.UtcNow < _expiresAtUtc)
+        return await cache.GetOrCreateAsync<QueueJobPosition[]>("crawler:queue-position:v1", async ct =>
         {
-            return _jobs;
-        }
-
-        await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (DateTimeOffset.UtcNow < _expiresAtUtc)
-            {
-                return _jobs;
-            }
-
             var freshJobs = await mongoDatabase.GetCollection<CrawlJob>("crawl_jobs")
                 .Find(job => job.State == CrawlJob.StateQueued)
                 .Project(job => new QueueJobPosition(
@@ -64,16 +51,10 @@ public sealed class QueuePositionSnapshotService(IMongoDatabase mongoDatabase) :
                     job.QueuedAtUtc,
                     job.DispatchedToRedis,
                     job.IsPriority))
-                .ToListAsync(cancellationToken)
+                .ToListAsync(ct)
                 .ConfigureAwait(false);
-            _jobs = [.. freshJobs];
-            _expiresAtUtc = DateTimeOffset.UtcNow.Add(RefreshInterval);
-            return _jobs;
-        }
-        finally
-        {
-            _refreshLock.Release();
-        }
+            return [.. freshJobs];
+        }, new HybridCacheEntryOptions { Expiration = RefreshInterval }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static bool IsAheadOf(QueueJobPosition candidate, QueueJobPosition job)

@@ -14,3 +14,5 @@ The crawler always writes structured JSON logs to stdout. When `OTEL_EXPORTER_OT
 - Signal-specific OTLP endpoint, protocol, and header variables remain supported by the OpenTelemetry exporter.
 
 Run multiple replicas with `docker compose up --scale crawler-rust=3`. Configuration and ownership rules are documented in `../docs/crawler-protocol-v1.md`.
+
+Manifest definitions use the existing MongoDB connection and are shared across replicas. Startup creates TTL indexes and populates English JSON tables; a table is published after its entire generation is uploaded. Definitions expire after one day. An hourly background loop refreshes tables with 12 hours or less remaining, including during long crawls. SQLite and `CRAWLER__MANIFEST_PATH` are no longer used. See `../docs/caching.md` for deployment and session-storage details.

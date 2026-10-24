@@ -16,8 +16,19 @@ public partial class CrawlerReadService
             & Builders<DestinyReport>.Filter.Eq(item => item.HasCompletedCrawl, true);
         var accumulatorFilter = Builders<CrawlAccumulator>.Filter.Eq(item => item.PlatformId, membershipTypeId)
             & Builders<CrawlAccumulator>.Filter.Eq(item => item.PlayerMembershipId, membershipId);
-        var reportTask = mongoDatabase.GetCollection<DestinyReport>("destiny_reports").Find(reportFilter).FirstOrDefaultAsync(cancellationToken);
-        var accumulatorTask = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators").Find(accumulatorFilter).FirstOrDefaultAsync(cancellationToken);
+        var reportProjection = Builders<DestinyReport>.Projection
+            .Include(item => item.PlatformId).Include(item => item.PlayerMembershipId)
+            .Include(item => item.CharacterPlaytime).Include(item => item.PatrolTimeByPlanet)
+            .Include(item => item.TotalKills).Include(item => item.CrucibleWins)
+            .Include(item => item.PvpPlaylists).Include(item => item.GambitWins).Include(item => item.GambitPlaylists)
+            .Include(item => item.GoodBoyProtocol).Include(item => item.FishCaught).Include(item => item.Misadventures)
+            .Include(item => item.ZeroKillActivities).Include(item => item.GambitMotes)
+            .Include(item => item.UniquePlayersPlayedWith).Include(item => item.LongestPlaytimeStreak);
+        var reportTask = mongoDatabase.GetCollection<DestinyReport>("destiny_reports").Find(reportFilter)
+            .Project<DestinyReport>(reportProjection).FirstOrDefaultAsync(cancellationToken);
+        var accumulatorTask = mongoDatabase.GetCollection<CrawlAccumulator>("crawl_accumulators").Find(accumulatorFilter)
+            .Project<CrawlAccumulator>(Builders<CrawlAccumulator>.Projection.Include(item => item.PlaytimeByActivityMode))
+            .FirstOrDefaultAsync(cancellationToken);
         await Task.WhenAll(reportTask, accumulatorTask).ConfigureAwait(false);
         return reportTask.Result is null || accumulatorTask.Result is null
             ? []

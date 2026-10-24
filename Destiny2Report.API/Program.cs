@@ -12,6 +12,8 @@ using Destiny2Report.API.Observability;
 using Destiny2Report.API.RateLimiting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Hybrid;
 using StackExchange.Redis;
 using System.Diagnostics;
 using System.Threading.RateLimiting;
@@ -89,16 +91,16 @@ builder.Services.AddOptions<WebPushOptions>()
         "WebPush must specify Subject, PublicKey, and PrivateKey together.")
     .ValidateOnStart();
 builder.Services.AddSingleton<IReportPushNotificationService, ReportPushNotificationService>();
-builder.Services.AddStackExchangeRedisCache(options =>
-{
-    var connectionString = builder.Configuration.GetConnectionString("Redis")
-        ?? throw new InvalidOperationException("ConnectionStrings:Redis is required.");
-    options.ConfigurationOptions = CreateRedisConfigurationOptions(connectionString);
-    options.InstanceName = "Destiny2Report:";
-});
+builder.Services.AddSingleton<MongoDistributedCache>();
+builder.Services.AddSingleton<IDistributedCache>(provider => provider.GetRequiredService<MongoDistributedCache>());
 builder.Services.AddHybridCache(options =>
 {
     options.MaximumPayloadBytes = 200 * 1024 * 1024; // 200 MB
+    options.DefaultEntryOptions = new HybridCacheEntryOptions
+    {
+        Expiration = TimeSpan.FromDays(1),
+        Flags = HybridCacheEntryFlags.DisableLocalCache
+    };
 });
 builder.Services.AddScoped<CrawlerReadService>();
 builder.Services.AddScoped<ICrawlerReadService>(provider => provider.GetRequiredService<CrawlerReadService>());
@@ -124,6 +126,8 @@ builder.Services.AddOptions<AuthSessionOptions>()
     .Validate(options => options.Lifetime > TimeSpan.Zero, "AuthSession:Lifetime must be positive.")
     .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<MongoAuthSessionPersistence>();
+builder.Services.AddSingleton<IAuthSessionPersistence>(provider => provider.GetRequiredService<MongoAuthSessionPersistence>());
 builder.Services.AddSingleton<IAuthSessionStore, AuthSessionStore>();
 builder.Services.AddOptions<AdminOptions>()
     .Bind(builder.Configuration.GetSection(AdminOptions.SectionName));
@@ -206,6 +210,8 @@ if (!app.Environment.IsProduction())
 }
 
 await app.EnsureMongoIndexesAsync();
+await app.Services.GetRequiredService<MongoDistributedCache>().EnsureIndexesAsync(CancellationToken.None);
+await app.Services.GetRequiredService<MongoAuthSessionPersistence>().EnsureIndexesAsync(CancellationToken.None);
 using (var scope = app.Services.CreateScope())
 {
     var crawlerService = scope.ServiceProvider.GetRequiredService<ICrawlerReadService>();

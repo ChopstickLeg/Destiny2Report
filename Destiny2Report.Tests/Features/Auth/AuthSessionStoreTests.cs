@@ -1,8 +1,6 @@
 using Destiny2Report.API.Features.Auth;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Caching.Distributed;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
@@ -99,12 +97,27 @@ public sealed class AuthSessionStoreTests
 
     private static AuthSessionStore CreateStore()
     {
-        var cache = new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
         return new AuthSessionStore(
-            cache,
+            new TestSessionPersistence(),
             Options.Create(new AuthSessionOptions()),
             new FixedTimeProvider(Now),
             new TestWebHostEnvironment());
+    }
+
+    private sealed class TestSessionPersistence : IAuthSessionPersistence
+    {
+        private readonly Dictionary<string, AuthSession> sessions = [];
+        public Task<AuthSession?> GetAsync(string key, CancellationToken cancellationToken) => Task.FromResult(sessions.GetValueOrDefault(key));
+        public Task SaveAsync(string key, AuthSession session, CancellationToken cancellationToken)
+        {
+            sessions[key] = session;
+            return Task.CompletedTask;
+        }
+        public Task DeleteAsync(string key, CancellationToken cancellationToken)
+        {
+            sessions.Remove(key);
+            return Task.CompletedTask;
+        }
     }
 
     private static BungieOAuthTokenResponse Tokens(int refreshExpiresIn) => new(

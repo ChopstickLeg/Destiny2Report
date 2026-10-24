@@ -21,7 +21,6 @@ pub struct Config {
     pub max_buffered_pgcrs: usize,
     pub lease_duration: Duration,
     pub startup_jitter: Duration,
-    pub manifest_path: String,
     pub consumer_name: String,
 }
 
@@ -69,8 +68,6 @@ impl Config {
             startup_jitter: Duration::from_secs(
                 number("CRAWLER__STARTUP_JITTER_SECONDS", 10)? as u64
             ),
-            manifest_path: env::var("CRAWLER__MANIFEST_PATH")
-                .unwrap_or_else(|_| "/tmp/destiny-manifest.sqlite".into()),
             consumer_name: format!("{hostname}-{pid}-{suffix}"),
         })
     }

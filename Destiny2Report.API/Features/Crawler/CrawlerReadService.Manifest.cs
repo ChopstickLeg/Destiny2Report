@@ -26,8 +26,7 @@ public partial class CrawlerReadService
                 },
                 new HybridCacheEntryOptions
                 {
-                    Expiration = ManifestCacheDuration,
-                    LocalCacheExpiration = ManifestCacheDuration
+                    Expiration = ManifestCacheDuration
                 },
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -55,11 +54,7 @@ public partial class CrawlerReadService
                 },
                     new HybridCacheEntryOptions
                     {
-                        Expiration = ManifestTableCacheDuration,
-                        // The inventory table is very large; the compact weapon cache retains only the fields we need.
-                        LocalCacheExpiration = tableName == InventoryItemDefinitionType
-                            ? TimeSpan.FromMinutes(1)
-                            : ManifestTableCacheDuration
+                        Expiration = ManifestTableCacheDuration
                     },
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);

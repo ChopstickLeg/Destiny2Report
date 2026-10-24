@@ -13,7 +13,6 @@ use redis::{
     aio::ConnectionManager,
     streams::{StreamAutoClaimReply, StreamId, StreamReadReply},
 };
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -30,8 +29,7 @@ use crate::{
 const STREAM: &str = "crawler:jobs";
 const PRIORITY_STREAM: &str = "crawler:jobs:priority";
 const GROUP: &str = "crawler-workers";
-const MANIFEST_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-const MANIFEST_REFRESH_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const MANIFEST_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const REDIS_RECLAIM_GRACE: Duration = Duration::from_secs(5);
 const PUBLISH_PROGRESS_SCRIPT: &str = r#"
 local currentRun = redis.call('HGET', KEYS[1], 'runId')
@@ -71,7 +69,7 @@ pub struct Worker {
 impl Worker {
     pub fn new(config: Config, mongo: Client, redis: ConnectionManager) -> Self {
         let bungie = BungieClient::new(&config).expect("validated Bungie configuration");
-        let manifest = ManifestStore::new(&config.manifest_path);
+        let manifest = ManifestStore::new(mongo.database(&config.mongo_database));
         Self {
             config,
             mongo,
@@ -93,7 +91,28 @@ impl Worker {
         self.manifest
             .refresh(&self.bungie)
             .await
-            .context("prepare private SQLite manifest")?;
+            .context("prepare shared MongoDB manifest")?;
+        let refresh_cancellation = cancellation.child_token();
+        let _refresh_guard = refresh_cancellation.clone().drop_guard();
+        let refresh_manifest = self.manifest.clone();
+        let refresh_bungie = self.bungie.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = refresh_cancellation.cancelled() => break,
+                    _ = tokio::time::sleep(MANIFEST_REFRESH_INTERVAL) => {}
+                }
+                // Refresh independently of long crawls, while tables still have hours of TTL left.
+                tokio::select! {
+                    _ = refresh_cancellation.cancelled() => break,
+                    result = refresh_manifest.refresh(&refresh_bungie) => {
+                        if let Err(error) = result {
+                            tracing::error!(%error, "periodic Destiny manifest refresh failed");
+                        }
+                    }
+                }
+            }
+        });
         for stream in [PRIORITY_STREAM, STREAM] {
             let _: Result<Value, _> = redis::cmd("XGROUP")
                 .arg("CREATE")
@@ -105,19 +124,7 @@ impl Worker {
                 .await;
         }
         tracing::info!(consumer = %self.config.consumer_name, "Rust crawler worker started");
-        let mut next_manifest_refresh = Instant::now() + MANIFEST_REFRESH_INTERVAL;
-
         while !cancellation.is_cancelled() {
-            if Instant::now() >= next_manifest_refresh {
-                next_manifest_refresh = match self.manifest.refresh(&self.bungie).await {
-                    Ok(()) => Instant::now() + MANIFEST_REFRESH_INTERVAL,
-                    Err(error) => {
-                        tracing::error!(%error, "periodic Destiny manifest refresh failed");
-                        Instant::now() + MANIFEST_REFRESH_RETRY_INTERVAL
-                    }
-                };
-            }
-
             // Mongo owns scheduling and leases. Recover priority and abandoned work
             // before Redis so BSON defaults (notably legacy jobs without `p`) cannot
             // affect their ordering. Ordinary Redis work remains ahead of background.
