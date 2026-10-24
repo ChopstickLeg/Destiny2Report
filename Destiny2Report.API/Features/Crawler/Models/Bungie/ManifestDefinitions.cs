@@ -3,7 +3,7 @@ using Newtonsoft.Json;
 namespace Destiny2Report.API.Features.Crawler.Models.Bungie;
 
 // These are deliberately limited to the manifest fields consumed by the crawler.
-// Avoiding the full manifest schema keeps the local cache substantially smaller.
+// Avoiding the full manifest schema keeps definition deserialization smaller.
 public sealed class ManifestDisplayProperties
 {
     [JsonProperty("name")]

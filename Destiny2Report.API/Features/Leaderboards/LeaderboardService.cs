@@ -1,5 +1,6 @@
 using Destiny2Report.API.Features.Crawler.Models;
 using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Options;
 using MongoDB.Driver;
 using StackExchange.Redis;
@@ -12,7 +13,8 @@ public sealed class LeaderboardService(
     IConnectionMultiplexer redis,
     HybridCache cache,
     IOptions<LeaderboardsOptions> options,
-    ILogger<LeaderboardService> logger) : ILeaderboardService
+    ILogger<LeaderboardService> logger,
+    IDistributedCache distributedCache) : ILeaderboardService
 {
     private const string CollectionName = "leaderboard_boards";
     private const string RepairSetKey = "leaderboards:repairs";
@@ -174,7 +176,8 @@ public sealed class LeaderboardService(
                 updatedAt);
         }, StringComparer.Ordinal);
         var payload = new CachedThresholds(updatedAt, valuesByMetric);
-        await redisDatabase.StringSetAsync(ThresholdsKey, JsonSerializer.Serialize(payload), TimeSpan.FromDays(2)).ConfigureAwait(false);
+        await distributedCache.SetStringAsync(ThresholdsKey, JsonSerializer.Serialize(payload),
+            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(1) }, cancellationToken).ConfigureAwait(false);
         logger.LogInformation("Refreshed percentile thresholds for {MetricCount} leaderboard metrics.", valuesByMetric.Count);
     }
 
@@ -206,7 +209,7 @@ public sealed class LeaderboardService(
         return await cache.GetOrCreateAsync<LeaderboardBoard?>(
             CacheKey(metricKey),
             async ct => await boards.Find(board => board.MetricKey == metricKey).FirstOrDefaultAsync(ct).ConfigureAwait(false),
-            new HybridCacheEntryOptions { Expiration = CacheDuration, LocalCacheExpiration = CacheDuration },
+            new HybridCacheEntryOptions { Expiration = CacheDuration },
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -342,8 +345,8 @@ public sealed class LeaderboardService(
 
     private async Task<CachedThresholds?> ReadThresholdsAsync()
     {
-        var value = await redisDatabase.StringGetAsync(ThresholdsKey).ConfigureAwait(false);
-        return value.IsNullOrEmpty ? null : JsonSerializer.Deserialize<CachedThresholds>(value.ToString());
+        var value = await distributedCache.GetStringAsync(ThresholdsKey).ConfigureAwait(false);
+        return value is null ? null : JsonSerializer.Deserialize<CachedThresholds>(value);
     }
 
     private sealed record CachedThresholds(DateTimeOffset UpdatedAtUtc, Dictionary<string, LeaderboardPercentileThresholds> Values);

@@ -14,7 +14,7 @@ public partial class CrawlerReadService(
     private const string BungieNetBaseUrl = "https://www.bungie.net";
     private const string InventoryItemDefinitionType = "DestinyInventoryItemDefinition";
     private static readonly TimeSpan ManifestCacheDuration = TimeSpan.FromDays(1);
-    private static readonly TimeSpan ManifestTableCacheDuration = TimeSpan.FromDays(365);
+    private static readonly TimeSpan ManifestTableCacheDuration = TimeSpan.FromDays(1);
 
     private static readonly IReadOnlyDictionary<int, string> ActivityModeTypeNames = new Dictionary<int, string>
     {

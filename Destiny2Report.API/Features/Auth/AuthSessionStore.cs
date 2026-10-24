@@ -12,7 +12,7 @@ public sealed class AuthSessionOptions
 
     public string CookieName { get; set; } = "d2r.session";
 
-    public TimeSpan Lifetime { get; set; } = TimeSpan.FromDays(30);
+    public TimeSpan Lifetime { get; set; } = TimeSpan.FromDays(1);
 }
 
 public interface IAuthSessionStore
@@ -59,7 +59,7 @@ public sealed class AuthSessionStore(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var expiresAt = now.Add(options.Value.Lifetime);
+        var expiresAt = now.Add(options.Value.Lifetime < TimeSpan.FromDays(1) ? options.Value.Lifetime : TimeSpan.FromDays(1));
         if (tokens.RefreshExpiresIn is > 0)
         {
             expiresAt = Min(expiresAt, now.AddSeconds(tokens.RefreshExpiresIn.Value));

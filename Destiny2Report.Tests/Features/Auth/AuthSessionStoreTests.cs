@@ -14,7 +14,7 @@ public sealed class AuthSessionStoreTests
     private static readonly DateTimeOffset Now = new(2026, 7, 17, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public async Task CreateAsync_SetsHttpOnlyThirtyDayCookieAndStoresTokensServerSide()
+    public async Task CreateAsync_SetsHttpOnlyOneDayCookieAndStoresTokensServerSide()
     {
         var store = CreateStore();
         var context = new DefaultHttpContext();
@@ -26,7 +26,7 @@ public sealed class AuthSessionStoreTests
         Assert.Equal("d2r.session", setCookie.Name.ToString());
         Assert.True(setCookie.HttpOnly);
         Assert.Equal(Microsoft.Net.Http.Headers.SameSiteMode.Lax, setCookie.SameSite);
-        Assert.Equal(TimeSpan.FromDays(30), setCookie.MaxAge);
+        Assert.Equal(TimeSpan.FromDays(1), setCookie.MaxAge);
         Assert.DoesNotContain(tokens.AccessToken, setCookie.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain(tokens.RefreshToken!, setCookie.ToString(), StringComparison.Ordinal);
 
@@ -37,7 +37,7 @@ public sealed class AuthSessionStoreTests
         Assert.NotNull(session);
         Assert.Equal(tokens.AccessToken, session.AccessToken);
         Assert.Equal(tokens.RefreshToken, session.RefreshToken);
-        Assert.Equal(Now.AddDays(30), session.ExpiresAt);
+        Assert.Equal(Now.AddDays(1), session.ExpiresAt);
     }
 
     [Fact]
@@ -46,10 +46,10 @@ public sealed class AuthSessionStoreTests
         var store = CreateStore();
         var context = new DefaultHttpContext();
 
-        await store.CreateAsync(context.Response, Tokens(refreshExpiresIn: 7 * 24 * 60 * 60), CancellationToken.None);
+        await store.CreateAsync(context.Response, Tokens(refreshExpiresIn: 12 * 60 * 60), CancellationToken.None);
 
         var cookie = SetCookieHeaderValue.Parse(context.Response.Headers.SetCookie.ToString());
-        Assert.Equal(TimeSpan.FromDays(7), cookie.MaxAge);
+        Assert.Equal(TimeSpan.FromHours(12), cookie.MaxAge);
     }
 
     [Theory]

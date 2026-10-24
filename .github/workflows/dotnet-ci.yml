@@ -17,6 +17,13 @@ jobs:
     name: .NET Build and test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      mongo:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+    env:
+      MONGODB_CACHE_TEST_URI: mongodb://localhost:27017
 
     steps:
       - name: Check out repository
