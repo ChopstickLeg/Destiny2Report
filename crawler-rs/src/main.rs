@@ -4,6 +4,7 @@ mod bungie;
 mod config;
 mod crawler;
 mod manifest;
+mod memory;
 mod models;
 mod rate_limit;
 mod storage;
@@ -17,9 +18,10 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let telemetry = telemetry::init().context("initialize OpenTelemetry")?;
-
     let config = config::Config::from_env()?;
+    let telemetry = telemetry::init(&config.consumer_name).context("initialize OpenTelemetry")?;
+    let cancellation = CancellationToken::new();
+    let memory_monitor = tokio::spawn(memory::monitor(cancellation.child_token()));
     let mongo = Client::with_uri_str(&config.mongo_uri)
         .await
         .context("connect to MongoDB")?;
@@ -27,7 +29,6 @@ async fn main() -> anyhow::Result<()> {
     let redis = ConnectionManager::new(redis_client)
         .await
         .context("connect to Redis")?;
-    let cancellation = CancellationToken::new();
     let signal = cancellation.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
@@ -35,8 +36,10 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let result = worker::Worker::new(config, mongo, redis)
-        .run(cancellation)
+        .run(cancellation.clone())
         .await;
+    cancellation.cancel();
+    let _ = memory_monitor.await;
     telemetry.shutdown();
     result
 }

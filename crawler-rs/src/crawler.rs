@@ -221,6 +221,7 @@ pub async fn crawl(
         })
         .collect::<BTreeMap<_, _>>();
     let good_boy_protocol = metric_progress(&profile, &metric_definitions, "Good Boy Protocol");
+    crate::memory::checkpoint("crawl.definitions_loaded");
     let fish_caught = metric_progress(&profile, &metric_definitions, "Total Fish Caught");
     let triumph_seals = completed_seals(&profile, manifest).await?;
     let misadventures = sum_account_stat(&account, "suicides") as i32;
@@ -408,6 +409,7 @@ pub async fn crawl(
                 activity_ids.len() as i64,
                 None,
             );
+            retain_recent_activities(&mut fetched_recent_activities);
             if activities.len() < 250 || reached_crawl_boundary {
                 break;
             }
@@ -422,6 +424,12 @@ pub async fn crawl(
     }
 
     let parallelism = client.pgcr_parallelism();
+    tracing::info!(
+        activity_count = activity_ids.len(),
+        recent_activity_count = fetched_recent_activities.len(),
+        "discovered player activity history"
+    );
+    crate::memory::checkpoint("crawl.history_loaded");
     let discovered_pgcrs = activity_ids.len() as i64;
     report_progress(
         progress,
@@ -764,6 +772,13 @@ pub async fn crawl(
         }
     }
 
+    tracing::info!(
+        processed_pgcrs,
+        encountered_players = encountered.len(),
+        weapon_aggregates = weapon_kills.len(),
+        "finished player activity analysis"
+    );
+    crate::memory::checkpoint("crawl.activities_processed");
     append_deleted_character_playtime(
         &mut character_playtime,
         &account,
@@ -966,7 +981,6 @@ pub async fn crawl(
         "playersSherpaed": players_sherpaed_report,
         "mostUsedEmblems": most_used_emblems
     });
-    fetched_recent_activities.sort_by(|left, right| right.0.cmp(&left.0));
     let mut recent_seen = BTreeSet::new();
     let recent_ids = fetched_recent_activities
         .into_iter()
@@ -1028,6 +1042,15 @@ async fn cancellable<T>(
         _ = cancellation.cancelled() => Err(BungieError::Cancelled),
         result = request => result,
     }
+}
+
+fn retain_recent_activities(activities: &mut Vec<(String, i64)>) {
+    // Trim after each history page instead of retaining years of timestamps to
+    // produce a 500-ID checkpoint. Stable sorting preserves equal-period order.
+    activities.sort_by(|left, right| right.0.cmp(&left.0));
+    let mut seen = BTreeSet::new();
+    activities.retain(|(_, id)| *id > 0 && seen.insert(*id));
+    activities.truncate(RECENT_ACTIVITY_INSTANCE_ID_LIMIT);
 }
 
 fn empty_result(job: &CrawlJob, state: &str, error: &str) -> CrawlResult {
@@ -2916,6 +2939,29 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_activity_pages_match_full_history_selection_with_bounded_storage() {
+        let pages: Vec<_> = (0..12)
+            .map(|page| {
+                (0..250)
+                    .map(|index| {
+                        let id = (page * 173 + index) as i64;
+                        (format!("2026-01-{:02}T00:00:00Z", id % 28 + 1), id)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut all: Vec<_> = pages.iter().flatten().cloned().collect();
+        retain_recent_activities(&mut all);
+        let mut bounded = Vec::new();
+        for page in pages {
+            bounded.extend(page);
+            retain_recent_activities(&mut bounded);
+            assert!(bounded.len() <= RECENT_ACTIVITY_INSTANCE_ID_LIMIT);
+        }
+        assert_eq!(bounded, all);
+    }
 
     #[test]
     fn ids_accept_lossless_strings_and_numeric_boundaries() {

@@ -3,7 +3,9 @@ use std::{collections::HashMap, env, time::Duration};
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{WithHttpConfig, WithTonicConfig, tonic_types::metadata::MetadataMap};
-use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, trace::SdkTracerProvider};
+use opentelemetry_sdk::{
+    Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
+};
 use tracing_subscriber::{
     EnvFilter, Registry,
     filter::{LevelFilter, filter_fn},
@@ -22,10 +24,17 @@ const OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
 pub struct TelemetryGuard {
     tracer_provider: Option<SdkTracerProvider>,
     logger_provider: Option<SdkLoggerProvider>,
+    meter_provider: Option<SdkMeterProvider>,
+    _memory_metrics: Option<crate::memory::Metrics>,
 }
 
 impl TelemetryGuard {
     pub fn shutdown(&self) {
+        if let Some(provider) = &self.meter_provider
+            && let Err(error) = provider.shutdown_with_timeout(Duration::from_secs(5))
+        {
+            eprintln!("OpenTelemetry meter shutdown failed: {error}");
+        }
         if let Some(provider) = &self.logger_provider
             && let Err(error) = provider.shutdown_with_timeout(Duration::from_secs(5))
         {
@@ -39,7 +48,7 @@ impl TelemetryGuard {
     }
 }
 
-pub fn init() -> anyhow::Result<TelemetryGuard> {
+pub fn init(instance_id: &str) -> anyhow::Result<TelemetryGuard> {
     let fmt_filter = log_filter();
     let fmt_layer = tracing_subscriber::fmt::layer()
         .json()
@@ -48,11 +57,14 @@ pub fn init() -> anyhow::Result<TelemetryGuard> {
     if env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_none()
         && env::var_os("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").is_none()
         && env::var_os(OTEL_EXPORTER_OTLP_LOGS_ENDPOINT).is_none()
+        && env::var_os("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT").is_none()
     {
         Registry::default().with(fmt_layer).init();
         return Ok(TelemetryGuard {
             tracer_provider: None,
             logger_provider: None,
+            meter_provider: None,
+            _memory_metrics: None,
         });
     }
 
@@ -73,15 +85,30 @@ pub fn init() -> anyhow::Result<TelemetryGuard> {
     let resource = Resource::builder()
         .with_service_name(service_name)
         .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+        .with_attribute(KeyValue::new("service.instance.id", instance_id.to_owned()))
+        .with_attribute(KeyValue::new(
+            "host.name",
+            env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()),
+        ))
         .build();
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
         .with_batch_exporter(span_exporter)
         .build();
     let logger_provider = SdkLoggerProvider::builder()
-        .with_resource(resource)
+        .with_resource(resource.clone())
         .with_batch_exporter(log_exporter)
         .build();
+    let metric_exporter = build_metric_exporter(
+        protocol_from_env("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")?,
+        authorization.as_deref(),
+    )?;
+    let meter_provider = SdkMeterProvider::builder()
+        .with_resource(resource)
+        .with_periodic_exporter(metric_exporter)
+        .build();
+    global::set_meter_provider(meter_provider.clone());
+    let memory_metrics = crate::memory::register_metrics(global::meter("destiny2report_crawler"));
     global::set_tracer_provider(tracer_provider.clone());
     let tracer = tracer_provider.tracer(DEFAULT_SERVICE_NAME);
     let otel_trace_layer = tracing_opentelemetry::layer()
@@ -104,6 +131,8 @@ pub fn init() -> anyhow::Result<TelemetryGuard> {
     Ok(TelemetryGuard {
         tracer_provider: Some(tracer_provider),
         logger_provider: Some(logger_provider),
+        meter_provider: Some(meter_provider),
+        _memory_metrics: Some(memory_metrics),
     })
 }
 
@@ -163,6 +192,22 @@ fn build_log_exporter(
             .with_metadata(grpc_metadata(authorization)?)
             .build()?,
         OtlpProtocol::HttpProtobuf => opentelemetry_otlp::LogExporter::builder()
+            .with_http()
+            .with_headers(http_headers(authorization))
+            .build()?,
+    })
+}
+
+fn build_metric_exporter(
+    protocol: OtlpProtocol,
+    authorization: Option<&str>,
+) -> anyhow::Result<opentelemetry_otlp::MetricExporter> {
+    Ok(match protocol {
+        OtlpProtocol::Grpc => opentelemetry_otlp::MetricExporter::builder()
+            .with_tonic()
+            .with_metadata(grpc_metadata(authorization)?)
+            .build()?,
+        OtlpProtocol::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
             .with_http()
             .with_headers(http_headers(authorization))
             .build()?,

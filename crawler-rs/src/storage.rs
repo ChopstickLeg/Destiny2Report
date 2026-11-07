@@ -311,6 +311,7 @@ pub async fn stage(
     job: &CrawlJob,
     result: &CrawlResult,
 ) -> anyhow::Result<Option<String>> {
+    let _memory = crate::memory::Phase::start("artifacts.stage");
     let generation = uuid::Uuid::new_v4().simple().to_string();
     let now = DateTime::now();
     // Insert the cleanup anchor first. Any later partial failure leaves a report
@@ -333,13 +334,12 @@ pub async fn stage(
     write_artifacts(database, job, &generation, WEAPON, &result.weapons, now).await?;
     write_artifacts(database, job, &generation, DEATH, &result.deaths, now).await?;
     write_artifacts(database, job, &generation, EMBLEM, &result.emblems, now).await?;
-    let persisted_encounters = persistable_encounters(&result.encounters);
     write_artifacts(
         database,
         job,
         &generation,
         ENCOUNTER,
-        &persisted_encounters,
+        &result.encounters,
         now,
     )
     .await?;
@@ -352,12 +352,8 @@ pub async fn stage(
     Ok((update.modified_count == 1).then_some(generation))
 }
 
-fn persistable_encounters(encounters: &[Value]) -> Vec<Value> {
-    encounters
-        .iter()
-        .filter(|value| integer(value, "count").is_ok_and(|count| count >= 2))
-        .cloned()
-        .collect()
+fn persistable_encounter(value: &Value) -> bool {
+    integer(value, "count").is_ok_and(|count| count >= 2)
 }
 
 async fn queue_discovered_players(
@@ -431,17 +427,17 @@ async fn write_artifacts(
     values: &[Value],
     created_at: DateTime,
 ) -> anyhow::Result<()> {
-    if values.is_empty() {
-        return Ok(());
+    let artifacts = database.collection::<Document>("crawl_artifacts");
+    for batch in values.chunks(500) {
+        let documents = batch
+            .iter()
+            .filter(|value| kind != ENCOUNTER || persistable_encounter(value))
+            .map(|value| artifact_document(job, generation, kind, value, created_at))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if !documents.is_empty() {
+            artifacts.insert_many(documents).await?;
+        }
     }
-    let documents = values
-        .iter()
-        .map(|value| artifact_document(job, generation, kind, value, created_at))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    database
-        .collection::<Document>("crawl_artifacts")
-        .insert_many(documents)
-        .await?;
     Ok(())
 }
 
@@ -858,6 +854,52 @@ mod tests {
     use super::*;
     use crate::models::player_key;
 
+    #[tokio::test]
+    async fn artifact_batches_preserve_counts_and_filter_one_off_encounters() {
+        let Ok(uri) = std::env::var("MONGODB_CACHE_TEST_URI") else {
+            return;
+        };
+        let client = mongodb::Client::with_uri_str(uri).await.unwrap();
+        let database = client.database(&format!(
+            "d2r_artifact_batch_test_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let values: Vec<_> = (1..=1_201)
+            .map(|id| {
+                serde_json::json!({
+                    "encounteredMembershipType": 3, "encounteredMembershipId": id,
+                    "count": if id % 2 == 0 { 2 } else { 1 }
+                })
+            })
+            .collect();
+        write_artifacts(
+            &database,
+            &job(),
+            "generation",
+            ENCOUNTER,
+            &values,
+            DateTime::now(),
+        )
+        .await
+        .unwrap();
+        let stored = database.collection::<Document>("crawl_artifacts");
+        assert_eq!(
+            stored
+                .count_documents(doc! { "g": "generation" })
+                .await
+                .unwrap(),
+            600
+        );
+        assert_eq!(
+            stored
+                .count_documents(doc! { "g": "generation", "n": 2 })
+                .await
+                .unwrap(),
+            600
+        );
+        database.drop().await.unwrap();
+    }
+
     fn job() -> CrawlJob {
         CrawlJob {
             player_key: player_key(3, 42),
@@ -925,12 +967,15 @@ mod tests {
 
     #[test]
     fn one_off_encounters_are_not_persisted() {
-        let encounters = vec![
+        let encounters = [
             serde_json::json!({ "encounteredMembershipType": 3, "encounteredMembershipId": 10, "count": 1 }),
             serde_json::json!({ "encounteredMembershipType": 3, "encounteredMembershipId": 20, "count": 2 }),
         ];
 
-        let persisted = persistable_encounters(&encounters);
+        let persisted: Vec<_> = encounters
+            .iter()
+            .filter(|value| persistable_encounter(value))
+            .collect();
 
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0]["encounteredMembershipId"], 20);
