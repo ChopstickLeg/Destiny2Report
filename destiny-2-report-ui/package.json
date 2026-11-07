@@ -56,7 +56,9 @@
   },
   "overrides": {
     "brace-expansion": "5.0.12",
+    "glob": "14.0.4",
     "js-beautify": "2.0.3",
+    "minimatch": "11.0.5",
     "undici": "7.30.1"
   }
 }

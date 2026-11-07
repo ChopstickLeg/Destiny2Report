@@ -19,8 +19,9 @@ defaults:
 jobs:
   lint-test-and-build:
     name: Rust lint, test, and build
-    # MongoDB 8 cannot start on the kernel shipped with Ubuntu 26.04 runners.
-    runs-on: ubuntu-24.04
+    # MongoDB 8 rejects the 7.0 Azure kernel on newer runner images (SERVER-121912).
+    # Ubuntu 22.04 currently uses the compatible 6.8 kernel.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     services:
       mongo:
