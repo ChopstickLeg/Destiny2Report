@@ -6,18 +6,19 @@ rust-version = "1.88"
 
 [dependencies]
 anyhow = "1"
+bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 mongodb = "3"
-opentelemetry = { version = "0.32", features = ["logs", "trace"] }
+opentelemetry = { version = "0.32", features = ["logs", "trace", "metrics"] }
 opentelemetry-appender-tracing = "0.32"
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["logs", "trace", "grpc-tonic", "http-proto", "reqwest-blocking-client", "tls-ring", "tls-roots"] }
-opentelemetry_sdk = { version = "0.32", features = ["logs", "trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["logs", "trace", "metrics", "grpc-tonic", "http-proto", "reqwest-blocking-client", "tls-ring", "tls-roots"] }
+opentelemetry_sdk = { version = "0.32", features = ["logs", "trace", "metrics"] }
 rand = "0.9"
 redis = { version = "0.32", features = ["aio", "tokio-comp", "connection-manager"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7"
@@ -27,6 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 proptest = "1"
 tokio = { version = "1", features = ["test-util"] }
 

@@ -7,8 +7,9 @@ use mongodb::{
     options::IndexOptions,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::time::Duration;
+use serde_json::{Value, value::RawValue};
+use std::{collections::BTreeMap, time::Duration};
+use tracing::Instrument;
 
 const TABLES: &[&str] = &[
     "DestinyActivityDefinition",
@@ -119,7 +120,10 @@ impl ManifestStore {
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        let result = self.upload_table(client, table, path, &owner).await;
+        let result = self
+            .upload_table(client, table, path, &owner)
+            .instrument(tracing::info_span!("crawler.manifest.refresh", table))
+            .await;
         let release = pointers
             .update_one(
                 doc! { "_id": table, "owner": &owner },
@@ -138,12 +142,32 @@ impl ManifestStore {
         path: &str,
         owner: &str,
     ) -> anyhow::Result<()> {
+        let _memory = crate::memory::Phase::start("manifest.refresh");
         let bytes = client.download_public_file(path).await?;
-        let definitions: serde_json::Map<String, Value> = serde_json::from_slice(&bytes)
+        crate::memory::checkpoint("manifest.downloaded");
+        self.upload_definitions(table, owner, &bytes).await
+    }
+
+    async fn upload_definitions(
+        &self,
+        table: &str,
+        owner: &str,
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        // Keep the payload borrowed until each upload batch owns its JSON. Expanding
+        // the complete inventory into Values costs roughly ten times its byte size.
+        let definitions: BTreeMap<String, &RawValue> = serde_json::from_slice(bytes)
             .with_context(|| format!("parse {table} manifest table"))?;
         if definitions.is_empty() {
             bail!("empty manifest table {table}");
         }
+        tracing::info!(
+            table,
+            input_bytes = bytes.len(),
+            definition_count = definitions.len(),
+            "prepared raw manifest definitions"
+        );
+        crate::memory::checkpoint("manifest.parsed");
         let generation = uuid::Uuid::new_v4().simple().to_string();
         let expires_at = DateTime::from_millis(DateTime::now().timestamp_millis() + DAY_MS);
         let entries = self.database.collection::<Definition>("manifest_entries");
@@ -154,7 +178,7 @@ impl ManifestStore {
                 id: format!("{generation}:{hash}"),
                 generation: generation.clone(),
                 hash: i64::from(hash),
-                json: serde_json::to_string(&value)?,
+                json: value.get().to_owned(),
                 expires_at,
             });
             if batch.len() == 500 {
@@ -164,6 +188,7 @@ impl ManifestStore {
         if !batch.is_empty() {
             entries.insert_many(batch).await?;
         }
+        crate::memory::checkpoint("manifest.uploaded");
         // Publish only complete tables; abandoned immutable generations expire by TTL.
         let result = self
             .database
@@ -244,6 +269,96 @@ fn normalize_hash(hash: &str) -> anyhow::Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn raw_manifest_batches_publish_complete_generations_and_preserve_json() {
+        let Ok(uri) = std::env::var("MONGODB_CACHE_TEST_URI") else {
+            return;
+        };
+        let client = mongodb::Client::with_uri_str(uri).await.unwrap();
+        let database = client.database(&format!(
+            "d2r_raw_manifest_test_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let pointers = database.collection::<Document>("manifest_tables");
+        pointers
+            .insert_one(doc! { "_id": "test", "owner": "owner", "generation": "previous" })
+            .await
+            .unwrap();
+        let json = format!(
+            "{{{}}}",
+            (0..1_001)
+                .map(|hash| format!(r#""{hash}": {{ "nested": [true, null, {{"text":"snowman \u2603"}}], "large": 18446744073709551615 }}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let store = ManifestStore::new(database.clone());
+        store
+            .upload_definitions("test", "owner", json.as_bytes())
+            .await
+            .unwrap();
+        let pointer = pointers
+            .find_one(doc! { "_id": "test" })
+            .await
+            .unwrap()
+            .unwrap();
+        let generation = pointer.get_str("generation").unwrap().to_owned();
+        let entries = database.collection::<Definition>("manifest_entries");
+        assert_eq!(
+            entries
+                .count_documents(doc! { "generation": &generation })
+                .await
+                .unwrap(),
+            1_001
+        );
+        let entry = entries
+            .find_one(doc! { "_id": format!("{generation}:1000") })
+            .await
+            .unwrap()
+            .unwrap();
+        let source: BTreeMap<String, &RawValue> = serde_json::from_str(&json).unwrap();
+        assert_eq!(entry.json, source["1000"].get());
+        let resolved = store.definition("test", 1000).await.unwrap().unwrap();
+        assert_eq!(resolved["nested"][2]["text"], "snowman \u{2603}");
+        assert_eq!(resolved["large"].as_u64(), Some(u64::MAX));
+        assert_eq!(
+            entry.expires_at,
+            *pointer.get_datetime("expires_at").unwrap()
+        );
+        // A failure after the first uploaded batch must leave the previous pointer intact.
+        let invalid = format!(
+            "{{{},\"invalid\": {{}}}}",
+            (0..501)
+                .map(|hash| format!("\"{hash}\":{{}}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(
+            store
+                .upload_definitions("test", "owner", invalid.as_bytes())
+                .await
+                .is_err()
+        );
+        let pointer = pointers
+            .find_one(doc! { "_id": "test" })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pointer.get_str("generation").unwrap(), generation);
+        assert!(
+            store
+                .upload_definitions("test", "owner", b"{}")
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .upload_definitions("test", "owner", b"{\"1\": {}")
+                .await
+                .is_err()
+        );
+        database.drop().await.unwrap();
+    }
     #[test]
     fn signed_and_unsigned_bungie_hashes_resolve_to_the_same_definition() {
         assert_eq!(

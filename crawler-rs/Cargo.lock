@@ -450,6 +450,7 @@ name = "destiny2report-crawler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "chrono",
  "futures",
  "mongodb",
@@ -1522,6 +1523,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

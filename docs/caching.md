@@ -19,6 +19,8 @@ Redis remains required for crawler streams, job status, pub/sub, admission quota
 
 The Rust crawler downloads English JSON manifest tables into `manifest_entries`, with a published generation pointer and refresh lease per table in `manifest_tables`. Readers query MongoDB asynchronously. There is no SQLite file or retained process cache. Workers share refresh ownership and publish only complete tables. An independent hourly loop refreshes tables with 12 hours or less remaining, including during long crawls. Definition TTL indexes remove expired generations; reads reject expired tables and results that expire during cursor consumption. A failed refresh can use the previous generation until its one-day expiry, after which crawls fail until refresh succeeds.
 
+During refresh, the crawler borrows raw JSON definitions from the downloaded bytes and owns only the current upload batch. It does not expand the complete inventory into a `serde_json::Value` tree. MongoDB publication and expiration rules are unchanged. See the crawler README for per-worker memory metrics and phase logs.
+
 Login sessions are persistent authentication state in `auth_sessions`, separate from the cache. They retain the configured 30-day lifetime, bounded by Bungie refresh-token expiry. The collection has its own TTL index and rejects expired sessions before cleanup.
 
 ## Deploy the change

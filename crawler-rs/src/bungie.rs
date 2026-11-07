@@ -282,7 +282,7 @@ impl BungieClient {
             .await
     }
 
-    pub async fn download_public_file(&self, path: &str) -> Result<Vec<u8>, BungieError> {
+    pub async fn download_public_file(&self, path: &str) -> Result<bytes::Bytes, BungieError> {
         let span = tracing::info_span!(
             "bungie.operation",
             otel.kind = "client",
@@ -296,7 +296,7 @@ impl BungieClient {
         result
     }
 
-    async fn download_public_file_inner(&self, path: &str) -> Result<Vec<u8>, BungieError> {
+    async fn download_public_file_inner(&self, path: &str) -> Result<bytes::Bytes, BungieError> {
         let url = Url::parse("https://www.bungie.net")
             .and_then(|base| base.join(path))
             .map_err(|error| BungieError::Request(error.to_string().into()))?;
@@ -315,11 +315,10 @@ impl BungieClient {
                 http_failure("manifest download", response, 1).await,
             ));
         }
-        Ok(response
+        response
             .bytes()
             .await
-            .map_err(|error| BungieError::Request(error.to_string().into()))?
-            .to_vec())
+            .map_err(|error| BungieError::Request(error.to_string().into()))
     }
 
     #[allow(dead_code)] // used by the sherpa-history pass as that parity fixture is enabled

@@ -414,6 +414,7 @@ impl Worker {
     }
 
     async fn execute(&mut self, job: CrawlJob, cancellation: CancellationToken) {
+        let _memory = crate::memory::Phase::start("crawl.job");
         let process_span = Span::current();
         let ownership = cancellation.child_token();
         let heartbeat = tokio::spawn(renew_loop(
@@ -494,6 +495,7 @@ impl Worker {
                 }
             }
         };
+        crate::memory::checkpoint("crawl.result_ready");
         match &result {
             Ok(_) => crawl_span.set_status(Status::Ok),
             Err(error) => record_crawl_error(&crawl_span, error),
