@@ -375,6 +375,31 @@ public sealed class CrawlerProtocolTests
         Assert.Same(progress, reconciled!.Progress);
     }
 
+    [Fact]
+    public void Cleanup_candidate_filter_uses_cutoff_without_cursor_and_keyset_bounds_with_cursor()
+    {
+        var cutoff = new DateTime(2026, 11, 25, 12, 0, 0, DateTimeKind.Utc);
+        var renderArgs = new RenderArgs<CrawlReportDocument>(
+            BsonSerializer.LookupSerializer<CrawlReportDocument>(),
+            BsonSerializer.SerializerRegistry);
+
+        var initial = CrawlGenerationCleanupService.BuildCandidateFilter(cutoff, cursor: null).Render(renderArgs);
+        Assert.Equal(cutoff, initial["ca"]["$lt"].ToUniversalTime());
+        Assert.DoesNotContain("$or", initial.Names);
+
+        var cursorTime = new DateTime(2026, 7, 29, 16, 42, 41, DateTimeKind.Utc);
+        var cursorId = ObjectId.GenerateNewId(cursorTime);
+        var paged = CrawlGenerationCleanupService.BuildCandidateFilter(cutoff, (cursorTime, cursorId)).Render(renderArgs);
+        Assert.Equal(cursorTime, paged["ca"]["$gte"].ToUniversalTime());
+        Assert.Equal(cutoff, paged["ca"]["$lt"].ToUniversalTime());
+
+        var orBranches = paged["$or"].AsBsonArray;
+        Assert.Equal(2, orBranches.Count);
+        Assert.Equal(cursorTime, orBranches[0].AsBsonDocument["ca"]["$gt"].ToUniversalTime());
+        Assert.Equal(cursorTime, orBranches[1].AsBsonDocument["ca"].ToUniversalTime());
+        Assert.Equal(cursorId, orBranches[1].AsBsonDocument["_id"]["$gt"].AsObjectId);
+    }
+
     private static CrawlJob CreateJob(string state, bool dispatched, string streamEntryId = "") => new()
     {
         PlayerKey = CrawlJob.CreatePlayerKey(3, 42),
