@@ -1,9 +1,13 @@
 using Destiny2Report.API.Mongo;
 using Destiny2Report.API.Features.Auth;
+using Destiny2Report.API.Features.Crawler;
+using Destiny2Report.API.Features.Crawler.Models;
 using Destiny2Report.API.Features.Leaderboards;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace Destiny2Report.Tests.Mongo;
@@ -165,6 +169,106 @@ public sealed class MongoDistributedCacheTests : IAsyncLifetime
         clock.Advance(TimeSpan.FromHours(4));
         Assert.Null(await cache.GetAsync("long"));
         Assert.Null(await cache.GetAsync("sliding"));
+    }
+
+    [MongoCacheFact]
+    public async Task GenerationCleanupAdvancesPastActiveOldestReportsAndDrainsUnreferencedOrphans()
+    {
+        var now = new DateTime(2026, 11, 25, 18, 0, 0, DateTimeKind.Utc);
+        var reports = Database.GetCollection<CrawlReportDocument>("reports");
+        var states = Database.GetCollection<CrawlStateDocument>("crawl_state");
+        var artifacts = Database.GetCollection<CrawlArtifactDocument>("crawl_artifacts");
+        var jobs = Database.GetCollection<CrawlJob>("crawl_jobs");
+
+        await reports.Indexes.CreateOneAsync(new CreateIndexModel<CrawlReportDocument>(
+            Builders<CrawlReportDocument>.IndexKeys
+                .Ascending(item => item.CreatedAtUtc)
+                .Ascending(item => item.Id)
+                .Ascending(item => item.PlayerKey)
+                .Ascending(item => item.Generation),
+            new CreateIndexOptions { Name = "ix_reports_cleanup_covering" }));
+
+        var reportDocs = new List<CrawlReportDocument>();
+        var stateDocs = new List<CrawlStateDocument>();
+        var artifactDocs = new List<CrawlArtifactDocument>();
+        var jobDocs = new List<CrawlJob>();
+
+        // 550 oldest generations are still active (> PageSize=500) so cleanup must paginate
+        // across multiple pages within a single pass before reaching orphans.
+        const int activeCount = 550;
+        const int orphanCount = 35;
+        for (var i = 0; i < activeCount; i++)
+        {
+            var key = CrawlJob.CreatePlayerKey(3, i + 1);
+            var gen = $"active-{i}";
+            var createdAt = now.AddDays(-60).AddSeconds(i);
+            reportDocs.Add(new CrawlReportDocument { PlayerKey = key, Generation = gen, CreatedAtUtc = createdAt });
+            stateDocs.Add(new CrawlStateDocument { PlayerKey = key, Generation = gen, CreatedAtUtc = createdAt });
+            artifactDocs.Add(new CrawlArtifactDocument { PlayerKey = key, Generation = gen, Kind = CrawlArtifactKind.Weapon, Value = 1, CreatedAtUtc = createdAt });
+            jobDocs.Add(new CrawlJob { PlayerKey = key, MembershipTypeId = 3, MembershipId = i + 1, ActiveGeneration = gen, State = CrawlJob.StateCompleted });
+        }
+
+        // 35 older unreferenced orphans (exceeds MaxDeletionsPerPass=25), sharing identical CreatedAtUtc timestamps to test cursor tie-breaking.
+        var orphanTimestamp = now.AddDays(-10);
+        for (var i = 0; i < orphanCount; i++)
+        {
+            var key = CrawlJob.CreatePlayerKey(3, i + 1);
+            var gen = $"orphan-{i}";
+            reportDocs.Add(new CrawlReportDocument { PlayerKey = key, Generation = gen, CreatedAtUtc = orphanTimestamp });
+            stateDocs.Add(new CrawlStateDocument { PlayerKey = key, Generation = gen, CreatedAtUtc = orphanTimestamp });
+            artifactDocs.Add(new CrawlArtifactDocument { PlayerKey = key, Generation = gen, Kind = CrawlArtifactKind.Encounter, Value = 2, CreatedAtUtc = orphanTimestamp });
+        }
+
+        // Old generation referenced as CandidateGeneration must be kept.
+        var candidateKey = CrawlJob.CreatePlayerKey(3, 9001);
+        reportDocs.Add(new CrawlReportDocument { PlayerKey = candidateKey, Generation = "candidate-gen", CreatedAtUtc = now.AddDays(-5) });
+        jobDocs.Add(new CrawlJob { PlayerKey = candidateKey, MembershipTypeId = 3, MembershipId = 9001, CandidateGeneration = "candidate-gen", State = CrawlJob.StateAwaitingFinalization });
+
+        // Recent (< 6h) unreferenced generation must be kept.
+        var recentKey = CrawlJob.CreatePlayerKey(3, 9002);
+        reportDocs.Add(new CrawlReportDocument { PlayerKey = recentKey, Generation = "recent-gen", CreatedAtUtc = now.AddHours(-1) });
+
+        await reports.InsertManyAsync(reportDocs);
+        await states.InsertManyAsync(stateDocs);
+        await artifacts.InsertManyAsync(artifactDocs);
+        await jobs.InsertManyAsync(jobDocs);
+
+        // Verify the cleanup query executes as a covered index scan (no COLLSCAN, no SORT, 0 docs fetched).
+        var cutoff = now - TimeSpan.FromHours(6);
+        var explain = await Database.RunCommandAsync<BsonDocument>(new BsonDocument
+        {
+            ["explain"] = new BsonDocument
+            {
+                ["find"] = "reports",
+                ["filter"] = new BsonDocument("ca", new BsonDocument("$lt", cutoff)),
+                ["sort"] = new BsonDocument { ["ca"] = 1, ["_id"] = 1 },
+                ["projection"] = new BsonDocument { ["_id"] = 1, ["p"] = 1, ["g"] = 1, ["ca"] = 1 },
+                ["limit"] = CrawlGenerationCleanupService.PageSize
+            },
+            ["verbosity"] = "executionStats"
+        });
+        Assert.Equal(0, explain["executionStats"]["totalDocsExamined"].ToInt64());
+
+        var service = new CrawlGenerationCleanupService(NullLogger<CrawlGenerationCleanupService>.Instance, Database);
+
+        var firstPass = await service.CleanupBatchAsync(CancellationToken.None, now);
+        Assert.Equal(CrawlGenerationCleanupService.MaxDeletionsPerPass, firstPass.DeletedCount);
+        Assert.True(firstPass.HasMore);
+
+        var secondPass = await service.CleanupBatchAsync(CancellationToken.None, now);
+        Assert.Equal(orphanCount - CrawlGenerationCleanupService.MaxDeletionsPerPass, secondPass.DeletedCount);
+        Assert.False(secondPass.HasMore);
+
+        var thirdPass = await service.CleanupBatchAsync(CancellationToken.None, now);
+        Assert.Equal(0, thirdPass.DeletedCount);
+        Assert.False(thirdPass.HasMore);
+
+        Assert.Equal(activeCount + 2, await reports.CountDocumentsAsync(FilterDefinition<CrawlReportDocument>.Empty));
+        Assert.Equal(activeCount, await states.CountDocumentsAsync(FilterDefinition<CrawlStateDocument>.Empty));
+        Assert.Equal(activeCount, await artifacts.CountDocumentsAsync(FilterDefinition<CrawlArtifactDocument>.Empty));
+        Assert.True(await reports.Find(item => item.Generation == "candidate-gen").AnyAsync());
+        Assert.True(await reports.Find(item => item.Generation == "recent-gen").AnyAsync());
+        Assert.False(await artifacts.Find(item => item.Generation.StartsWith("orphan-")).AnyAsync());
     }
 
     private ServiceProvider CreateServices()

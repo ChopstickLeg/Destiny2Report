@@ -50,9 +50,18 @@ public static class MongoExtensions
 
         var compactReports = mongoDatabase.GetCollection<CrawlReportDocument>("reports");
         await compactReports.EnsureIndexesAsync(
-            [new CreateIndexModel<CrawlReportDocument>(
-                Builders<CrawlReportDocument>.IndexKeys.Ascending(item => item.PlayerKey).Ascending(item => item.Generation),
-                new CreateIndexOptions { Name = "ux_reports_player_generation", Unique = true })],
+            [
+                new CreateIndexModel<CrawlReportDocument>(
+                    Builders<CrawlReportDocument>.IndexKeys.Ascending(item => item.PlayerKey).Ascending(item => item.Generation),
+                    new CreateIndexOptions { Name = "ux_reports_player_generation", Unique = true }),
+                new CreateIndexModel<CrawlReportDocument>(
+                    Builders<CrawlReportDocument>.IndexKeys
+                        .Ascending(item => item.CreatedAtUtc)
+                        .Ascending(item => item.Id)
+                        .Ascending(item => item.PlayerKey)
+                        .Ascending(item => item.Generation),
+                    new CreateIndexOptions { Name = "ix_reports_cleanup_covering" })
+            ],
             cancellationToken);
 
         var compactState = mongoDatabase.GetCollection<CrawlStateDocument>("crawl_state");
